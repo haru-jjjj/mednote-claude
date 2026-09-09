@@ -1,6 +1,6 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles } from 'lucide-react';
+import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { Note, Source } from '../types';
 import { marked } from 'marked';
@@ -146,6 +146,100 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, onBack, onDelete, onEdit,
       return `data:image/jpeg;base64,${imgString}`;
   };
 
+  // --- Full-screen image viewer: zoom & pan ---
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 5;
+  const [zoomScale, setZoomScale] = useState(1);
+  const [zoomOffset, setZoomOffset] = useState({ x: 0, y: 0 });
+  const pointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchStateRef = useRef<{ distance: number; scale: number } | null>(null);
+  const panStateRef = useRef<{ startX: number; startY: number; offsetX: number; offsetY: number } | null>(null);
+
+  // Reset zoom state whenever the viewer is opened/closed or a new image is shown
+  useEffect(() => {
+      setZoomScale(1);
+      setZoomOffset({ x: 0, y: 0 });
+      pointersRef.current.clear();
+      pinchStateRef.current = null;
+      panStateRef.current = null;
+  }, [viewingImage]);
+
+  const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+
+  const zoomBy = (delta: number) => {
+      setZoomScale(prev => {
+          const next = clampZoom(prev + delta);
+          if (next === 1) setZoomOffset({ x: 0, y: 0 });
+          return next;
+      });
+  };
+
+  const resetZoom = () => {
+      setZoomScale(1);
+      setZoomOffset({ x: 0, y: 0 });
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      zoomBy(e.deltaY > 0 ? -0.3 : 0.3);
+  };
+
+  const handleImageDoubleClick = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (zoomScale > 1) {
+          resetZoom();
+      } else {
+          setZoomScale(2.5);
+      }
+  };
+
+  const getDistance = (p1: { x: number; y: number }, p2: { x: number; y: number }) =>
+      Math.hypot(p1.x - p2.x, p1.y - p2.y);
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLImageElement>) => {
+      e.stopPropagation();
+      (e.target as Element).setPointerCapture?.(e.pointerId);
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (pointersRef.current.size === 2) {
+          const pts = Array.from(pointersRef.current.values());
+          pinchStateRef.current = { distance: getDistance(pts[0], pts[1]), scale: zoomScale };
+          panStateRef.current = null;
+      } else if (pointersRef.current.size === 1 && zoomScale > 1) {
+          panStateRef.current = {
+              startX: e.clientX,
+              startY: e.clientY,
+              offsetX: zoomOffset.x,
+              offsetY: zoomOffset.y,
+          };
+      }
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLImageElement>) => {
+      if (!pointersRef.current.has(e.pointerId)) return;
+      pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (pointersRef.current.size === 2 && pinchStateRef.current) {
+          const pts = Array.from(pointersRef.current.values());
+          const newDistance = getDistance(pts[0], pts[1]);
+          const ratio = newDistance / (pinchStateRef.current.distance || 1);
+          const nextScale = clampZoom(pinchStateRef.current.scale * ratio);
+          setZoomScale(nextScale);
+          if (nextScale === 1) setZoomOffset({ x: 0, y: 0 });
+      } else if (pointersRef.current.size === 1 && panStateRef.current && zoomScale > 1) {
+          const dx = e.clientX - panStateRef.current.startX;
+          const dy = e.clientY - panStateRef.current.startY;
+          setZoomOffset({ x: panStateRef.current.offsetX + dx, y: panStateRef.current.offsetY + dy });
+      }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLImageElement>) => {
+      pointersRef.current.delete(e.pointerId);
+      if (pointersRef.current.size < 2) pinchStateRef.current = null;
+      if (pointersRef.current.size === 0) panStateRef.current = null;
+  };
+
   return (
     <div className="h-full bg-white flex flex-col relative animate-in slide-in-from-right duration-300">
       {/* Sticky Header */}
@@ -271,23 +365,72 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, onBack, onDelete, onEdit,
         </div>
       </div>
 
-      {/* Full Screen Image Viewer Modal */}
+      {/* Full Screen Image Viewer Modal (with zoom & pan) */}
       {viewingImage && (
-          <div 
-            className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"
-            onClick={() => setViewingImage(null)}
+          <div
+            className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200 overflow-hidden touch-none select-none"
+            onClick={() => { if (zoomScale === 1) setViewingImage(null); }}
+            onWheel={handleWheel}
           >
-             <button 
+             <button
                 onClick={() => setViewingImage(null)}
                 className="absolute top-4 right-4 p-2 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors z-50"
+                title="닫기"
              >
                  <X className="w-6 h-6" />
              </button>
-             <img 
+
+             {/* Zoom Controls */}
+             <div
+                className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-black/50 rounded-full px-2 py-1.5 z-50"
+                onClick={(e) => e.stopPropagation()}
+             >
+                <button
+                    onClick={() => zoomBy(-0.5)}
+                    disabled={zoomScale <= MIN_ZOOM}
+                    className="p-2 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/20 rounded-full transition-colors"
+                    title="축소"
+                >
+                    <ZoomOut className="w-5 h-5" />
+                </button>
+                <span className="text-white text-xs font-medium w-12 text-center select-none">
+                    {Math.round(zoomScale * 100)}%
+                </span>
+                <button
+                    onClick={() => zoomBy(0.5)}
+                    disabled={zoomScale >= MAX_ZOOM}
+                    className="p-2 text-white disabled:opacity-30 disabled:cursor-not-allowed hover:bg-white/20 rounded-full transition-colors"
+                    title="확대"
+                >
+                    <ZoomIn className="w-5 h-5" />
+                </button>
+                {zoomScale > 1 && (
+                    <button
+                        onClick={resetZoom}
+                        className="p-2 text-white hover:bg-white/20 rounded-full transition-colors ml-1"
+                        title="원래 크기로"
+                    >
+                        <RotateCcw className="w-5 h-5" />
+                    </button>
+                )}
+             </div>
+
+             <img
                 src={getImageSrc(viewingImage)}
                 alt="Full screen view"
-                className="max-w-full max-h-full object-contain rounded shadow-2xl"
+                className={`max-w-full max-h-full object-contain rounded shadow-2xl ${zoomScale > 1 ? 'cursor-grab active:cursor-grabbing' : 'cursor-zoom-in'}`}
+                style={{
+                    transform: `translate(${zoomOffset.x}px, ${zoomOffset.y}px) scale(${zoomScale})`,
+                    transition: pointersRef.current.size > 0 ? 'none' : 'transform 0.15s ease-out',
+                    touchAction: 'none',
+                }}
                 onClick={(e) => e.stopPropagation()}
+                onDoubleClick={handleImageDoubleClick}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerUp}
+                draggable={false}
              />
           </div>
       )}
