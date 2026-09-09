@@ -233,22 +233,38 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
 
             Context: "${textContent.substring(0, 5000)}"
 
-            Task:
-            1. Provide a concise, bullet-point Markdown summary of the key medical concepts found in this note.
-            2. For mathematical formulas, numbers with units, chemical equations, or special symbols (like >, <, =, ->, 1mm), ALWAYS wrap them in single backticks to format them as inline code.
-               - Correct Example: \`> 1mm\`, \`x^2\`, \`H2O\`, \`pH < 7.35\`
-               - Do NOT use LaTeX blocks like $$...$$ or raw symbols without backticks.
-               - Use ≥ and ≤ instead of \\geq and \\leq.
-            3. Use the web search tool to find 2-3 authoritative medical sources (e.g. CDC, NIH, Mayo Clinic, PubMed, UpToDate) that validate or explain these concepts, and cite them inline.
-            4. Output language: Korean (unless the note content is clearly in another language).
+            Task: Write a concise, ABSTRACT-STYLE Markdown summary of the key medical concepts in this note —
+            like a paper abstract, not a full explanation of everything in the note.
+
+            LENGTH (STRICT — this is the most important rule):
+            - At most 5~8 short bullet points, one sentence each.
+            - Keep the ENTIRE summary under roughly 500 Korean characters (~350 words) in total.
+            - Pick only the most clinically important points. Deliberately omit minor/secondary
+              details rather than trying to cover everything in the note — a shorter, focused
+              summary is strongly preferred over a long, exhaustive one.
+
+            FORMATTING:
+            - For mathematical formulas, numbers with units, chemical equations, or special symbols (like >, <, =, ->, 1mm), ALWAYS wrap them in single backticks to format them as inline code.
+              - Correct Example: \`> 1mm\`, \`x^2\`, \`H2O\`, \`pH < 7.35\`
+              - Do NOT use LaTeX blocks like $$...$$ or raw symbols without backticks.
+              - Use ≥ and ≤ instead of \\geq and \\leq.
+
+            SOURCES:
+            - Use the web search tool to find at most 2-3 authoritative medical sources (e.g. CDC, NIH, Mayo Clinic, PubMed, UpToDate) that validate these concepts, and cite them inline.
+            - Keep research minimal (1-2 searches is usually enough) — citations must not make the summary longer than the length limit above.
+
+            OUTPUT RULES (STRICT):
+            - Output ONLY the final summary text itself. Do NOT narrate your process (no "먼저 검색해보겠습니다",
+              "추가로 확인해보겠습니다", or similar meta-commentary before/between/after the summary).
+            - Output language: Korean (unless the note content is clearly in another language).
         `;
         content.push({ type: 'text', text: prompt });
 
         const data = await callClaude({
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
-            tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
-            max_tokens: 1500
+            tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }],
+            max_tokens: 1800
         });
 
         const summary = extractText(data) || "Summary generation failed.";
