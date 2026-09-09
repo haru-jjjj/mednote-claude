@@ -1,0 +1,5 @@
+{
+  "name": "MediNote AI",
+  "description": "An intelligent medical study companion (Claude API) that organizes notes and enhances them with AI-sourced references.",
+  "requestFramePermissions": []
+}
