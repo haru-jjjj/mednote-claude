@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Save, ArrowLeft, Image as ImageIcon, X, Loader2, ChevronLeft, ChevronRight, Bold, Italic, Subscript, Superscript, ArrowRight, Code, Sigma, Type, Undo } from 'lucide-react';
+import { Save, ArrowLeft, Image as ImageIcon, X, Loader2, ChevronLeft, ChevronRight, Bold, Italic, Subscript, Superscript, ArrowRight, Code, Sigma, Type, Undo, Table as TableIcon } from 'lucide-react';
 import { Note } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -9,6 +9,89 @@ interface NoteEditorProps {
   onCancel: () => void;
   initialNote?: Note | null;
 }
+
+// ----------------------------------------------------------------------------
+// 붙여넣기 호환 처리: 클로드(claude.ai) 등에서 렌더링된 표/서식을 복사하면 클립보드에는
+// text/plain(파이프 없이 탭/공백으로만 정렬된 텍스트)과 text/html(<table> 등 실제 구조)이
+// 함께 담깁니다. <textarea>에 그냥 붙여넣으면 브라우저가 자동으로 text/plain을 쓰기 때문에
+// 표의 구분선(|, ---)이 사라져 나중에 마크다운으로 렌더링되지 않습니다.
+// 아래 변환기는 클립보드의 text/html을 직접 파싱해서 GFM 마크다운(표 포함)으로 바꿔줍니다.
+// ----------------------------------------------------------------------------
+const RICH_PASTE_TAG_REGEX = /<(table|ul|ol|h[1-6]|strong|b|em|i|code|pre|blockquote)[\s>]/i;
+
+const htmlToMarkdown = (root: HTMLElement): string => {
+    function walk(node: Node): string {
+        if (node.nodeType === Node.TEXT_NODE) {
+            return (node.textContent || '').replace(/\s+/g, ' ');
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+        const el = node as HTMLElement;
+        const tag = el.tagName.toLowerCase();
+        const children = () => Array.from(el.childNodes).map(walk).join('');
+
+        switch (tag) {
+            // 일부 소스(워드, 구글 문서 등)는 클립보드 HTML 맨 앞에 <style>/<meta> 등을
+            // 함께 붙여 보낸다. 텍스트로 잘못 새어 들어가지 않도록 명시적으로 무시한다.
+            case 'style': case 'script': case 'head': case 'meta': case 'link':
+                return '';
+            case 'table': {
+                const rows = Array.from((el as HTMLTableElement).rows);
+                if (rows.length === 0) return '';
+                const cellToMd = (cell: HTMLTableCellElement) =>
+                    Array.from(cell.childNodes).map(walk).join('')
+                        .replace(/\|/g, '\\|')
+                        .replace(/\r?\n+/g, ' ')
+                        .trim();
+                const headerCells = Array.from(rows[0].cells).map(cellToMd);
+                const colCount = Math.max(1, headerCells.length);
+                const lines = [
+                    '| ' + headerCells.join(' | ') + ' |',
+                    '| ' + Array(colCount).fill('---').join(' | ') + ' |'
+                ];
+                for (let i = 1; i < rows.length; i++) {
+                    const cells = Array.from(rows[i].cells).map(cellToMd);
+                    while (cells.length < colCount) cells.push('');
+                    lines.push('| ' + cells.slice(0, colCount).join(' | ') + ' |');
+                }
+                return '\n' + lines.join('\n') + '\n\n';
+            }
+            case 'strong': case 'b': { const t = children().trim(); return t ? `**${t}**` : ''; }
+            case 'em': case 'i': { const t = children().trim(); return t ? `*${t}*` : ''; }
+            case 'del': case 's': { const t = children().trim(); return t ? `~~${t}~~` : ''; }
+            case 'code': return `\`${el.textContent || ''}\``;
+            case 'pre': return `\n\`\`\`\n${el.textContent || ''}\n\`\`\`\n\n`;
+            case 'a': {
+                const href = el.getAttribute('href') || '';
+                const t = children().trim();
+                return href ? `[${t || href}](${href})` : t;
+            }
+            case 'h1': return `\n# ${children().trim()}\n\n`;
+            case 'h2': return `\n## ${children().trim()}\n\n`;
+            case 'h3': return `\n### ${children().trim()}\n\n`;
+            case 'h4': case 'h5': case 'h6': return `\n#### ${children().trim()}\n\n`;
+            case 'blockquote':
+                return '\n' + children().trim().split('\n').map(l => `> ${l}`).join('\n') + '\n\n';
+            case 'li': {
+                const parentTag = el.parentElement?.tagName.toLowerCase();
+                const prefix = parentTag === 'ol' ? '1. ' : '- ';
+                return `${prefix}${children().trim()}\n`;
+            }
+            case 'ul': case 'ol':
+                return '\n' + children() + '\n';
+            case 'br': return '\n';
+            case 'hr': return '\n---\n\n';
+            case 'p': case 'div': {
+                const t = children().trim();
+                return t ? `${t}\n\n` : '';
+            }
+            default:
+                return children();
+        }
+    }
+
+    return walk(root);
+};
 
 const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }) => {
   const contentRef = useRef<HTMLTextAreaElement>(null);
@@ -243,6 +326,49 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       return `data:image/jpeg;base64,${imgString}`;
   };
 
+  // 클로드 등에서 복사한 표/서식을 붙여넣을 때, 브라우저 기본 동작(plain text만 사용)
+  // 대신 클립보드의 HTML을 마크다운으로 변환해서 삽입한다. 표가 없는 일반 텍스트
+  // 붙여넣기는 그대로 기본 동작을 사용한다(변환 과정에서 내용이 망가질 위험을 피하기 위함).
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const html = e.clipboardData.getData('text/html');
+      if (!html || !RICH_PASTE_TAG_REGEX.test(html)) return; // 기본 붙여넣기(텍스트) 사용
+
+      let markdown: string | null = null;
+      try {
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          markdown = htmlToMarkdown(doc.body).replace(/\n{3,}/g, '\n\n').trim();
+      } catch (err) {
+          console.error('붙여넣기 표/서식 변환 실패, 기본 텍스트 붙여넣기로 대체합니다.', err);
+          markdown = null;
+      }
+      if (!markdown) return; // 변환 실패 시 기본 붙여넣기(텍스트) 사용
+
+      e.preventDefault();
+      const textarea = contentRef.current;
+      if (!textarea) return;
+
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const text = textarea.value;
+      const before = text.substring(0, start);
+      const after = text.substring(end);
+
+      // 표/블록 요소는 앞뒤에 빈 줄이 있어야 별도 블록으로 정확히 인식된다.
+      const leadingBreak = before.length === 0 || before.endsWith('\n\n') ? '' : (before.endsWith('\n') ? '\n' : '\n\n');
+      const trailingBreak = after.length === 0 || after.startsWith('\n') ? '' : '\n\n';
+      const insertion = leadingBreak + markdown + trailingBreak;
+
+      try {
+          textarea.setRangeText(insertion, start, end, 'end');
+      } catch {
+          textarea.value = before + insertion + after;
+          const pos = (before + insertion).length;
+          textarea.setSelectionRange(pos, pos);
+      }
+
+      setTimeout(handleTextChange, 0);
+  };
+
   // ROBUST Toolbar Button:
   // 1. Prevents Default on both MouseDown and TouchStart -> Stops Focus Loss (Keyboard stays up)
   // 2. Prevents Default on TouchStart -> Stops Ghost Click generation
@@ -373,14 +499,17 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             <ToolbarButton label="α" onClick={() => insertFormatting('\\alpha ')} />
             <ToolbarButton label="β" onClick={() => insertFormatting('\\beta ')} />
             <ToolbarButton icon={<Sigma size={14}/>} onClick={() => insertFormatting('`', '`')} label="Math/Code" />
+            <div className="w-px h-5 bg-slate-200 mx-1"></div>
+            <ToolbarButton icon={<TableIcon size={14}/>} onClick={() => insertFormatting('\n| 제목1 | 제목2 | 제목3 |\n| --- | --- | --- |\n| 내용 | 내용 | 내용 |\n')} label="Table" />
         </div>
 
         <textarea
           ref={contentRef}
           className="flex-1 w-full resize-none outline-none p-3 md:p-4 text-slate-800 text-sm leading-relaxed placeholder:text-slate-300 bg-transparent overflow-y-auto font-mono md:font-sans"
-          placeholder="메모 내용을 입력하세요... (Markdown 및 기본 수식 지원)"
+          placeholder="메모 내용을 입력하세요... (Markdown 지원 — 표는 클로드 답변에서 그대로 복사해 붙여넣어도 됩니다)"
           defaultValue={initialNote?.content || ''}
           onChange={handleTextChange}
+          onPaste={handlePaste}
           autoFocus
           spellCheck={false}
         />
