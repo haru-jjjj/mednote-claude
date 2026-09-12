@@ -82,7 +82,17 @@ const callClaude = async (params: CallParams): Promise<any> => {
     if (params.system) body.system = params.system;
     if (params.tools) body.tools = params.tools;
     if (params.tool_choice) body.tool_choice = params.tool_choice;
-    if (typeof params.temperature === 'number') body.temperature = Math.min(params.temperature, 1);
+
+    // 방어적 처리: web_search 같은 서버 사이드 툴을 함께 쓰면 이 모델/버전 조합에서
+    // "temperature is deprecated for this model" 400 에러로 요청 자체가 거부되는 것을
+    // 실사용 중 확인했습니다. 앞으로 어떤 호출부가 실수로 web_search + temperature를
+    // 같이 넘기더라도 조용히 무시하고 계속 동작하도록, 여기서 한 번 더 걸러줍니다.
+    const usesServerTool = Array.isArray(params.tools) && params.tools.some((t: any) => t?.type === 'web_search_20250305');
+    if (typeof params.temperature === 'number' && usesServerTool) {
+        console.warn("web_search 툴과 temperature를 함께 요청해 temperature를 무시합니다 (API가 400으로 거부함).");
+    } else if (typeof params.temperature === 'number') {
+        body.temperature = Math.min(params.temperature, 1);
+    }
 
     const response = await fetch(API_URL, {
         method: 'POST',
@@ -406,9 +416,12 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
         const data = await callClaude({
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
+            // NOTE: 이 모델/버전 조합에서는 web_search 툴과 함께 temperature를 보내면
+            // "400 invalid_request_error: `temperature` is deprecated for this model"로
+            // 요청 자체가 거부됩니다(실사용 중 발견). 그래서 다른 web_search 호출들처럼
+            // temperature 파라미터를 아예 보내지 않습니다.
             tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: modelLevel === 'detailed' ? 3 : 2 }],
-            max_tokens: modelLevel === 'detailed' ? 4500 : 2200,
-            temperature: 0.2
+            max_tokens: modelLevel === 'detailed' ? 4500 : 2200
         });
 
         const text = extractText(data) || "Explanation generation failed.";
