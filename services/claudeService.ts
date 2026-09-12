@@ -120,10 +120,16 @@ const callClaude = async (params: CallParams): Promise<any> => {
     return data;
 };
 
-const imageBlock = (base64: string) => ({
-    type: 'image',
-    source: { type: 'base64', media_type: 'image/jpeg', data: base64 }
-});
+// 방어적 처리: 저장 경로상 항상 순수 base64(데이터 URI 접두사 없이)여야 하지만,
+// 혹시라도 "data:image/...;base64," 접두사가 섞여 들어오면 Claude API가 이를
+// 유효하지 않은 base64로 보고 요청 자체를 거부(400)할 수 있어, 여기서 한 번 더 제거합니다.
+const imageBlock = (base64: string) => {
+    const cleaned = (base64 || '').replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/, '');
+    return {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/jpeg', data: cleaned }
+    };
+};
 
 const extractText = (data: any): string => {
     const blocks = data?.content || [];
@@ -411,8 +417,13 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
         return { content: text, sources };
 
     } catch (error) {
+        // 예전엔 여기서 null만 반환하고 실제 에러 메시지를 삼켜버려서, 호출부(주제 탐구
+        // 화면)에서 "아무 반응 없음"으로만 보이고 사용자는 원인을 전혀 알 수 없었습니다.
+        // 호출부가 이미 try/catch로 감싸고 있으므로, 여기서는 원래 에러를 그대로
+        // 다시 던져서 실제 원인(예: API 키 문제, 429 rate limit, 네트워크 오류 등)이
+        // 화면까지 전달되도록 합니다.
         console.error("Study Guide Content Gen Failed", error);
-        return null;
+        throw error;
     }
 };
 

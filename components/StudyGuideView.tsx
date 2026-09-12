@@ -5,7 +5,7 @@ import { generateStudySuggestions, generateStudyGuideContent, formatMedicalMarkd
 import { getNoteFromDB } from '../services/storage';
 import { fetchRandomNotesBatch } from '../services/firebaseService';
 import { cosineSimilarity, embedTexts, hasVoyageApiKey } from '../services/voyageService';
-import { Lightbulb, Loader2, ArrowRight, BookOpen, ExternalLink, Sparkles, Microscope, ArrowLeft, RefreshCw, Layers, Languages, Book, Zap } from 'lucide-react';
+import { Lightbulb, Loader2, ArrowRight, BookOpen, ExternalLink, Sparkles, Microscope, ArrowLeft, RefreshCw, Layers, Languages, Book, Zap, AlertTriangle } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
@@ -48,6 +48,9 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
   const [content, setContent] = useState<{ text: string, sources: Source[] } | null>(null);
   const [isGeneratingContent, setIsGeneratingContent] = useState(false);
   const [contentMode, setContentMode] = useState<'fast' | 'detailed'>('fast');
+  // 콘텐츠 생성 실패 시 사용자에게 실제 이유를 보여주기 위한 상태.
+  // (예전엔 실패해도 콘솔에만 로그가 남고 화면엔 아무 표시도 없었습니다.)
+  const [contentError, setContentError] = useState<string | null>(null);
 
   // Deep Dive Background State
   const [isDeepDiveGenerating, setIsDeepDiveGenerating] = useState(false);
@@ -123,6 +126,7 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
       setIsGeneratingSuggestions(true);
       setSuggestions([]);
       setContent(null);
+      setContentError(null);
       setSelectedTopic(null);
       activeTopicRef.current = null;
       setContentMode('fast');
@@ -189,6 +193,7 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
       activeTopicRef.current = topic;
 
       setContent(null);
+      setContentError(null);
       setIsGeneratingContent(true);
       setContentMode('fast');
       setDeepDiveResult(null);
@@ -222,12 +227,19 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
           setEmbeddingRelatedIds(new Set(relatedByEmbedding.map(n => n.id)));
 
           const result = await generateStudyGuideContent(topic, expandedContext, 'fast', selectedLanguage);
-          
-          if (activeTopicRef.current === topic && result) {
-              setContent({ text: result.content, sources: result.sources });
+
+          if (activeTopicRef.current === topic) {
+              if (result) {
+                  setContent({ text: result.content, sources: result.sources });
+              } else {
+                  setContentError("콘텐츠 생성에 실패했습니다. 잠시 후 다시 시도해주세요.");
+              }
           }
-      } catch (e) {
+      } catch (e: any) {
           console.error("Content Gen Failed", e);
+          if (activeTopicRef.current === topic) {
+              setContentError(e?.message || "콘텐츠 생성 중 알 수 없는 오류가 발생했습니다.");
+          }
       } finally {
           if (activeTopicRef.current === topic) {
               setIsGeneratingContent(false);
@@ -257,11 +269,14 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
           } else if (activeTopicRef.current === currentTopic && !result) {
               throw new Error("Generation returned null");
           }
-      } catch (e) {
+      } catch (e: any) {
           console.error("Deep Dive Failed", e);
           if (activeTopicRef.current === currentTopic) {
-              setDeepDiveResult(null); 
-              alert("심층 분석 생성에 실패했거나 시간이 초과되었습니다.");
+              setDeepDiveResult(null);
+              const reason = e?.message === 'Timeout'
+                  ? '응답 시간이 너무 오래 걸려 중단했습니다.'
+                  : (e?.message || '알 수 없는 오류');
+              alert(`심층 분석 생성에 실패했습니다: ${reason}`);
           }
       } finally {
           if (activeTopicRef.current === currentTopic) {
@@ -444,7 +459,7 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
                 ) : (
                     <div className="animate-in fade-in duration-300">
                         <div className="mb-6">
-                            <button onClick={() => { setSelectedTopic(null); activeTopicRef.current = null; setContent(null); setEmbeddingRelatedIds(new Set()); }} className="text-xs font-bold text-slate-400 hover:text-slate-600 mb-2 flex items-center gap-1">
+                            <button onClick={() => { setSelectedTopic(null); activeTopicRef.current = null; setContent(null); setContentError(null); setEmbeddingRelatedIds(new Set()); }} className="text-xs font-bold text-slate-400 hover:text-slate-600 mb-2 flex items-center gap-1">
                                 <ArrowLeft className="w-3 h-3" /> 목록으로
                             </button>
                             <h3 className="text-2xl font-bold text-slate-900 leading-tight">
@@ -484,6 +499,17 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
                                         ⚡ 빠른 요약입니다. 더 깊은 내용과 추가 자료는 Deep Dive를 확인하세요.
                                     </div>
                                 )}
+                            </div>
+                        ) : contentError ? (
+                            <div className="bg-red-50 border border-red-200 rounded-2xl p-6 text-center space-y-3">
+                                <AlertTriangle className="w-8 h-8 text-red-500 mx-auto" />
+                                <p className="text-sm font-medium text-red-700 break-words">{contentError}</p>
+                                <button
+                                    onClick={() => selectedTopic && handleSelectTopic(selectedTopic)}
+                                    className="inline-flex items-center gap-1.5 text-xs font-bold text-red-600 bg-white border border-red-200 hover:bg-red-100 px-4 py-2 rounded-lg transition-colors"
+                                >
+                                    <RefreshCw className="w-3.5 h-3.5" /> 다시 시도
+                                </button>
                             </div>
                         ) : null}
                     </div>
