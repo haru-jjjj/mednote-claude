@@ -116,21 +116,50 @@ const NoteList: React.FC<NoteListProps> = ({
       listRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Enhanced Text Filter (Includes Summary)
+  // --- Search: local input state + debounce (typing stays instant; the actual
+  // filtering below only re-runs ~150ms after the user stops typing) ---
+  const [searchInput, setSearchInput] = useState(searchTerm);
+
+  // Keep local input in sync if the search term is cleared/changed from outside
+  useEffect(() => {
+      setSearchInput(searchTerm);
+  }, [searchTerm]);
+
+  useEffect(() => {
+      const handle = setTimeout(() => {
+          if (searchInput !== searchTerm) onSearchChange(searchInput);
+      }, 150);
+      return () => clearTimeout(handle);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput]);
+
+  // Precompute a normalized (lowercased) search index PER NOTE, only when the
+  // notes themselves change — not on every keystroke. Includes OCR-extracted
+  // image text (transcription) so photos' content is searchable too.
+  const noteSearchIndex = useMemo(() => {
+      const index = new Map<string, string>();
+      notes.forEach(note => {
+          const combined = [note.title, note.content, note.summary, note.transcription]
+              .filter(Boolean)
+              .join('\n')
+              .toLowerCase();
+          index.set(note.id, combined);
+      });
+      return index;
+  }, [notes]);
+
+  // Multi-keyword, order-independent AND matching (e.g. "심방 세동" or
+  // "AF 항응고제" matches notes containing all of those tokens, regardless of
+  // spacing/order), instead of one exact substring.
   const textFilteredNotes = useMemo(() => {
-    const query = searchTerm.toLowerCase().trim();
-    if (!query) return notes;
+    const tokens = searchTerm.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return notes;
 
     return notes.filter(note => {
-      const searchFields = [
-        note.title,
-        note.content,
-        note.summary // ADDED: Search in summary
-      ].map(f => (f || '').toLowerCase());
-
-      return searchFields.some(field => field.includes(query));
+      const haystack = noteSearchIndex.get(note.id) || '';
+      return tokens.every(token => haystack.includes(token));
     });
-  }, [notes, searchTerm]);
+  }, [notes, searchTerm, noteSearchIndex]);
 
   const otherNotes = textFilteredNotes;
 
@@ -166,11 +195,17 @@ const NoteList: React.FC<NoteListProps> = ({
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 group-focus-within:text-blue-500 transition-colors" />
             <input
                 type="text"
-                placeholder="검색 (내용, AI 요약)..."
-                className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-50 transition-all outline-none text-slate-700 text-sm font-medium placeholder:text-slate-400"
-                value={searchTerm}
-                onChange={(e) => onSearchChange(e.target.value)}
+                placeholder="검색 (내용, 사진 텍스트, AI 요약 — 여러 단어 가능)..."
+                className="w-full pl-10 pr-9 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-50 transition-all outline-none text-slate-700 text-sm font-medium placeholder:text-slate-400"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
             />
+            {isLoadingMore && searchInput.trim() && (
+                <Loader2
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-300 w-4 h-4 animate-spin"
+                    title="전체 메모 불러오는 중..."
+                />
+            )}
         </div>
       </div>
 

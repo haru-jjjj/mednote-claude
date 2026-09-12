@@ -144,7 +144,8 @@ const App: React.FC = () => {
       }
   };
 
-  const handleFetchAllNotes = async () => {
+  // opts.silent: 검색 시 자동으로 전체 메모를 불러올 때는 alert 팝업을 띄우지 않습니다.
+  const handleFetchAllNotes = async (opts?: { silent?: boolean }) => {
       setIsCloudLoading(true);
       try {
           const allNotes = await fetchAllNotesFromFirestore();
@@ -158,17 +159,27 @@ const App: React.FC = () => {
                   return merged;
               });
               await saveAllNotesToDB(allNotes);
-              alert(`${allNotes.length}개의 메모를 모두 불러왔습니다.`);
-          } else {
+              if (!opts?.silent) alert(`${allNotes.length}개의 메모를 모두 불러왔습니다.`);
+          } else if (!opts?.silent) {
               alert("불러올 메모가 없습니다.");
           }
       } catch (e) {
           console.error("Fetch all notes failed", e);
-          alert("메모를 불러오는 중 오류가 발생했습니다.");
+          if (!opts?.silent) alert("메모를 불러오는 중 오류가 발생했습니다.");
       } finally {
           setIsCloudLoading(false);
       }
   };
+
+  // 검색을 처음 사용하는 순간, 화면에 아직 로드되지 않은(오래된) 클라우드 메모까지
+  // 검색 범위에 포함되도록 전체 메모를 한 번만 자동으로 불러옵니다.
+  const hasAutoFetchedAllForSearchRef = useRef(false);
+  useEffect(() => {
+      if (searchTerm.trim() && !hasAutoFetchedAllForSearchRef.current) {
+          hasAutoFetchedAllForSearchRef.current = true;
+          handleFetchAllNotes({ silent: true });
+      }
+  }, [searchTerm]);
 
   const pickLocalRandomNote = (currentNotes: Note[], excludeIds: string[]): Note | null => {
       if (currentNotes.length === 0) return null;
