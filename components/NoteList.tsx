@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, BookOpen, Sparkles, Loader2, ArrowUp, CloudDownload, Lightbulb } from 'lucide-react';
+import { Search, BookOpen, Sparkles, Loader2, ArrowUp, CloudDownload, Lightbulb, X } from 'lucide-react';
 import { Note } from '../types';
 import { embedTexts, cosineSimilarity } from '../services/voyageService';
 
@@ -141,6 +141,12 @@ const NoteList: React.FC<NoteListProps> = ({
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchInput]);
 
+  // 검색어를 한 번에 지우고 디바운스를 기다리지 않고 바로 메인 목록으로 돌아갑니다.
+  const handleClearSearch = () => {
+      setSearchInput('');
+      onSearchChange('');
+  };
+
   // Precompute a normalized (lowercased) search index PER NOTE, only when the
   // notes themselves change — not on every keystroke. Includes OCR-extracted
   // image text (transcription) so photos' content is searchable too.
@@ -246,16 +252,28 @@ const NoteList: React.FC<NoteListProps> = ({
             <input
                 type="text"
                 placeholder="검색 (내용, 사진 텍스트, AI 요약 — 여러 단어 가능)..."
-                className="w-full pl-10 pr-9 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-50 transition-all outline-none text-slate-700 text-sm font-medium placeholder:text-slate-400"
+                className="w-full pl-10 pr-16 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-50 transition-all outline-none text-slate-700 text-sm font-medium placeholder:text-slate-400"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
             />
-            {isLoadingMore && searchInput.trim() && (
-                <Loader2
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-300 w-4 h-4 animate-spin"
-                    title="전체 메모 불러오는 중..."
-                />
-            )}
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
+                {isLoadingMore && searchInput.trim() && (
+                    <Loader2
+                        className="w-4 h-4 text-slate-300 animate-spin"
+                        title="전체 메모 불러오는 중..."
+                    />
+                )}
+                {searchInput && (
+                    <button
+                        type="button"
+                        onClick={handleClearSearch}
+                        className="p-1 text-slate-400 hover:text-slate-600 hover:bg-slate-200/70 rounded-full transition-colors"
+                        title="검색어 지우고 목록으로 돌아가기"
+                    >
+                        <X className="w-3.5 h-3.5" />
+                    </button>
+                )}
+            </div>
         </div>
         {/* 예전 메모에 의미 기반 검색을 적용하는 중이라는 조용한 안내 (막지 않음) */}
         {embeddingBackfillProgress && (
