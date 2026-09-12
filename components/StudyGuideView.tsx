@@ -4,6 +4,7 @@ import { Note, Source, QuizLanguage } from '../types';
 import { generateStudySuggestions, generateStudyGuideContent, formatMedicalMarkdown } from '../services/claudeService';
 import { getNoteFromDB } from '../services/storage';
 import { fetchRandomNotesBatch } from '../services/firebaseService';
+import { cosineSimilarity } from '../services/voyageService';
 import { Lightbulb, Loader2, ArrowRight, BookOpen, ExternalLink, Sparkles, Microscope, ArrowLeft, RefreshCw, Layers, Languages, Book, Zap } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -48,6 +49,31 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
   const [isDeepDiveGenerating, setIsDeepDiveGenerating] = useState(false);
   const [deepDiveResult, setDeepDiveResult] = useState<{ text: string, sources: Source[] } | null>(null);
 
+  // Embedding-based clustering: if enough locally-loaded notes already have a
+  // Voyage embedding (see voyageService.ts), pick a random "seed" note and pair
+  // it with its most semantically similar notes. This reuses embeddings that
+  // were already computed for search (no extra API calls) and produces a more
+  // thematically coherent trio than pure random picking, which is what makes
+  // the resulting AI topic suggestions more relevant. Falls back to an empty
+  // result (→ pure random selection) whenever there isn't a strong-enough
+  // cluster, so variety/randomness is preserved when embeddings are sparse.
+  const SEMANTIC_CLUSTER_THRESHOLD = 0.45;
+  const pickSemanticCluster = (excludeList: string[]): Note[] => {
+      const embedded = notes.filter(n => n.embedding && n.embedding.length > 0 && !excludeList.includes(n.id));
+      if (embedded.length < 4) return [];
+
+      const seed = embedded[Math.floor(Math.random() * embedded.length)];
+      const ranked = embedded
+          .filter(n => n.id !== seed.id)
+          .map(n => ({ note: n, sim: cosineSimilarity(seed.embedding, n.embedding) }))
+          .sort((a, b) => b.sim - a.sim)
+          .filter(r => r.sim >= SEMANTIC_CLUSTER_THRESHOLD)
+          .slice(0, 2);
+
+      if (ranked.length < 2) return [];
+      return [seed, ...ranked.map(r => r.note)];
+  };
+
   const pickRandomNotes = async () => {
       setIsGeneratingSuggestions(true);
       setSuggestions([]);
@@ -60,7 +86,11 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
 
       try {
           const excludeList = Array.from(usedNoteIds) as string[];
-          let selected: Note[] = await fetchRandomNotesBatch(3, excludeList, notes);
+          let selected: Note[] = pickSemanticCluster(excludeList);
+
+          if (selected.length === 0) {
+              selected = await fetchRandomNotesBatch(3, excludeList, notes);
+          }
 
           if (selected.length === 0 && notes.length > 0) {
               const availableLocal = notes.filter(n => !usedNoteIds.has(n.id));
@@ -303,7 +333,7 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
                             </span>
                         ))}
                         {selectedTopic && activeContextNotes.length === 0 && (
-                             <span className="text-xs text-slate-400 italic">No direct context notes found. Using AI Search.</span>
+                             <span className="text-xs text-slate-400 italic">연결된 메모를 찾지 못해 AI 지식과 웹 검색만으로 답변을 생성합니다.</span>
                         )}
                     </div>
                 </div>
@@ -386,30 +416,30 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
 
         {/* Floating Deep Dive Action Button */}
         {selectedTopic && content && contentMode === 'fast' && (
-            <div className="absolute bottom-8 left-0 right-0 z-20 flex justify-center pointer-events-none">
-                <div className="pointer-events-auto shadow-2xl rounded-full overflow-hidden animate-in slide-in-from-bottom-10 border border-indigo-100 ring-4 ring-white/50">
+            <div className="absolute bottom-8 left-0 right-0 z-20 flex justify-center pointer-events-none px-4">
+                <div className="pointer-events-auto max-w-full shadow-2xl rounded-full overflow-hidden animate-in slide-in-from-bottom-10 border border-indigo-100 ring-4 ring-white/50">
                     {!deepDiveResult && !isDeepDiveGenerating ? (
                         <button
                             onClick={handleDeepDiveBackground}
-                            className="px-8 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold flex items-center gap-2.5 transition-all active:scale-95 shadow-inner"
+                            className="px-4 sm:px-8 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold flex items-center gap-2 sm:gap-2.5 transition-all active:scale-95 shadow-inner whitespace-nowrap text-sm sm:text-base"
                         >
-                            <Microscope className="w-5 h-5" />
+                            <Microscope className="w-5 h-5 shrink-0" />
                             <span>Deep Dive (심층 분석)</span>
                         </button>
                     ) : isDeepDiveGenerating ? (
                         <button
                             disabled
-                            className="px-8 py-3.5 bg-white text-slate-500 font-bold flex items-center gap-2.5 cursor-not-allowed border-t border-slate-100"
+                            className="px-4 sm:px-8 py-3.5 bg-white text-slate-500 font-bold flex items-center gap-2 sm:gap-2.5 cursor-not-allowed border-t border-slate-100 whitespace-nowrap text-sm sm:text-base"
                         >
-                            <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                            <Loader2 className="w-5 h-5 shrink-0 animate-spin text-indigo-600" />
                             <span>분석 진행 중...</span>
                         </button>
                     ) : (
                         <button
                             onClick={handleViewDeepDive}
-                            className="px-8 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold flex items-center gap-2.5 transition-all shadow-lg shadow-indigo-200 animate-pulse"
+                            className="px-4 sm:px-8 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold flex items-center gap-2 sm:gap-2.5 transition-all shadow-lg shadow-indigo-200 animate-pulse whitespace-nowrap text-sm sm:text-base"
                         >
-                            <Zap className="w-5 h-5 fill-current" />
+                            <Zap className="w-5 h-5 shrink-0 fill-current" />
                             <span>심층 분석 결과 보기</span>
                         </button>
                     )}

@@ -365,13 +365,16 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
                3. **Diagnosis**: Specific diagnostic criteria, gold standard tests, and relevant lab values.
                4. **Management**: Detailed treatment protocols, first-line vs second-line agents, and mechanisms of action.
 
-               Tone: Academic, precise, and clinically oriented. Avoid superficial summaries.`
+               Tone: Academic, precise, and clinically oriented. Avoid superficial summaries. Be thorough,
+               but write efficiently (no redundant padding or repeated points) so the full article fits
+               within your response and is never cut off mid-section.`
             : `Create an **EXECUTIVE CLINICAL BRIEF** for a Medical Specialist or Researcher.
                - **Target Audience**: Senior Fellows, Attending Physicians, and Clinical Researchers.
                - **Depth**: Go beyond basic textbooks. Focus on recent clinical trial data, emerging pathomechanisms, controversial management guidelines, and novel therapeutic targets.
                - **Style**: Extremely dense, technical, and precise. Use professional medical abbreviations and jargon.
                - **Format**: Structured Executive Summary (Bullet points).
-               - **Strict Length**: Keep it highly condensed but information-dense.`;
+               - **Strict Length**: Roughly 300-500 words total (not counting citations). This is a BRIEF —
+                 stay condensed even when citing multiple sources, so it never gets cut off mid-sentence.`;
 
         const prompt = `
             You are a specialized medical tutor.
@@ -385,17 +388,20 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
 
             CRITICAL INSTRUCTIONS:
             1. **STRICT RELEVANCE CHECK**: If a note is directly related to "${topic}", cite it and expand on it. **IF THE NOTES ARE UNRELATED, IGNORE THEM COMPLETELY** and generate the guide from your own medical knowledge plus web search.
-            2. **Mandatory Citations**: You MUST use the web search tool to find and cite authoritative medical sources (PubMed, CDC, NIH, etc.).
+            2. **Mandatory Citations**: You MUST use the web search tool to find and cite authoritative medical sources (PubMed, CDC, NIH, etc.). Keep searches efficient (a couple of targeted searches is enough) rather than exhaustive.
             3. **Structure**: Use Markdown headers (##, ###) to organize the guide logically.
             4. **Language**: ${language}.
+            5. **No meta-commentary**: Output ONLY the guide itself. Do NOT narrate your research process
+               (e.g. do not write things like "Let me search for..." or "먼저 검색해보겠습니다") before,
+               between, or after the content.
         `;
         content.push({ type: 'text', text: prompt });
 
         const data = await callClaude({
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
-            tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: modelLevel === 'detailed' ? 5 : 3 }],
-            max_tokens: modelLevel === 'detailed' ? 3000 : 1500,
+            tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: modelLevel === 'detailed' ? 3 : 2 }],
+            max_tokens: modelLevel === 'detailed' ? 4500 : 2200,
             temperature: 0.2
         });
 

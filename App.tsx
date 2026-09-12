@@ -852,38 +852,43 @@ const App: React.FC = () => {
         </div>
 
         <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
-          <button onClick={() => { setView(ViewMode.LIST); setSearchTerm(''); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-medium transition-colors ${view === ViewMode.LIST ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}>
-            <LayoutGrid className="w-3.5 h-3.5 mr-3" /> 내 메모장
+          <button onClick={() => { setView(ViewMode.LIST); setSearchTerm(''); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${view === ViewMode.LIST ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}>
+            <LayoutGrid className="w-3.5 h-3.5 mr-3 shrink-0" /> 내 메모장
           </button>
-          
-          <button 
-             onClick={handleRandomNote} 
+
+          <button
+             onClick={handleRandomNote}
              disabled={isRandomLoading}
-             className="w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-medium text-orange-600 hover:bg-orange-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+             className="w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-medium text-orange-600 hover:bg-orange-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
           >
-            {isRandomLoading ? <Loader2 className="w-3.5 h-3.5 mr-3 animate-spin" /> : <Shuffle className="w-3.5 h-3.5 mr-3" />}
+            {isRandomLoading ? <Loader2 className="w-3.5 h-3.5 mr-3 shrink-0 animate-spin" /> : <Shuffle className="w-3.5 h-3.5 mr-3 shrink-0" />}
             무작위 공부하기
           </button>
 
-          <button 
-            onClick={() => { setView(ViewMode.QUIZ); if (isMobile) setShowSidebar(false); }} 
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-medium transition-colors ${view === ViewMode.QUIZ ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}
+          <button
+            onClick={() => { setView(ViewMode.QUIZ); if (isMobile) setShowSidebar(false); }}
+            className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.QUIZ ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-blue-50/60 hover:text-blue-600'}`}
           >
             {quizState.isGenerating && quizState.isActive ? (
-                 <Loader2 className="w-3.5 h-3.5 mr-3 animate-spin text-blue-600" />
+                 <Loader2 className="w-3.5 h-3.5 mr-3 shrink-0 animate-spin text-blue-600" />
             ) : (
-                 <BrainCircuit className="w-3.5 h-3.5 mr-3" />
+                 <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-blue-100 text-blue-600">
+                     <BrainCircuit className="w-3.5 h-3.5" />
+                 </span>
             )}
             AI 퀴즈 복습
             {quizState.questionQueue.length > 0 && (
-                <span className="ml-auto bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded-full">
+                <span className="ml-auto shrink-0 bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded-full">
                     {quizState.questionQueue.length}
                 </span>
             )}
           </button>
 
-          <button onClick={() => { setView(ViewMode.STUDY_GUIDE); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-medium transition-colors ${view === ViewMode.STUDY_GUIDE ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}>
-             <Lightbulb className="w-3.5 h-3.5 mr-3" /> AI 주제 탐구
+          <button onClick={() => { setView(ViewMode.STUDY_GUIDE); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.STUDY_GUIDE ? 'bg-amber-50 text-amber-600' : 'text-slate-600 hover:bg-amber-50/60 hover:text-amber-600'}`}>
+             <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-amber-100 text-amber-600">
+                 <Lightbulb className="w-3.5 h-3.5" />
+             </span>
+             AI 주제 탐구
           </button>
         </nav>
 
