@@ -154,12 +154,12 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                       type="button"
                                       key={lang}
                                       onClick={() => setSelectedLanguage(lang)}
-                                      className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all flex items-center gap-2
-                                        ${selectedLanguage === lang 
-                                            ? 'bg-slate-900 text-white shadow-sm' 
+                                      className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg text-sm font-bold transition-all flex items-center gap-2
+                                        ${selectedLanguage === lang
+                                            ? 'bg-slate-900 text-white shadow-sm'
                                             : 'text-slate-500 hover:bg-slate-100'}`}
                                    >
-                                       <Languages className="w-3.5 h-3.5" />
+                                       <Languages className="w-3.5 h-3.5 shrink-0" />
                                        {lang === 'Korean' ? '한국어' : lang === 'English' ? 'English' : '日本語'}
                                    </button>
                                ))}

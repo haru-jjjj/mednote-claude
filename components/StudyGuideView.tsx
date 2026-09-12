@@ -4,7 +4,7 @@ import { Note, Source, QuizLanguage } from '../types';
 import { generateStudySuggestions, generateStudyGuideContent, formatMedicalMarkdown } from '../services/claudeService';
 import { getNoteFromDB } from '../services/storage';
 import { fetchRandomNotesBatch } from '../services/firebaseService';
-import { cosineSimilarity } from '../services/voyageService';
+import { cosineSimilarity, embedTexts, hasVoyageApiKey } from '../services/voyageService';
 import { Lightbulb, Loader2, ArrowRight, BookOpen, ExternalLink, Sparkles, Microscope, ArrowLeft, RefreshCw, Layers, Languages, Book, Zap } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -34,7 +34,11 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
   
   // Track notes relevant to the SELECTED topic
   const [activeContextNotes, setActiveContextNotes] = useState<Note[]>([]);
-  
+  // IDs within activeContextNotes that were found via embedding-based search
+  // for this specific topic (as opposed to the original random 3), so the UI
+  // can visibly mark them and make the embedding search result inspectable.
+  const [embeddingRelatedIds, setEmbeddingRelatedIds] = useState<Set<string>>(new Set());
+
   // History tracking to enforce randomness
   const [usedNoteIds, setUsedNoteIds] = useState<Set<string>>(new Set());
 
@@ -57,7 +61,7 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
   // the resulting AI topic suggestions more relevant. Falls back to an empty
   // result (→ pure random selection) whenever there isn't a strong-enough
   // cluster, so variety/randomness is preserved when embeddings are sparse.
-  const SEMANTIC_CLUSTER_THRESHOLD = 0.45;
+  const SEMANTIC_CLUSTER_THRESHOLD = 0.35;
   const pickSemanticCluster = (excludeList: string[]): Note[] => {
       const embedded = notes.filter(n => n.embedding && n.embedding.length > 0 && !excludeList.includes(n.id));
       if (embedded.length < 4) return [];
@@ -74,6 +78,47 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
       return [seed, ...ranked.map(r => r.note)];
   };
 
+  // Actively search for notes related to a SPECIFIC topic string via embeddings.
+  // Used once a topic is selected, so the guide/Deep Dive content can draw on
+  // real related notes (not just the 3 random notes that happened to produce
+  // the suggestion). This embeds only the short topic string (1 extra Voyage
+  // call, negligible cost) and compares it against embeddings already stored
+  // on the notes — no per-note API calls needed here.
+  const RELATED_NOTES_THRESHOLD = 0.35;
+  const RELATED_NOTES_MAX = 4;
+  const findRelatedNotesByEmbedding = async (topic: string, excludeIds: Set<string>): Promise<Note[]> => {
+      try {
+          if (!hasVoyageApiKey()) return [];
+          const candidates = notes.filter(n => n.embedding && n.embedding.length > 0 && !excludeIds.has(n.id));
+          if (candidates.length === 0) return [];
+
+          const [topicVector] = await embedTexts([topic], 'query');
+          if (!topicVector) return [];
+
+          const ranked = candidates
+              .map(n => ({ note: n, sim: cosineSimilarity(topicVector, n.embedding) }))
+              .filter(r => r.sim >= RELATED_NOTES_THRESHOLD)
+              .sort((a, b) => b.sim - a.sim)
+              .slice(0, RELATED_NOTES_MAX);
+
+          if (ranked.length === 0) return [];
+
+          const hydrated: Note[] = [];
+          for (const r of ranked) {
+              try {
+                  const full = await getNoteFromDB(r.note.id);
+                  hydrated.push(full || r.note);
+              } catch {
+                  hydrated.push(r.note);
+              }
+          }
+          return hydrated;
+      } catch (e) {
+          console.warn("임베딩 기반 관련 메모 검색 실패 (원래 메모만 사용):", e);
+          return [];
+      }
+  };
+
   const pickRandomNotes = async () => {
       setIsGeneratingSuggestions(true);
       setSuggestions([]);
@@ -81,6 +126,7 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
       setSelectedTopic(null);
       activeTopicRef.current = null;
       setContentMode('fast');
+      setEmbeddingRelatedIds(new Set());
       setDeepDiveResult(null);
       setIsDeepDiveGenerating(false);
 
@@ -140,13 +186,14 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
 
   const handleSelectTopic = async (topic: string) => {
       setSelectedTopic(topic);
-      activeTopicRef.current = topic; 
-      
+      activeTopicRef.current = topic;
+
       setContent(null);
       setIsGeneratingContent(true);
       setContentMode('fast');
-      setDeepDiveResult(null); 
-      setIsDeepDiveGenerating(false); 
+      setDeepDiveResult(null);
+      setIsDeepDiveGenerating(false);
+      setEmbeddingRelatedIds(new Set());
 
       try {
           // STRICT CONSISTENCY FIX:
@@ -160,10 +207,21 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
                const full = await getNoteFromDB(n.id);
                fullRelevantNotes.push(full || n);
           }
-          
-          setActiveContextNotes(fullRelevantNotes);
 
-          const result = await generateStudyGuideContent(topic, fullRelevantNotes, 'fast', selectedLanguage);
+          // ADDITIONALLY: actively search for notes related to this specific topic
+          // via embeddings, so the guide isn't limited to only the 3 random notes
+          // that happened to produce the suggestion. This is what makes "주제 탐구"
+          // genuinely draw on the user's own related notes for deeper exploration.
+          const existingIds = new Set(fullRelevantNotes.map(n => n.id));
+          const relatedByEmbedding = await findRelatedNotesByEmbedding(topic, existingIds);
+          const expandedContext = relatedByEmbedding.length > 0
+              ? [...fullRelevantNotes, ...relatedByEmbedding]
+              : fullRelevantNotes;
+
+          setActiveContextNotes(expandedContext);
+          setEmbeddingRelatedIds(new Set(relatedByEmbedding.map(n => n.id)));
+
+          const result = await generateStudyGuideContent(topic, expandedContext, 'fast', selectedLanguage);
           
           if (activeTopicRef.current === topic && result) {
               setContent({ text: result.content, sources: result.sources });
@@ -243,17 +301,17 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
 
                   <div className="bg-white p-6 rounded-3xl border border-slate-200 shadow-sm mb-6">
                       <label className="block text-xs font-bold text-slate-400 uppercase mb-3 tracking-wider">Select Language</label>
-                      <div className="flex justify-center gap-2">
+                      <div className="flex flex-wrap justify-center gap-2">
                           {(['Korean', 'English', 'Japanese'] as QuizLanguage[]).map((lang) => (
                                <button
                                   key={lang}
                                   onClick={() => setSelectedLanguage(lang)}
-                                  className={`px-4 py-2 rounded-full text-sm font-bold transition-all flex items-center gap-2
-                                    ${selectedLanguage === lang 
-                                        ? 'bg-slate-900 text-white shadow-md' 
+                                  className={`shrink-0 whitespace-nowrap px-3.5 sm:px-4 py-2 rounded-full text-sm font-bold transition-all flex items-center gap-1.5 sm:gap-2
+                                    ${selectedLanguage === lang
+                                        ? 'bg-slate-900 text-white shadow-md'
                                         : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
                                >
-                                   <Languages className="w-3.5 h-3.5" />
+                                   <Languages className="w-3.5 h-3.5 shrink-0" />
                                    {lang === 'Korean' ? '한국어' : lang === 'English' ? 'English' : '日本語'}
                                </button>
                            ))}
@@ -327,15 +385,34 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
                         {selectedTopic ? 'Selected Topic Context' : 'Analyzed Context'}
                     </p>
                     <div className="flex flex-wrap gap-2">
-                        {(selectedTopic && activeContextNotes.length > 0 ? activeContextNotes : contextNotes).map(n => (
-                            <span key={n.id} className="text-xs bg-white px-2 py-1 rounded border border-slate-200 text-slate-600 shadow-sm flex items-center gap-1">
-                                <BookOpen className="w-3 h-3 text-slate-400" /> {n.title}
-                            </span>
-                        ))}
+                        {(selectedTopic && activeContextNotes.length > 0 ? activeContextNotes : contextNotes).map(n => {
+                            const isEmbeddingMatch = selectedTopic && embeddingRelatedIds.has(n.id);
+                            return (
+                                <span
+                                    key={n.id}
+                                    title={isEmbeddingMatch ? '임베딩 검색으로 찾은 연관 메모' : undefined}
+                                    className={`text-xs px-2 py-1 rounded border shadow-sm flex items-center gap-1 ${
+                                        isEmbeddingMatch
+                                            ? 'bg-amber-50 border-amber-200 text-amber-700'
+                                            : 'bg-white border-slate-200 text-slate-600'
+                                    }`}
+                                >
+                                    {isEmbeddingMatch
+                                        ? <Sparkles className="w-3 h-3 text-amber-500" />
+                                        : <BookOpen className="w-3 h-3 text-slate-400" />}
+                                    {n.title}
+                                </span>
+                            );
+                        })}
                         {selectedTopic && activeContextNotes.length === 0 && (
                              <span className="text-xs text-slate-400 italic">연결된 메모를 찾지 못해 AI 지식과 웹 검색만으로 답변을 생성합니다.</span>
                         )}
                     </div>
+                    {selectedTopic && embeddingRelatedIds.size > 0 && (
+                        <p className="mt-2 text-[11px] text-amber-600 flex items-center gap-1">
+                            <Sparkles className="w-3 h-3" /> 임베딩 검색으로 이 주제와 연관된 메모 {embeddingRelatedIds.size}개를 추가로 찾았습니다.
+                        </p>
+                    )}
                 </div>
 
                 {!selectedTopic ? (
@@ -367,7 +444,7 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
                 ) : (
                     <div className="animate-in fade-in duration-300">
                         <div className="mb-6">
-                            <button onClick={() => { setSelectedTopic(null); activeTopicRef.current = null; setContent(null); }} className="text-xs font-bold text-slate-400 hover:text-slate-600 mb-2 flex items-center gap-1">
+                            <button onClick={() => { setSelectedTopic(null); activeTopicRef.current = null; setContent(null); setEmbeddingRelatedIds(new Set()); }} className="text-xs font-bold text-slate-400 hover:text-slate-600 mb-2 flex items-center gap-1">
                                 <ArrowLeft className="w-3 h-3" /> 목록으로
                             </button>
                             <h3 className="text-2xl font-bold text-slate-900 leading-tight">

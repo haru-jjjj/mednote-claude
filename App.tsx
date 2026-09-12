@@ -172,15 +172,28 @@ const App: React.FC = () => {
       }
   };
 
-  // 검색을 처음 사용하는 순간, 화면에 아직 로드되지 않은(오래된) 클라우드 메모까지
-  // 검색 범위에 포함되도록 전체 메모를 한 번만 자동으로 불러옵니다.
-  const hasAutoFetchedAllForSearchRef = useRef(false);
-  useEffect(() => {
-      if (searchTerm.trim() && !hasAutoFetchedAllForSearchRef.current) {
-          hasAutoFetchedAllForSearchRef.current = true;
+  // 검색을 처음 사용하는 순간, 또는 AI 주제 탐구 화면을 처음 여는 순간, 화면에
+  // 아직 로드되지 않은(오래된) 클라우드 메모까지 검색/임베딩 대상 범위에
+  // 포함되도록 전체 메모를 한 번만 자동으로 불러옵니다. (두 트리거가 같은 ref를
+  // 공유해서, 검색을 먼저 했든 주제 탐구를 먼저 열었든 전체 불러오기는 딱 한
+  // 번만 실행됩니다.)
+  const hasAutoFetchedAllRef = useRef(false);
+  const triggerAutoFetchAllOnce = () => {
+      if (!hasAutoFetchedAllRef.current) {
+          hasAutoFetchedAllRef.current = true;
           handleFetchAllNotes({ silent: true });
       }
+  };
+  useEffect(() => {
+      if (searchTerm.trim()) triggerAutoFetchAllOnce();
   }, [searchTerm]);
+  useEffect(() => {
+      // AI 주제 탐구는 임베딩으로 "관련 메모"를 찾아 주제를 제안/심화하는 기능이라
+      // 로컬에 적게 로드된 상태(예: 최근 30개)로는 관련 메모 풀이 너무 작아 사실상
+      // 항상 무작위 폴백만 타게 됩니다. 화면을 열자마자 전체 메모를 불러와 임베딩
+      // 백필 대상과 클러스터링 후보 풀을 넓혀줍니다.
+      if (view === ViewMode.STUDY_GUIDE) triggerAutoFetchAllOnce();
+  }, [view]);
 
   // --- Voyage 임베딩: 의미 기반 검색 지원 ---
   // Voyage 키가 없거나 호출이 실패해도(네트워크 오류 등) 메모 저장/사용 자체는
