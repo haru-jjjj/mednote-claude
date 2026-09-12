@@ -1,7 +1,8 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Search, BookOpen, Sparkles, Loader2, ArrowUp, CloudDownload } from 'lucide-react';
+import { Search, BookOpen, Sparkles, Loader2, ArrowUp, CloudDownload, Lightbulb } from 'lucide-react';
 import { Note } from '../types';
+import { embedTexts, cosineSimilarity } from '../services/voyageService';
 
 interface NoteListProps {
   notes: Note[];
@@ -18,7 +19,13 @@ interface NoteListProps {
   isLoadingMore?: boolean;
   searchTerm: string;
   onSearchChange: (term: string) => void;
+  embeddingBackfillProgress?: { done: number; total: number } | null;
 }
+
+// 의미 검색 결과로 인정할 최소 코사인 유사도. Voyage 임베딩 실측치를 보고
+// 너무 많이/적게 걸리면 이 값을 조절하세요(낮출수록 더 널널하게 잡힘).
+const SEMANTIC_SIMILARITY_THRESHOLD = 0.4;
+const SEMANTIC_MAX_RESULTS = 5;
 
 // Optimization: Memoized NoteCard component with content truncation to prevent rendering freezes
 const NoteCard = React.memo(({ note, onClick }: { note: Note, onClick: () => void }) => {
@@ -70,7 +77,8 @@ const NoteList: React.FC<NoteListProps> = ({
     onFetchAll,
     isLoadingMore,
     searchTerm,
-    onSearchChange
+    onSearchChange,
+    embeddingBackfillProgress
 }) => {
   // Pagination / Infinite Scroll State
   const [visibleCount, setVisibleCount] = useState(20);
@@ -163,6 +171,48 @@ const NoteList: React.FC<NoteListProps> = ({
 
   const otherNotes = textFilteredNotes;
 
+  // --- 의미 기반(임베딩) 검색: 정확히 일치하진 않지만 관련 있을 수 있는 메모 ---
+  // 검색어(디바운스된 searchTerm)가 바뀔 때만 실행되며, 실패해도(키 미설정 등)
+  // 조용히 무시하고 기존 텍스트 검색 결과만 보여줍니다.
+  const [semanticMatches, setSemanticMatches] = useState<Note[]>([]);
+  const [isSemanticSearching, setIsSemanticSearching] = useState(false);
+  const semanticRequestIdRef = useRef(0);
+
+  useEffect(() => {
+      const term = searchTerm.trim();
+      if (!term) {
+          setSemanticMatches([]);
+          setIsSemanticSearching(false);
+          return;
+      }
+
+      const requestId = ++semanticRequestIdRef.current;
+      setIsSemanticSearching(true);
+
+      (async () => {
+          try {
+              const [queryVector] = await embedTexts([term], 'query');
+              if (semanticRequestIdRef.current !== requestId) return; // 이미 새 검색어가 들어옴
+
+              const exactMatchIds = new Set(textFilteredNotes.map(n => n.id));
+              const scored = notes
+                  .filter(n => n.embedding && !exactMatchIds.has(n.id))
+                  .map(n => ({ note: n, score: cosineSimilarity(queryVector, n.embedding) }))
+                  .filter(s => s.score >= SEMANTIC_SIMILARITY_THRESHOLD)
+                  .sort((a, b) => b.score - a.score)
+                  .slice(0, SEMANTIC_MAX_RESULTS)
+                  .map(s => s.note);
+
+              if (semanticRequestIdRef.current === requestId) setSemanticMatches(scored);
+          } catch (e) {
+              console.error("의미 기반 검색 실패(키워드 검색 결과는 정상 동작):", e);
+              if (semanticRequestIdRef.current === requestId) setSemanticMatches([]);
+          } finally {
+              if (semanticRequestIdRef.current === requestId) setIsSemanticSearching(false);
+          }
+      })();
+  }, [searchTerm, notes]);
+
   // Infinite Scroll Observer
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -207,59 +257,90 @@ const NoteList: React.FC<NoteListProps> = ({
                 />
             )}
         </div>
+        {/* 예전 메모에 의미 기반 검색을 적용하는 중이라는 조용한 안내 (막지 않음) */}
+        {embeddingBackfillProgress && (
+            <p className="text-[11px] text-slate-400 px-1 flex items-center gap-1">
+                <Loader2 className="w-3 h-3 animate-spin" />
+                검색 기능 업데이트 중... ({embeddingBackfillProgress.done}/{embeddingBackfillProgress.total})
+            </p>
+        )}
       </div>
 
       {/* Note List */}
       <div ref={listRef} className="flex-1 overflow-y-auto p-4 space-y-3 pb-32 scroll-smooth bg-slate-50/50">
-        {otherNotes.length === 0 ? (
+        {otherNotes.length === 0 && semanticMatches.length === 0 && !isSemanticSearching ? (
           <div className="flex flex-col items-center justify-center h-64 text-slate-300">
             <BookOpen className="w-12 h-12 mb-3 opacity-10" />
             <p className="font-bold text-sm">메모가 없습니다.</p>
           </div>
         ) : (
           <>
-            <div className="space-y-3">
-                 {visibleOtherNotes.map(note => (
-                     <NoteCard
-                        key={note.id}
-                        note={note}
-                        onClick={() => onSelectNote(note.id)}
-                     />
-                 ))}
-            </div>
-
-            {/* Local Infinite Scroll Trigger */}
-            {visibleCount < otherNotes.length ? (
-                <div ref={observerTarget} className="h-10 flex items-center justify-center">
-                    <Loader2 className="w-4 h-4 text-slate-300 animate-spin" />
-                </div>
-            ) : (
-                /* Cloud Pagination Trigger: Only show when local list is exhausted and no search is active */
-                !searchTerm && (onLoadMore || onFetchAll) && (
-                    <div className="py-6 flex flex-col items-center justify-center gap-3">
-                        {onLoadMore && (
-                            <button 
-                                onClick={onLoadMore}
-                                disabled={isLoadingMore}
-                                className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 rounded-full text-slate-500 text-sm font-medium hover:bg-slate-50 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full max-w-[280px] justify-center"
-                            >
-                                {isLoadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4" />}
-                                {isLoadingMore ? '불러오는 중...' : '클라우드에서 이전 메모 더 불러오기'}
-                            </button>
-                        )}
-                        
-                        {onFetchAll && (
-                            <button 
-                                onClick={onFetchAll}
-                                disabled={isLoadingMore}
-                                className="flex items-center gap-2 px-5 py-2.5 bg-blue-50 border border-blue-100 rounded-full text-blue-600 text-sm font-bold hover:bg-blue-100 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full max-w-[280px] justify-center"
-                            >
-                                {isLoadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4" />}
-                                {isLoadingMore ? '불러오는 중...' : '클라우드 모든 메모 한꺼번에 불러오기'}
-                            </button>
-                        )}
+            {otherNotes.length > 0 && (
+                <>
+                    <div className="space-y-3">
+                         {visibleOtherNotes.map(note => (
+                             <NoteCard
+                                key={note.id}
+                                note={note}
+                                onClick={() => onSelectNote(note.id)}
+                             />
+                         ))}
                     </div>
-                )
+
+                    {/* Local Infinite Scroll Trigger */}
+                    {visibleCount < otherNotes.length ? (
+                        <div ref={observerTarget} className="h-10 flex items-center justify-center">
+                            <Loader2 className="w-4 h-4 text-slate-300 animate-spin" />
+                        </div>
+                    ) : (
+                        /* Cloud Pagination Trigger: Only show when local list is exhausted and no search is active */
+                        !searchTerm && (onLoadMore || onFetchAll) && (
+                            <div className="py-6 flex flex-col items-center justify-center gap-3">
+                                {onLoadMore && (
+                                    <button
+                                        onClick={onLoadMore}
+                                        disabled={isLoadingMore}
+                                        className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 rounded-full text-slate-500 text-sm font-medium hover:bg-slate-50 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full max-w-[280px] justify-center"
+                                    >
+                                        {isLoadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4" />}
+                                        {isLoadingMore ? '불러오는 중...' : '클라우드에서 이전 메모 더 불러오기'}
+                                    </button>
+                                )}
+
+                                {onFetchAll && (
+                                    <button
+                                        onClick={onFetchAll}
+                                        disabled={isLoadingMore}
+                                        className="flex items-center gap-2 px-5 py-2.5 bg-blue-50 border border-blue-100 rounded-full text-blue-600 text-sm font-bold hover:bg-blue-100 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full max-w-[280px] justify-center"
+                                    >
+                                        {isLoadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4" />}
+                                        {isLoadingMore ? '불러오는 중...' : '클라우드 모든 메모 한꺼번에 불러오기'}
+                                    </button>
+                                )}
+                            </div>
+                        )
+                    )}
+                </>
+            )}
+
+            {/* 의미 기반 검색 결과: 정확히 일치하진 않지만 관련 있을 수 있는 메모 */}
+            {searchTerm.trim() && (semanticMatches.length > 0 || isSemanticSearching) && (
+                <div className={otherNotes.length > 0 ? "pt-5 mt-2 border-t border-slate-100" : ""}>
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-amber-600 mb-3 px-1">
+                        <Lightbulb className="w-3.5 h-3.5" />
+                        의미상 관련 있을 수 있는 메모
+                        {isSemanticSearching && <Loader2 className="w-3 h-3 animate-spin text-amber-400" />}
+                    </div>
+                    <div className="space-y-3">
+                         {semanticMatches.map(note => (
+                             <NoteCard
+                                key={note.id}
+                                note={note}
+                                onClick={() => onSelectNote(note.id)}
+                             />
+                         ))}
+                    </div>
+                </div>
             )}
           </>
         )}

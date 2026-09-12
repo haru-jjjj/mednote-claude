@@ -17,6 +17,8 @@ export interface Note {
   isEnhancing: boolean;
   isProcessed?: boolean;
   quizMasteryCount?: number; // Tracks how many times a user answered correctly related to this note
+  embedding?: number[]; // Voyage AI 임베딩 벡터 (의미 기반 검색용)
+  embeddingUpdatedAt?: number; // embedding이 계산된 시점 — updatedAt보다 오래되면 재계산 필요
 }
 
 export enum ViewMode {

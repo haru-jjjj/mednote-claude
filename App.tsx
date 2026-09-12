@@ -10,6 +10,7 @@ import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage } from './types';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages } from './services/claudeService';
 import { syncNotesFromFirestore, saveNoteToFirestore, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
+import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 
 const sanitizeNotes = (rawNotes: any[]): Note[] => {
     if (!Array.isArray(rawNotes)) return [];
@@ -180,6 +181,98 @@ const App: React.FC = () => {
           handleFetchAllNotes({ silent: true });
       }
   }, [searchTerm]);
+
+  // --- Voyage 임베딩: 의미 기반 검색 지원 ---
+  // Voyage 키가 없거나 호출이 실패해도(네트워크 오류 등) 메모 저장/사용 자체는
+  // 절대 막지 않도록, 이 섹션의 실패는 전부 콘솔 로그만 남기고 조용히 무시합니다.
+  const [embeddingBackfillProgress, setEmbeddingBackfillProgress] = useState<{ done: number; total: number } | null>(null);
+  const isBackfillingEmbeddingsRef = useRef(false);
+
+  const noteNeedsEmbedding = (n: Note) =>
+      !n.embedding || !n.embeddingUpdatedAt || n.embeddingUpdatedAt < (n.updatedAt || 0);
+
+  // targets에 대해 임베딩을 계산하고 로컬DB/Firestore/화면 상태에 반영합니다.
+  // opts.silent가 없으면 실패 시 alert을 띄웁니다(수동 재시도용으로 남겨둠 — 현재는 항상 silent로 호출).
+  // 반환값: 성공 여부 (백필 스윕이 키 누락 등 지속적인 실패를 만났을 때 무한 재시도하지 않고
+  // 멈추도록 판단하는 용도).
+  const embedAndPersistNotes = async (targets: Note[], opts?: { silent?: boolean }): Promise<boolean> => {
+      if (targets.length === 0) return true;
+      try {
+          const texts = targets.map(buildNoteEmbeddingText);
+          const vectors = await embedTexts(texts, 'document');
+          const now = Date.now();
+
+          // 중요: 목록 화면의 notes 상태는 메모리 절약을 위해 이미지가 빠진 "가벼운"
+          // 버전일 수 있습니다(storage.ts의 getAllNotesFromDB 참고). 그 상태 그대로
+          // 저장하면 Firestore/IndexedDB에 있는 원본 이미지를 통째로 덮어써 지워버리게
+          // 되므로, 저장 직전에 항상 이미지를 포함한 완전한 노트를 다시 읽어옵니다.
+          // (그 사이 삭제된 노트는 undefined가 반환되므로 건너뛰고, 되살리지 않습니다.)
+          const fullNotes = await Promise.all(targets.map(t => getNoteFromDB(t.id)));
+          const updated = fullNotes
+              .map((full, i) => full ? { ...full, embedding: vectors[i], embeddingUpdatedAt: now } : null)
+              .filter((n): n is Note => n !== null);
+
+          for (const n of updated) {
+              await saveNoteToDB(n);
+              saveNoteToFirestore(n);
+          }
+
+          // 화면(notes state)에는 기존 형태(가벼운 버전이면 그대로) 위에 embedding
+          // 관련 필드만 얹어줍니다 — 이미지를 다시 메모리로 불러오지 않기 위함입니다.
+          const updatedById = new Map(updated.map(n => [n.id, n]));
+          setNotes(prev => prev.map(n => {
+              const match = updatedById.get(n.id);
+              return match ? { ...n, embedding: match.embedding, embeddingUpdatedAt: match.embeddingUpdatedAt } : n;
+          }));
+          return true;
+      } catch (e) {
+          console.error("임베딩 계산/저장 실패 (검색 기능에만 영향, 메모 자체는 안전합니다):", e);
+          if (!opts?.silent) alert("검색용 임베딩 계산 중 오류가 발생했습니다. (Voyage API 키를 확인해주세요)");
+          return false;
+      }
+  };
+
+  // 앱을 켤 때마다, 아직 임베딩이 없거나(예전 메모) 내용이 바뀐 뒤 갱신되지 않은
+  // 메모들을 백그라운드에서 조용히 배치로 훑어서 채워줍니다. 세션당 한 번만 시작.
+  useEffect(() => {
+      if (isBackfillingEmbeddingsRef.current) return;
+      isBackfillingEmbeddingsRef.current = true;
+
+      const BATCH_SIZE = 32;
+      const timer = setTimeout(async () => {
+          try {
+              let pending = notesRef.current.filter(noteNeedsEmbedding);
+              const total = pending.length;
+              if (total === 0) return;
+
+              setEmbeddingBackfillProgress({ done: 0, total });
+              let done = 0;
+              // 안전장치: 무한 루프 방지용 최대 반복 횟수
+              let iterations = 0;
+              while (pending.length > 0 && iterations < 500) {
+                  iterations++;
+                  const batch = pending.slice(0, BATCH_SIZE);
+                  const ok = await embedAndPersistNotes(batch, { silent: true });
+                  if (!ok) {
+                      // 키 미설정 등 지속적인 실패로 보이면, 실패한 배치를 계속
+                      // 재시도하며 API를 두드리지 않고 이번 세션에서는 중단합니다.
+                      console.warn("임베딩 백필 중단: 배치 처리 실패 (Voyage API 키를 확인해주세요)");
+                      break;
+                  }
+                  done += batch.length;
+                  setEmbeddingBackfillProgress({ done: Math.min(done, total), total });
+                  // 연속 호출 부담을 줄이기 위해 배치 사이에 짧게 대기
+                  await new Promise(r => setTimeout(r, 300));
+                  pending = notesRef.current.filter(noteNeedsEmbedding);
+              }
+          } finally {
+              setEmbeddingBackfillProgress(null);
+          }
+      }, 2000); // 초기 로딩/동기화가 어느 정도 자리잡을 시간을 줌
+
+      return () => clearTimeout(timer);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const pickLocalRandomNote = (currentNotes: Note[], excludeIds: string[]): Note | null => {
       if (currentNotes.length === 0) return null;
@@ -654,15 +747,21 @@ const App: React.FC = () => {
         // 버그 수정: 이전에는 이미지가 있으면 재저장할 때마다(내용만 고쳐도) OCR을 다시 돌렸습니다.
         // isProcessed 플래그로 "이미지가 실제로 바뀌어 재처리가 필요한 경우"만 OCR을 실행합니다.
         if (!note.isProcessed && note.images && note.images.length > 0) {
-             extractTextFromImages(note.images).then(text => {
+             extractTextFromImages(note.images).then(async text => {
                  if (text) {
                      const updatedNote = { ...note, transcription: text, isProcessed: true };
-                     saveNoteToDB(updatedNote).catch(console.error);
+                     // OCR 텍스트를 먼저 완전히 저장한 뒤 임베딩을 계산해야, 임베딩이
+                     // OCR 이전의 오래된 내용을 참조하는 경쟁 상태(race condition)를 피할 수 있습니다.
+                     await saveNoteToDB(updatedNote).catch(console.error);
                      saveNoteToFirestore(updatedNote);
                      setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
+                     // OCR 텍스트까지 반영된 최종 내용으로 임베딩 재계산 (검색용, 실패해도 무해)
+                     embedAndPersistNotes([updatedNote], { silent: true });
                  }
              });
         }
+        // 검색(의미 기반)에 바로 반영되도록 저장 직후 임베딩 계산 (fire-and-forget, 실패해도 무해)
+        embedAndPersistNotes([note], { silent: true });
     } catch (e) {
         console.error("Save Error", e);
         alert("메모 저장 중 오류가 발생했습니다. 다시 시도해주세요.");
@@ -675,15 +774,18 @@ const App: React.FC = () => {
         saveNoteToFirestore(updatedNote);
         setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
         if (updatedNote.images && updatedNote.images.length > 0 && !updatedNote.isProcessed) {
-            extractTextFromImages(updatedNote.images).then(text => {
+            extractTextFromImages(updatedNote.images).then(async text => {
                 if (text) {
                     const finalNote = { ...updatedNote, transcription: text, isProcessed: true };
-                    saveNoteToDB(finalNote).catch(console.error);
+                    // OCR 텍스트를 먼저 완전히 저장한 뒤 임베딩을 계산 (경쟁 상태 방지)
+                    await saveNoteToDB(finalNote).catch(console.error);
                     saveNoteToFirestore(finalNote);
                     setNotes(prev => prev.map(n => n.id === finalNote.id ? finalNote : n));
+                    embedAndPersistNotes([finalNote], { silent: true });
                 }
             });
         }
+        embedAndPersistNotes([updatedNote], { silent: true });
     } catch(e) {
         console.error("Update Error", e);
         alert("메모 수정 저장 실패");
@@ -848,6 +950,7 @@ const App: React.FC = () => {
                         isLoadingMore={isCloudLoading}
                         searchTerm={searchTerm}
                         onSearchChange={setSearchTerm}
+                        embeddingBackfillProgress={embeddingBackfillProgress}
                     />
                 )}
                 {view === ViewMode.DETAIL && activeNote && (
