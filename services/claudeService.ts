@@ -203,6 +203,13 @@ export const formatMedicalMarkdown = (text: string): string => {
     if (!text) return "";
     let processed = text;
 
+    // AI가 가끔 "- \n문장" 처럼 글머리표(-)만 있는 줄과 실제 내용이 다음 줄로
+    // 분리된 형태로 출력할 때가 있습니다. 이 경우 마크다운이 이를 정상적인
+    // 목록 항목으로 인식하지 못해, 화면에 "-"만 덩그러니 뜨고 그 아래 문장은
+    // 글머리표 없는 일반 문단처럼 보이는 문제가 생깁니다. 목록 기호와 내용을
+    // 같은 줄로 합쳐서 정상적인 목록으로 렌더링되게 합니다.
+    processed = processed.replace(/^([-*])[ \t]*\n+(?=\S)/gm, '$1 ');
+
     const greekMap: Record<string, string> = {
         'alpha': 'α', 'beta': 'β', 'gamma': 'γ', 'delta': 'δ', 'epsilon': 'ε',
         'theta': 'θ', 'lambda': 'λ', 'mu': 'μ', 'pi': 'π', 'sigma': 'σ',
@@ -225,7 +232,13 @@ export const formatMedicalMarkdown = (text: string): string => {
     processed = processed.replace(/_\{([^}]+)\}/g, '<sub>$1</sub>');
     processed = processed.replace(/([a-zA-Zα-ωΑ-Ω])_(\d+)/g, '$1<sub>$2</sub>');
     processed = processed.replace(/\$/g, '');
-    processed = processed.replace(/~/g, '&#126;');
+    // 이전엔 모든 "~"를 HTML 엔티티(&#126;)로 바꿨는데, 이 문자열이 marked.js를
+    // 거치면서 "&"가 다시 이스케이프되어(예: &amp;#126;) 화면에 "20&#126;30ms"처럼
+    // 깨진 텍스트로 그대로 노출되는 버그가 있었습니다. "20~30ms"같은 단일 물결표는
+    // 마크다운에서 원래 특별한 의미가 없으므로 그대로 두고, 취소선 문법(~~text~~)으로
+    // 잘못 해석될 수 있는 "~~" 연속 두 글자만 마크다운 이스케이프(\~\~)로 안전하게
+    // 처리합니다(marked가 \~ 를 리터럴 ~ 문자로 올바르게 렌더링합니다).
+    processed = processed.replace(/~~/g, '\\~\\~');
 
     return processed;
 };
@@ -249,8 +262,22 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
 
             Context: "${textContent.substring(0, 5000)}"
 
-            Task: Write a concise, ABSTRACT-STYLE Markdown summary of the key medical concepts in this note —
-            like a paper abstract, not a full explanation of everything in the note.
+            FIRST, classify the note itself:
+            - "POLISHED": already reasonably organized/detailed notes (e.g. from a textbook,
+              lecture slides, or the user's own structured writing).
+            - "RUSHED": a quick, informal jotting — short fragments, abbreviations, no structure,
+              things the user overheard or picked up on the fly (rounds, a colleague, a quick
+              verbal pearl) and typed in a hurry, often without any source or context.
+
+            Task:
+            - If POLISHED: Write a concise, ABSTRACT-STYLE Markdown summary of the key medical
+              concepts in this note — like a paper abstract, not a full explanation of everything.
+            - If RUSHED: Treat the note's claims as something to VERIFY, not settled fact. Actively
+              search for authoritative sources that confirm, refine, or correct what's written, and
+              write the summary as verified, well-sourced clinical takeaways — essentially turning
+              a rough memo into a properly grounded note. If a claim in the note seems imprecise,
+              outdated, or you cannot find support for it, say so briefly (e.g. "⚠️ 최신 가이드라인과
+              다를 수 있음") rather than silently repeating it as fact.
 
             LENGTH (STRICT — this is the most important rule):
             - At most 5~8 short bullet points, one sentence each.
@@ -259,19 +286,24 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
               details rather than trying to cover everything in the note — a shorter, focused
               summary is strongly preferred over a long, exhaustive one.
 
-            FORMATTING:
+            FORMATTING (STRICT):
             - For mathematical formulas, numbers with units, chemical equations, or special symbols (like >, <, =, ->, 1mm), ALWAYS wrap them in single backticks to format them as inline code.
               - Correct Example: \`> 1mm\`, \`x^2\`, \`H2O\`, \`pH < 7.35\`
               - Do NOT use LaTeX blocks like $$...$$ or raw symbols without backticks.
               - Use ≥ and ≤ instead of \\geq and \\leq.
+            - Each bullet MUST be a markdown list line starting with "- " immediately followed by
+              its full sentence on the SAME line (e.g. "- Some sentence here."). Never put just "-"
+              alone on a line with the sentence starting on the next line.
 
             SOURCES:
-            - Use the web search tool to find at most 2-3 authoritative medical sources (e.g. CDC, NIH, Mayo Clinic, PubMed, UpToDate) that validate these concepts, and cite them inline.
-            - Keep research minimal (1-2 searches is usually enough) — citations must not make the summary longer than the length limit above.
+            - Use the web search tool to find authoritative medical sources (e.g. CDC, NIH, Mayo Clinic, PubMed, UpToDate) that validate these concepts, and cite them inline.
+              - RUSHED notes: this is the main point of the task — search actively (up to 3 searches) to properly ground the memo in evidence.
+              - POLISHED notes: keep research minimal (1-2 searches is usually enough) — citations must not make the summary longer than the length limit above.
 
             OUTPUT RULES (STRICT):
             - Output ONLY the final summary text itself. Do NOT narrate your process (no "먼저 검색해보겠습니다",
               "추가로 확인해보겠습니다", or similar meta-commentary before/between/after the summary).
+            - Do NOT mention the "POLISHED"/"RUSHED" classification itself in the output — it's only for you to decide how to approach the task.
             - Output language: Korean (unless the note content is clearly in another language).
         `;
         content.push({ type: 'text', text: prompt });
@@ -279,12 +311,14 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
         const data = await callClaude({
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
-            tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }],
-            max_tokens: 1800
+            // RUSHED(급하게 적은 메모) 케이스는 최대 3번까지 검색해 근거를 찾도록 허용하고,
+            // 늘어난 검색/인용 내용이 잘리지 않도록 max_tokens에 여유를 뒀습니다.
+            tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+            max_tokens: 2200
         });
 
         const summary = extractText(data) || "Summary generation failed.";
-        const sources = extractCitations(data, 3);
+        const sources = extractCitations(data, 4);
 
         return { summary, sources };
 

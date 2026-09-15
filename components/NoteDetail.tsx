@@ -119,9 +119,9 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, onBack, onDelete, onEdit,
           } else {
               alert("요약 정보를 가져오지 못했습니다.");
           }
-      } catch (e) {
+      } catch (e: any) {
           console.error(e);
-          alert("오류가 발생했습니다.");
+          alert(`요약 생성 중 오류가 발생했습니다: ${e?.message || '알 수 없는 오류'}`);
       } finally {
           if (statusTimerRef.current) clearInterval(statusTimerRef.current);
           setIsSummarizing(false);
