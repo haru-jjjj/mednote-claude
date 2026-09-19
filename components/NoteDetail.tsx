@@ -1,10 +1,11 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw, Link2 } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { Note, Source } from '../types';
 import { marked } from 'marked';
 import { summarizeSingleNote, formatMedicalMarkdown } from '../services/claudeService';
+import { cosineSimilarity } from '../services/voyageService';
 
 interface NoteDetailProps {
   note: Note;
@@ -16,7 +17,7 @@ interface NoteDetailProps {
   onUpdateNote: (note: Note) => void;
 }
 
-const NoteDetail: React.FC<NoteDetailProps> = ({ note, onBack, onDelete, onEdit, onUpdateNote }) => {
+const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelete, onSelectNote, onEdit, onUpdateNote }) => {
   const [viewingImage, setViewingImage] = useState<string | null>(null);
   
   // Progress State
@@ -75,6 +76,26 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, onBack, onDelete, onEdit,
       renderSummary();
       return () => { isMounted = false; };
   }, [note.summary]);
+
+  // 관련 메모: 이미 계산되어 저장된 Voyage 임베딩끼리 코사인 유사도만 비교합니다.
+  // 추가 API 호출이 전혀 없고(검색/주제 탐구 기능이 이미 계산해 둔 벡터를 재사용),
+  // 완전히 클라이언트에서 계산되므로 항상 즉시 표시됩니다.
+  const RELATED_NOTES_THRESHOLD = 0.5;
+  const RELATED_NOTES_MAX = 5;
+  const relatedNotes = useMemo(() => {
+      if (!note.embedding || note.embedding.length === 0) return [];
+      return allNotes
+          .filter(n => n.id !== note.id && n.embedding && n.embedding.length > 0)
+          .map(n => ({ note: n, sim: cosineSimilarity(note.embedding, n.embedding) }))
+          .filter(r => r.sim >= RELATED_NOTES_THRESHOLD)
+          .sort((a, b) => b.sim - a.sim)
+          .slice(0, RELATED_NOTES_MAX);
+  }, [note.id, note.embedding, allNotes]);
+
+  const getSnippet = (n: Note) => {
+      const text = (n.summary || n.content || '').replace(/[#*`>_-]/g, '').trim();
+      return text.length > 60 ? text.slice(0, 60) + '…' : text;
+  };
 
   // Cleanup timers on unmount
   const statusTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -356,12 +377,40 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, onBack, onDelete, onEdit,
                     <span className="text-base text-slate-400">Rendering large content...</span>
                 </div>
             ) : (
-                <div 
-                    className="prose prose-base prose-slate max-w-none text-slate-700 leading-relaxed mb-12 prose-headings:font-bold break-words overflow-x-hidden" 
-                    dangerouslySetInnerHTML={{ __html: htmlContent }} 
+                <div
+                    className="prose prose-base prose-slate max-w-none text-slate-700 leading-relaxed mb-12 prose-headings:font-bold break-words overflow-x-hidden"
+                    dangerouslySetInnerHTML={{ __html: htmlContent }}
                 />
             )}
-            
+
+            {/* 관련 메모 (임베딩 기반, 저장된 벡터 재사용 — 추가 API 호출 없음) */}
+            {relatedNotes.length > 0 && (
+                <div className="mb-12">
+                    <p className="text-xs font-bold text-slate-400 uppercase mb-3 flex items-center gap-1.5 tracking-wider">
+                        <Link2 className="w-3.5 h-3.5" /> 관련 메모
+                    </p>
+                    <div className="space-y-2">
+                        {relatedNotes.map(({ note: rn }) => (
+                            <button
+                                key={rn.id}
+                                onClick={() => onSelectNote(rn.id)}
+                                className="w-full text-left p-3.5 bg-white rounded-xl border border-slate-200 hover:border-indigo-300 hover:shadow-sm transition-all flex items-start gap-3"
+                            >
+                                <div className="w-8 h-8 shrink-0 rounded-lg bg-indigo-50 text-indigo-500 flex items-center justify-center mt-0.5">
+                                    <Link2 className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                    <p className="text-sm font-bold text-slate-800 truncate">{rn.title || '(제목 없음)'}</p>
+                                    {getSnippet(rn) && (
+                                        <p className="text-xs text-slate-400 mt-0.5 line-clamp-1">{getSnippet(rn)}</p>
+                                    )}
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
         </div>
       </div>
 
