@@ -326,10 +326,53 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       return `data:image/jpeg;base64,${imgString}`;
   };
 
+  // 클립보드에 이미지가 들어있는 경우(스크린샷 복사, 다른 앱/사이트에서 사진 우클릭 →
+  // 복사 등) 붙여넣기(Ctrl/Cmd+V)만으로 바로 사진 첨부가 되도록 한다. 파일 선택
+  // 업로드(handleImageUpload)와 동일한 리사이즈/압축 파이프라인을 그대로 재사용한다.
+  const handlePastedImages = async (items: DataTransferItemList): Promise<boolean> => {
+      const imageFiles: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item.kind === 'file' && item.type.startsWith('image/')) {
+              const file = item.getAsFile();
+              if (file) imageFiles.push(file);
+          }
+      }
+      if (imageFiles.length === 0) return false;
+
+      setIsProcessingImg(true);
+      try {
+          const newImages: string[] = [];
+          for (const file of imageFiles) {
+              const base64String = await resizeAndCompressImage(file);
+              newImages.push(base64String);
+          }
+          setImages(prev => [...prev, ...newImages]);
+      } catch (err) {
+          console.error('클립보드 이미지 붙여넣기 처리 실패', err);
+          alert('이미지 붙여넣기 처리 중 오류가 발생했습니다.');
+      } finally {
+          setIsProcessingImg(false);
+      }
+      return true;
+  };
+
   // 클로드 등에서 복사한 표/서식을 붙여넣을 때, 브라우저 기본 동작(plain text만 사용)
   // 대신 클립보드의 HTML을 마크다운으로 변환해서 삽입한다. 표가 없는 일반 텍스트
   // 붙여넣기는 그대로 기본 동작을 사용한다(변환 과정에서 내용이 망가질 위험을 피하기 위함).
-  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      // 이미지가 있으면 사진 첨부로 처리하고, 텍스트/표 붙여넣기 로직은 건너뛴다.
+      if (e.clipboardData.items && e.clipboardData.items.length > 0) {
+          const hasImage = Array.from(e.clipboardData.items).some(
+              item => item.kind === 'file' && item.type.startsWith('image/')
+          );
+          if (hasImage) {
+              e.preventDefault();
+              await handlePastedImages(e.clipboardData.items);
+              return;
+          }
+      }
+
       const html = e.clipboardData.getData('text/html');
       if (!html || !RICH_PASTE_TAG_REGEX.test(html)) return; // 기본 붙여넣기(텍스트) 사용
 
@@ -506,7 +549,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
         <textarea
           ref={contentRef}
           className="flex-1 w-full resize-none outline-none p-3 md:p-4 text-slate-800 text-sm leading-relaxed placeholder:text-slate-300 bg-transparent overflow-y-auto font-mono md:font-sans"
-          placeholder="메모 내용을 입력하세요... (Markdown 지원 — 표는 클로드 답변에서 그대로 복사해 붙여넣어도 됩니다)"
+          placeholder="메모 내용을 입력하세요... (Markdown 지원 — 표는 클로드 답변에서 그대로 복사해 붙여넣어도 됩니다. 사진도 복사해서 Ctrl/Cmd+V로 바로 붙여넣을 수 있어요)"
           defaultValue={initialNote?.content || ''}
           onChange={handleTextChange}
           onPaste={handlePaste}
