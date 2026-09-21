@@ -1,11 +1,12 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, GitBranch } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
 import QuizView from './components/QuizView';
 import StudyGuideView from './components/StudyGuideView';
+import MindMapView from './components/MindMapView';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage } from './types';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages } from './services/claudeService';
@@ -192,7 +193,7 @@ const App: React.FC = () => {
       // 로컬에 적게 로드된 상태(예: 최근 30개)로는 관련 메모 풀이 너무 작아 사실상
       // 항상 무작위 폴백만 타게 됩니다. 화면을 열자마자 전체 메모를 불러와 임베딩
       // 백필 대상과 클러스터링 후보 풀을 넓혀줍니다.
-      if (view === ViewMode.STUDY_GUIDE) triggerAutoFetchAllOnce();
+      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.MIND_MAP) triggerAutoFetchAllOnce();
   }, [view]);
 
   // --- Voyage 임베딩: 의미 기반 검색 지원 ---
@@ -903,6 +904,13 @@ const App: React.FC = () => {
              </span>
              AI 주제 탐구
           </button>
+
+          <button onClick={() => { setView(ViewMode.MIND_MAP); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.MIND_MAP ? 'bg-teal-50 text-teal-600' : 'text-slate-600 hover:bg-teal-50/60 hover:text-teal-600'}`}>
+             <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-teal-100 text-teal-600">
+                 <GitBranch className="w-3.5 h-3.5" />
+             </span>
+             메모 마인드맵
+          </button>
         </nav>
 
         <div className="p-5 border-t border-slate-50 space-y-3">
@@ -993,9 +1001,16 @@ const App: React.FC = () => {
                     />
                 )}
                  {view === ViewMode.STUDY_GUIDE && (
-                    <StudyGuideView 
+                    <StudyGuideView
                         notes={notes}
                         onBack={() => setView(ViewMode.LIST)}
+                    />
+                )}
+                {view === ViewMode.MIND_MAP && (
+                    <MindMapView
+                        notes={notes}
+                        onBack={() => setView(ViewMode.LIST)}
+                        onSelectNote={(id) => { handleFetchAndSelectNote(id); }}
                     />
                 )}
             </div>
