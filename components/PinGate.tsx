@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Lock, Eye, EyeOff, ShieldCheck } from 'lucide-react';
+import { Lock, Eye, EyeOff, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { getAppPin, isDeviceTrusted, trustThisDevice } from '../services/authService';
 
 interface PinGateProps {
@@ -20,11 +20,25 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
 
     useEffect(() => {
         if (!configuredPin) {
-            console.warn('VITE_APP_PIN이 설정되어 있지 않아 접속 잠금이 비활성화되어 있습니다. .env.local에 VITE_APP_PIN을 설정해주세요.');
+            console.warn('APP_PIN이 설정되어 있지 않아 접속 잠금이 비활성화되어 있습니다. .env.local에 APP_PIN을 설정하고 개발 서버를 재시작해주세요.');
         }
     }, [configuredPin]);
 
-    if (unlocked) return <>{children}</>;
+    // PIN이 설정 안 된 경우 앱은 그대로 열어주되(개발 중 잠기지 않도록), 콘솔 경고만으로는
+    // "PIN 기능이 아예 안 만들어진 것"처럼 보일 수 있어 화면에도 눈에 띄게 알려줍니다.
+    if (unlocked) {
+        return (
+            <>
+                {!configuredPin && (
+                    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 bg-amber-500 text-white text-[11px] font-bold px-3.5 py-2 rounded-full shadow-lg">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        PIN 잠금 꺼짐 — .env.local에 APP_PIN 설정 후 서버 재시작 필요
+                    </div>
+                )}
+                {children}
+            </>
+        );
+    }
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
