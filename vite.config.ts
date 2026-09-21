@@ -18,7 +18,10 @@ export default defineConfig(({ mode }) => {
         'process.env.ANTHROPIC_API_KEY': JSON.stringify(env.ANTHROPIC_API_KEY),
         'process.env.VITE_ANTHROPIC_API_KEY': JSON.stringify(env.ANTHROPIC_API_KEY),
         'process.env.VOYAGE_API_KEY': JSON.stringify(env.VOYAGE_API_KEY),
-        'process.env.VITE_VOYAGE_API_KEY': JSON.stringify(env.VOYAGE_API_KEY)
+        'process.env.VITE_VOYAGE_API_KEY': JSON.stringify(env.VOYAGE_API_KEY),
+        // 접속 PIN도 같은 이유로 번들에 노출됩니다 (services/authService.ts 주석 참고).
+        'process.env.APP_PIN': JSON.stringify(env.APP_PIN),
+        'process.env.VITE_APP_PIN': JSON.stringify(env.APP_PIN)
       },
       resolve: {
         alias: {
