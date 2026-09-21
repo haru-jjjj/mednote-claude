@@ -389,6 +389,103 @@ export const generateStudySuggestions = async (notes: Note[], language: string =
     }
 };
 
+// ----------------------------------------------------------------------------
+// 메모 마인드맵의 "목차 보기": 임베딩으로 미리 묶어놓은 대분류/소분류 그룹에
+// 사람이 읽을 수 있는 카테고리 이름을 붙여줍니다. 군집화 자체(누가 어느 그룹에
+// 속하는지)는 클라이언트에서 임베딩만으로 이미 계산되어 있고, 여기서는 각
+// 그룹에 속한 메모 "제목들"만 보고 이름표를 붙이는 가벼운 작업만 수행합니다.
+// 그룹이 몇 개든 상관없이 API 호출은 항상 딱 1번입니다.
+// ----------------------------------------------------------------------------
+export interface TaxonomyClusterInput {
+    index: number;
+    titles: string[];
+    subClusters: { index: number; titles: string[] }[];
+}
+
+export interface TaxonomyLabelResult {
+    index: number;
+    label: string;
+    subcategories: { index: number; label: string }[];
+}
+
+export const generateNoteTaxonomyLabels = async (
+    clusters: TaxonomyClusterInput[],
+    language: string = 'Korean'
+): Promise<TaxonomyLabelResult[]> => {
+    if (clusters.length === 0) return [];
+
+    const describeTitles = (titles: string[]): string => {
+        const shown = titles.slice(0, 10);
+        const rest = titles.length - shown.length;
+        return shown.map(t => `"${t}"`).join(', ') + (rest > 0 ? ` 외 ${rest}건` : '');
+    };
+
+    const clusterText = clusters.map(c => {
+        const subText = c.subClusters.length > 0
+            ? c.subClusters.map(s => `  - 소분류 #${s.index} (${s.titles.length}건): ${describeTitles(s.titles)}`).join('\n')
+            : '  (소분류 없음)';
+        return `대분류 #${c.index} (${c.titles.length}건): ${describeTitles(c.titles)}\n${subText}`;
+    }).join('\n\n');
+
+    const prompt = `
+당신은 의대생/전공의가 작성한 의학 메모들을 의미 기반(임베딩 유사도)으로 자동 군집화한
+결과에 이름을 붙이는 작업을 돕습니다. 아래는 이미 계산된 각 그룹과 그 안에 속한 메모
+제목들입니다 (군집화 자체는 이미 끝났으니 다시 분류하지 말고, 이름만 붙이면 됩니다).
+
+${clusterText}
+
+각 대분류(#index)와 그 안의 모든 소분류(#index)에 대해, 그 그룹을 대표하는 짧고 명확한
+카테고리 이름을 붙여주세요.
+
+규칙:
+- 대분류 이름: 2~10자 내외의 의학 주제/영역명 (예: "부정맥", "심부전", "관상동맥질환")
+- 소분류 이름: 대분류보다 더 구체적인 하위 주제 (예: "심방세동 리듬조절", "ICD 적응증")
+- 제목만으로 주제가 애매하면 가장 무난하고 포괄적인 이름을 사용하세요.
+- 모든 index에 대해 빠짐없이 정확히 하나의 label을 반환하세요. 소분류가 없는
+  대분류는 subcategories를 빈 배열로 반환하세요.
+- 출력 언어: ${language}
+    `;
+
+    const input = await callForJson({
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        toolName: 'submit_taxonomy_labels',
+        toolDescription: '각 대분류/소분류 그룹에 카테고리 이름을 붙여 제출합니다.',
+        schema: {
+            type: 'object',
+            properties: {
+                categories: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            index: { type: 'number' },
+                            label: { type: 'string' },
+                            subcategories: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        index: { type: 'number' },
+                                        label: { type: 'string' }
+                                    },
+                                    required: ['index', 'label']
+                                }
+                            }
+                        },
+                        required: ['index', 'label', 'subcategories']
+                    }
+                }
+            },
+            required: ['categories']
+        },
+        temperature: 0.4,
+        maxTokens: 4000
+    });
+
+    return input.categories || [];
+};
+
 export const generateStudyGuideContent = async (topic: string, notes: Note[], modelLevel: 'fast' | 'detailed' = 'fast', language: string = 'Korean'): Promise<{ content: string; sources: Source[] } | null> => {
     try {
         const content: any[] = [];
