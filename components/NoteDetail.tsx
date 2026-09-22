@@ -67,7 +67,12 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
           }
           try {
               const formatted = formatMedicalMarkdown(note.summary);
-              const parsed = await marked.parse(formatted, { breaks: true, gfm: true });
+              // breaks:false(CommonMark 기본값) — AI가 생성한 요약은 문장 중간에
+              // 줄바꿈이 섞여 있어도(특히 web_search 인용 처리 과정에서) 그걸 강제
+              // 줄바꿈으로 보여주지 않고 자연스럽게 한 문단으로 이어지도록 합니다.
+              // (참고: 위쪽 note.content 렌더링은 사용자가 직접 입력한 글이라
+              // Enter로 줄을 바꾸면 그대로 보이는 게 맞아서 breaks:true를 유지합니다.)
+              const parsed = await marked.parse(formatted, { breaks: false, gfm: true });
               if (isMounted) setSummaryHtml(DOMPurify.sanitize(parsed as string));
           } catch (e) {
               if (isMounted) setSummaryHtml(note.summary);

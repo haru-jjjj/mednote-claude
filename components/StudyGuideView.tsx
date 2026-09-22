@@ -297,7 +297,10 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
           if (!text) return { __html: '' };
           let formatted = text.replace(/###/g, '\n\n###');
           formatted = formatMedicalMarkdown(formatted);
-          const html = marked.parse(formatted, { breaks: true, gfm: true }) as string;
+          // breaks:false(CommonMark 기본값) — AI가 생성한 글은 문장 중간에 줄바꿈이
+          // 섞여 있어도(특히 web_search 인용 처리 과정에서) 그걸 강제 줄바꿈으로
+          // 보여주지 않고 자연스럽게 한 문단으로 이어지도록 합니다.
+          const html = marked.parse(formatted, { breaks: false, gfm: true }) as string;
           return { __html: DOMPurify.sanitize(html) };
       } catch (e) { return { __html: text }; }
   };

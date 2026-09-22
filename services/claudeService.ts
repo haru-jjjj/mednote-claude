@@ -141,12 +141,19 @@ const imageBlock = (base64: string) => {
     };
 };
 
+// 주의: web_search 툴을 쓰면 Claude가 인용(citation)이 붙는 문장/절 단위로
+// 응답을 여러 개의 작은 text 블록으로 쪼개서 돌려줍니다 (하나의 문단이 4~5개
+// 블록으로 나뉘는 경우도 흔함). 이 블록들은 "원래 하나로 이어지는 텍스트를
+// 인용 출처 표시를 위해 나눠놓은 것"일 뿐이라, 줄바꿈 없이 그대로 이어 붙여야
+// 원문이 정확히 복원됩니다. 예전에 여기서 '\n'으로 이어붙였더니, 마침표만 딱
+// 다음 줄로 넘어가거나 문장 중간이 어색하게 끊기는 등 가독성 문제가 있었습니다
+// (블록 사이에 실제로는 없던 줄바꿈이 새로 생겨버렸기 때문).
 const extractText = (data: any): string => {
     const blocks = data?.content || [];
     return blocks
         .filter((b: any) => b.type === 'text')
         .map((b: any) => b.text)
-        .join('\n')
+        .join('')
         .trim();
 };
 
