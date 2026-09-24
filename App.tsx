@@ -1,13 +1,14 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
 import QuizView from './components/QuizView';
 import StudyGuideView from './components/StudyGuideView';
 import AskNotesView from './components/AskNotesView';
-import { isDeviceTrusted, forgetThisDevice, getAppPin } from './services/authService';
+import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
+import PinSettingsModal from './components/PinSettingsModal';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage } from './types';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages } from './services/claudeService';
@@ -200,6 +201,7 @@ const App: React.FC = () => {
   // "내 메모에 물어보기" 화면에서 인용된 메모를 열었다가 뒤로 가면, 목록이 아니라 방금 보던
   // 답변 화면으로 돌아오도록 합니다. 답변 화면은 한 번 열면 숨긴 채로 유지해서(언마운트
   // 안 함) 질문·답변 내용이 사라지지 않게 합니다.
+  const [showPinSettings, setShowPinSettings] = useState(false);
   const [askViewMounted, setAskViewMounted] = useState(false);
   const [returnToAsk, setReturnToAsk] = useState(false);
   useEffect(() => {
@@ -950,14 +952,22 @@ const App: React.FC = () => {
                 </div>
             )}
 
-            {!!getAppPin() && isDeviceTrusted() && (
+            <div className="flex items-center justify-center gap-4">
                 <button
-                    onClick={() => { if (confirm('이 기기의 로그인 기억을 해제할까요? 다음 접속부터 PIN을 다시 입력해야 합니다.')) forgetThisDevice(); }}
-                    className="w-full flex items-center justify-center gap-1.5 py-2 text-[11px] font-bold text-slate-400 hover:text-red-500 transition-colors"
+                    onClick={() => setShowPinSettings(true)}
+                    className="flex items-center gap-1.5 py-2 text-[11px] font-bold text-slate-400 hover:text-blue-600 transition-colors"
                 >
-                    <LogOut className="w-3 h-3" /> 이 기기 로그아웃
+                    <KeyRound className="w-3 h-3" /> PIN 변경
                 </button>
-            )}
+                {hasTrustedDeviceFlag() && (
+                    <button
+                        onClick={() => { if (confirm('이 기기의 로그인 기억을 해제할까요? 다음 접속부터 PIN을 다시 입력해야 합니다.')) forgetThisDevice(); }}
+                        className="flex items-center gap-1.5 py-2 text-[11px] font-bold text-slate-400 hover:text-red-500 transition-colors"
+                    >
+                        <LogOut className="w-3 h-3" /> 이 기기 로그아웃
+                    </button>
+                )}
+            </div>
         </div>
       </div>
 
@@ -1054,6 +1064,8 @@ const App: React.FC = () => {
           </button>
         )}
       </main>
+
+      {showPinSettings && <PinSettingsModal onClose={() => setShowPinSettings(false)} />}
     </div>
   );
 };

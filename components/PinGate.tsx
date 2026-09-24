@@ -1,38 +1,120 @@
-import React, { useState, useEffect } from 'react';
-import { Lock, Eye, EyeOff, ShieldCheck, AlertTriangle } from 'lucide-react';
-import { getAppPin, isDeviceTrusted, trustThisDevice } from '../services/authService';
+import React, { useState, useEffect, useRef } from 'react';
+import { Lock, Eye, EyeOff, ShieldCheck, AlertTriangle, Loader2 } from 'lucide-react';
+import {
+    PinConfig, PIN_CHANGED_EVENT, getInitialPinConfig, loadCloudPinConfig,
+    verifyPin, isDeviceTrusted, trustThisDevice, hasTrustedDeviceFlag, clearTrustedDeviceFlag
+} from '../services/authService';
 
 interface PinGateProps {
     children: React.ReactNode;
 }
 
-// 앱 전체를 감싸서, PIN이 맞을 때까지(또는 이미 신뢰된 기기라면 즉시) 하위 컴포넌트를
-// 아예 마운트하지 않는 게이트입니다. 이렇게 하면 잠금이 풀리기 전에는 메모 데이터를
-// 불러오는 로직 자체가 실행되지 않습니다.
+// 앱 전체를 감싸서, PIN이 맞을 때까지(또는 이미 기억된 기기라면 즉시) 하위 컴포넌트를
+// 아예 마운트하지 않는 게이트입니다. 잠금이 풀리기 전에는 메모를 불러오는 로직도 실행되지 않습니다.
+//
+// 흐름: 이 기기에 캐시된 PIN(또는 APP_PIN)으로 바로 판단해서 기다림 없이 열고, 뒤에서
+// 클라우드의 최신 PIN을 확인합니다. 다른 기기에서 PIN이 바뀌었으면 그때 다시 잠급니다.
 const PinGate: React.FC<PinGateProps> = ({ children }) => {
-    const configuredPin = getAppPin();
-
-    const [unlocked, setUnlocked] = useState<boolean>(() => !configuredPin || isDeviceTrusted());
+    const [config, setConfig] = useState<PinConfig>(() => getInitialPinConfig());
+    const [cloudChecked, setCloudChecked] = useState(false);
+    // 어떤 PIN 버전으로 잠금이 풀렸는지 (PIN이 바뀌면 이 값과 달라져서 다시 잠김)
+    const [unlockedVersion, setUnlockedVersion] = useState<string | null>(() => {
+        const initial = getInitialPinConfig();
+        return initial.source !== 'none' && isDeviceTrusted(initial.version) ? initial.version : null;
+    });
     const [pinInput, setPinInput] = useState('');
     const [remember, setRemember] = useState(false);
     const [error, setError] = useState('');
     const [showPin, setShowPin] = useState(false);
 
-    useEffect(() => {
-        if (!configuredPin) {
-            console.warn('APP_PIN이 설정되어 있지 않아 접속 잠금이 비활성화되어 있습니다. .env.local에 APP_PIN을 설정하고 개발 서버를 재시작해주세요.');
-        }
-    }, [configuredPin]);
+    const unlockedVersionRef = useRef(unlockedVersion);
+    unlockedVersionRef.current = unlockedVersion;
+    const checkingRef = useRef(false);
+    // 이 기기에서 PIN을 바꾼 시각 — 그 전에 시작된(오래된 결과를 받을 수 있는) 확인은 무시
+    const lastLocalChangeRef = useRef(0);
 
-    // PIN이 설정 안 된 경우 앱은 그대로 열어주되(개발 중 잠기지 않도록), 콘솔 경고만으로는
-    // "PIN 기능이 아예 안 만들어진 것"처럼 보일 수 있어 화면에도 눈에 띄게 알려줍니다.
+    // 클라우드 확인 결과 반영: PIN이 바뀌었으면(다른 기기에서 변경 등) 다시 잠그고,
+    // 예전 PIN 기준의 "기억하기" 표시는 지웁니다. 클라우드에 PIN이 없으면(캐시도 지워짐)
+    // APP_PIN 또는 "잠금 없음"으로 돌아갑니다 — PIN을 잊었을 때의 복구 경로.
+    const applyCloudResult = (cloud: PinConfig | null) => {
+        const next = cloud ?? getInitialPinConfig();
+        if (next.source !== 'none' && hasTrustedDeviceFlag() && !isDeviceTrusted(next.version)) {
+            clearTrustedDeviceFlag();
+        }
+        setConfig(next);
+        if (unlockedVersionRef.current !== next.version) {
+            setUnlockedVersion(next.source !== 'none' && isDeviceTrusted(next.version) ? next.version : null);
+        }
+    };
+
+    // 클라우드의 최신 PIN 확인: 시작할 때 + 인터넷이 다시 연결될 때 + 앱으로 돌아올 때.
+    // 응답이 늦어도 도착하는 대로 반영합니다(6초 타이머는 첫 대기 화면을 끝내는 용도일 뿐).
+    useEffect(() => {
+        let cancelled = false;
+        const check = () => {
+            if (checkingRef.current) return;
+            checkingRef.current = true;
+            const startedAt = Date.now();
+            loadCloudPinConfig()
+                .then(cloud => {
+                    if (cancelled || lastLocalChangeRef.current >= startedAt) return;
+                    applyCloudResult(cloud);
+                })
+                .catch(e => console.warn('클라우드 PIN 설정 확인 실패 (이 기기에 저장된 설정으로 동작):', e))
+                .finally(() => {
+                    checkingRef.current = false;
+                    if (!cancelled) setCloudChecked(true);
+                });
+        };
+        check();
+        const spinnerTimer = setTimeout(() => { if (!cancelled) setCloudChecked(true); }, 6000);
+        const onOnline = () => check();
+        const onVisible = () => { if (document.visibilityState === 'visible') check(); };
+        window.addEventListener('online', onOnline);
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            cancelled = true;
+            clearTimeout(spinnerTimer);
+            window.removeEventListener('online', onOnline);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    // 앱 안에서 PIN을 바꾸면 현재 세션은 그대로 열린 상태로 유지
+    useEffect(() => {
+        const onChanged = (e: Event) => {
+            const next = (e as CustomEvent<PinConfig>).detail;
+            if (!next) return;
+            lastLocalChangeRef.current = Date.now();
+            setConfig(next);
+            setUnlockedVersion(next.version);
+        };
+        window.addEventListener(PIN_CHANGED_EVENT, onChanged);
+        return () => window.removeEventListener(PIN_CHANGED_EVENT, onChanged);
+    }, []);
+
+    const noPin = config.source === 'none';
+
+    // PIN이 이 기기에도 캐시에도 없으면, 클라우드 확인이 끝날 때까지 잠깐 대기 화면
+    if (noPin && !cloudChecked) {
+        return (
+            <div className="h-full w-full flex items-center justify-center bg-slate-50">
+                <Loader2 className="w-6 h-6 text-slate-300 animate-spin" />
+            </div>
+        );
+    }
+
+    const unlocked = noPin || unlockedVersion === config.version;
+
     if (unlocked) {
         return (
             <>
-                {!configuredPin && (
-                    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 bg-amber-500 text-white text-[11px] font-bold px-3.5 py-2 rounded-full shadow-lg">
+                {noPin && (
+                    <div className="fixed left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 bg-amber-500 text-white text-[11px] font-bold px-3.5 py-2 rounded-full shadow-lg whitespace-nowrap"
+                        style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}>
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        PIN 잠금 꺼짐 — .env.local에 APP_PIN 설정 후 서버 재시작 필요
+                        PIN 잠금 꺼짐 — 사이드바 아래 "PIN 변경"에서 설정하세요
                     </div>
                 )}
                 {children}
@@ -42,10 +124,10 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        if (pinInput.length > 0 && pinInput === configuredPin) {
+        if (pinInput.length > 0 && verifyPin(config, pinInput)) {
             setError('');
-            if (remember) trustThisDevice();
-            setUnlocked(true);
+            if (remember) trustThisDevice(config.version);
+            setUnlockedVersion(config.version);
         } else {
             setError('PIN이 올바르지 않습니다.');
             setPinInput('');

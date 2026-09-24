@@ -13,7 +13,8 @@ import {
   startAfter,
   getDocs,
   where,
-  documentId
+  documentId,
+  getDoc
 } from "firebase/firestore";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import { v4 as uuidv4 } from 'uuid';
@@ -313,4 +314,35 @@ export const deleteNoteFromFirestore = async (id: string) => {
     if (error.code === 'unavailable') return;
     console.error("Error deleting note from Firestore:", error);
   }
+};
+
+// ----------------------------------------------------------------------------
+// 앱 설정: 접속 PIN (앱 안에서 바꿀 수 있도록 Firestore에 저장)
+// - PIN 자체가 아니라 salt를 섞은 SHA-256 해시만 저장합니다.
+// - 메모(notes)와 섞이지 않도록 별도 컬렉션(appSettings)의 문서 1개를 씁니다.
+// ----------------------------------------------------------------------------
+export interface PinSetting {
+    pinHash: string;
+    salt: string;
+    updatedAt: number;
+}
+
+const SETTINGS_COLLECTION = 'appSettings';
+const PIN_DOC_ID = 'pin';
+
+// null = 클라우드에 PIN이 아직 설정되지 않음 / 예외 = 네트워크·권한 문제로 확인 불가
+export const fetchPinSetting = async (): Promise<PinSetting | null> => {
+    await ensureAuth();
+    const snap = await getDoc(doc(db, SETTINGS_COLLECTION, PIN_DOC_ID));
+    if (!snap.exists()) return null;
+    const data = snap.data() as Partial<PinSetting>;
+    if (typeof data.pinHash !== 'string' || typeof data.salt !== 'string' || typeof data.updatedAt !== 'number') {
+        return null;
+    }
+    return { pinHash: data.pinHash, salt: data.salt, updatedAt: data.updatedAt };
+};
+
+export const savePinSetting = async (setting: PinSetting): Promise<void> => {
+    await ensureAuth();
+    await setDoc(doc(db, SETTINGS_COLLECTION, PIN_DOC_ID), setting);
 };

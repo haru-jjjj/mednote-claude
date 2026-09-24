@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Save, ArrowLeft, Image as ImageIcon, X, Loader2, ChevronLeft, ChevronRight, Bold, Italic, Subscript, Superscript, ArrowRight, Code, Sigma, Type, Undo, Table as TableIcon } from 'lucide-react';
 import { Note } from '../types';
 import { v4 as uuidv4 } from 'uuid';
-import { gridToMarkdown, looksLikeTsv, parseTsv, maskPatientIds, nextPatientLabelIndex, continueRecordNumbering } from '../services/pasteUtils';
+import { gridToMarkdown, looksLikeTsv, parseTsv, continueRecordNumbering } from '../services/pasteUtils';
 
 interface NoteEditorProps {
   onSave: (note: Note) => void;
@@ -97,7 +97,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
   const [hasContent, setHasContent] = useState(false);
   const [images, setImages] = useState<string[]>([]);
   const [isProcessingImg, setIsProcessingImg] = useState(false);
-  // 붙여넣기 후 안내(등록번호 가림, 용량 경고 등)를 잠깐 보여주는 토스트
+  // 붙여넣기 후 안내(용량 경고 등)를 잠깐 보여주는 토스트
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
   const pasteNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showPasteNotice = (msg: string) => {
@@ -363,6 +363,15 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       return true;
   };
 
+  // Firestore 문서 1개는 최대 1MB라, 메모가 너무 크면 클라우드 저장이 실패할 수 있어 미리 알려줌
+  const warnIfTooLarge = () => {
+      const value = contentRef.current?.value || '';
+      const bytes = new TextEncoder().encode(value).length;
+      if (bytes > 800_000) {
+          showPasteNotice(`메모가 약 ${Math.round(bytes / 1024)}KB로 커서 클라우드 저장이 실패할 수 있어요. 메모 2개로 나눠 저장하는 걸 권장합니다.`);
+      }
+  };
+
   // 클로드 등에서 복사한 표/서식을 붙여넣을 때, 브라우저 기본 동작(plain text만 사용)
   // 대신 클립보드의 HTML을 마크다운으로 변환해서 삽입한다. 표가 없는 일반 텍스트
   // 붙여넣기는 그대로 기본 동작을 사용한다(변환 과정에서 내용이 망가질 위험을 피하기 위함).
@@ -417,13 +426,12 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       const textarea = contentRef.current;
       if (!textarea) return;
 
-      // 3) 환자 등록번호로 보이는 8자리 숫자는 "환자#1" 같은 라벨로 자동 치환
-      //    (메모는 클라우드에 저장되고 AI에도 전송되므로 직접 식별정보를 남기지 않기 위함)
-      const source = converted !== null ? continueRecordNumbering(textarea.value, converted) : plain;
-      const { text: maskedText, count: maskedCount } = maskPatientIds(source, nextPatientLabelIndex(textarea.value));
-
-      // 변환도, 가릴 번호도 없으면 브라우저 기본 붙여넣기 그대로 사용
-      if (converted === null && maskedCount === 0) return;
+      // 변환할 표가 없으면 브라우저 기본 붙여넣기 그대로 사용 (붙여넣기가 끝난 뒤 용량만 확인)
+      if (converted === null) {
+          setTimeout(warnIfTooLarge, 0);
+          return;
+      }
+      const convertedText = continueRecordNumbering(textarea.value, converted);
 
       e.preventDefault();
 
@@ -433,13 +441,10 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       const before = text.substring(0, start);
       const after = text.substring(end);
 
-      let insertion = maskedText;
-      if (converted !== null) {
-          // 표/블록 요소는 앞뒤에 빈 줄이 있어야 별도 블록으로 정확히 인식된다.
-          const leadingBreak = before.length === 0 || before.endsWith('\n\n') ? '' : (before.endsWith('\n') ? '\n' : '\n\n');
-          const trailingBreak = after.length === 0 || after.startsWith('\n') ? '' : '\n\n';
-          insertion = leadingBreak + maskedText + trailingBreak;
-      }
+      // 표/블록 요소는 앞뒤에 빈 줄이 있어야 별도 블록으로 정확히 인식된다.
+      const leadingBreak = before.length === 0 || before.endsWith('\n\n') ? '' : (before.endsWith('\n') ? '\n' : '\n\n');
+      const trailingBreak = after.length === 0 || after.startsWith('\n') ? '' : '\n\n';
+      const insertion = leadingBreak + convertedText + trailingBreak;
 
       // execCommand('insertText')로 넣어야 Cmd/Ctrl+Z(실행 취소)로 되돌릴 수 있다.
       // 지원하지 않는 환경에서만 setRangeText로 대체(이 경우 실행 취소 불가).
@@ -460,12 +465,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
           }
       }
 
-      const notices: string[] = [];
-      if (maskedCount > 0) notices.push(`등록번호로 보이는 숫자 ${maskedCount}개를 '환자#번호'로 가렸습니다.`);
-      // Firestore 문서 1개는 최대 1MB라, 너무 크면 클라우드 저장이 실패할 수 있음
-      const bytes = new TextEncoder().encode(textarea.value).length;
-      if (bytes > 800_000) notices.push(`메모가 약 ${Math.round(bytes / 1024)}KB로 커서 클라우드 저장이 실패할 수 있어요. 메모 2개로 나눠 저장하는 걸 권장합니다.`);
-      if (notices.length) showPasteNotice(notices.join(' '));
+      warnIfTooLarge();
 
       setTimeout(handleTextChange, 0);
   };

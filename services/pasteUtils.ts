@@ -2,66 +2,9 @@
 // 결과지(검사 판독문, 기기 interrogation, 시술 기록 등) 붙여넣기 보조 유틸
 // ----------------------------------------------------------------------------
 // - 엑셀/EMR에서 복사한 표를 메모에서 읽기 좋은 형태로 변환
-// - 붙여넣을 때 환자 등록번호로 보이는 숫자를 "환자#1" 같은 라벨로 자동 치환
 // - 메모가 "결과지 묶음"인지 대략 판별 (메모 상세화면의 정리 안내 카드용)
 // 모두 순수 문자열 처리이며 API 호출은 없습니다.
 // ============================================================================
-
-// ----------------------------------------------------------------------------
-// 환자 등록번호 가리기
-// ----------------------------------------------------------------------------
-// 병원 등록번호(8자리 숫자)로 보이는 값을 가립니다. 단, 아래는 건드리지 않습니다.
-// - 날짜처럼 보이는 8자리(YYYYMMDD, 예: 20260727 검사일/이식일)
-// - 앞뒤에 숫자·영문이 붙어 있는 경우(NCT01234567, 더 긴 숫자의 일부 등)
-// - PMID/PMC/DOI/ISBN 바로 뒤의 번호, URL 안의 숫자 (논문 번호가 깨지지 않도록)
-const LABEL_PREFIX = '환자#';
-// (정규식 lookbehind는 구형 iOS Safari에서 앱 전체를 멈추게 할 수 있어 쓰지 않고, 앞 글자를 캡처로 처리)
-const ID_REGEX = /(^|[^0-9A-Za-z.\/=_-])(\d{8})(?![0-9A-Za-z])/g;
-const REF_CONTEXT_REGEX = /(PMID|PMCID|PMC|doi|ISBN|NCT)\s*[:#]?\s*$/i;
-
-const isDateLike = (s: string): boolean => {
-    const m = s.match(/^(19|20)(\d{2})(\d{2})(\d{2})$/);
-    if (!m) return false;
-    const month = Number(m[3]);
-    const day = Number(m[4]);
-    return month >= 1 && month <= 12 && day >= 1 && day <= 31;
-};
-
-const isInsideUrl = (text: string, index: number): boolean => {
-    const lineStart = text.lastIndexOf('\n', index) + 1;
-    const before = text.slice(lineStart, index);
-    const lastSpace = Math.max(before.lastIndexOf(' '), before.lastIndexOf('\t'));
-    const token = before.slice(lastSpace + 1);
-    return /https?:\/\/|www\./i.test(token);
-};
-
-// 이미 메모에 들어있는 "환자#N" 라벨 다음 번호부터 이어서 붙이도록 시작 번호를 계산
-export const nextPatientLabelIndex = (existingText: string): number => {
-    let max = 0;
-    const re = new RegExp(`${LABEL_PREFIX}(\\d+)`, 'g');
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(existingText)) !== null) {
-        max = Math.max(max, Number(m[1]));
-    }
-    return max + 1;
-};
-
-export const maskPatientIds = (text: string, startIndex = 1): { text: string; count: number } => {
-    const mapping = new Map<string, string>();
-    let next = startIndex;
-    const masked = text.replace(ID_REGEX, (all: string, pre: string, id: string, offset: number) => {
-        const idOffset = offset + pre.length;
-        if (isDateLike(id)) return all;
-        const before = text.slice(Math.max(0, idOffset - 12), idOffset);
-        if (REF_CONTEXT_REGEX.test(before)) return all;
-        if (isInsideUrl(text, idOffset)) return all;
-        if (!mapping.has(id)) {
-            mapping.set(id, `${LABEL_PREFIX}${next++}`);
-        }
-        return pre + mapping.get(id)!;
-    });
-    return { text: masked, count: mapping.size };
-};
 
 // ----------------------------------------------------------------------------
 // 탭 구분(TSV) 텍스트 → 2차원 배열
@@ -219,14 +162,45 @@ export const continueRecordNumbering = (existingText: string, newText: string): 
 };
 
 // ----------------------------------------------------------------------------
-// 메모가 "붙여넣은 결과지 묶음"처럼 보이는지 대략 판별 (정리 안내 카드 표시용)
-// 실제 정리 방식 판단은 AI 요약 프롬프트(DATA 모드)가 다시 하므로 여기선 대략이면 충분.
+// 메모에 검사 판독문·시술 기록·의무기록 같은 "비슷한 형식의 기록"이 여러 건 붙여넣어져
+// 있는지 대략 추정합니다 (메모 상세화면의 "묘사·표현 패턴 정리" 안내 카드용).
+// 엑셀 형태든, EMR에서 그대로 복사한 글이든 형식과 무관하게 동작하도록:
+//   같은 항목 이름으로 시작하는 줄(예: "Tricuspid valve:", "Lead measurement",
+//   "1. Clinical diagnosis")이 여러 번 반복되면 → 비슷한 기록이 그만큼 있다고 봅니다.
+// 실제로 어떻게 정리할지는 AI 요약 프롬프트가 내용을 보고 다시 판단하므로 대략이면 충분.
 // ----------------------------------------------------------------------------
 export const estimateDataRecordCount = (content: string): number => {
-    if (!content) return 0;
-    const recordBlocks = (content.match(/^\*\*\[\d+\]\*\*\s*$/gm) || []).length;
-    const patientLabels = new Set(content.match(new RegExp(`${LABEL_PREFIX}\\d+`, 'g')) || []).size;
-    const reportHeaders = (content.match(/^\[\s*(검사일|\d{4}[.\-]\d{2}[.\-]\d{2})/gm) || []).length;
-    const tableRows = Math.max(0, (content.match(/^\|.*\|\s*$/gm) || []).length - 2);
-    return Math.max(recordBlocks, patientLabels, reportHeaders, tableRows >= 8 ? tableRows : 0);
+    if (!content || content.length < 1200) return 0;
+
+    // 1) 붙여넣기 변환으로 생긴 [1], [2] 레코드 블록
+    const recordBlocks = (content.match(/^\*\*\[\d+\]\*\*[ \t]*$/gm) || []).length;
+
+    // 2) 반복되는 "항목 이름" 줄: 줄 앞부분(번호·날짜·수치 제거)을 기준으로 가장 많이 반복된 횟수
+    //    (표 줄, 링크 줄, 글자가 없는 줄은 제외 — 일반 메모의 표/링크 목록이 기록으로 오인되지 않도록)
+    const counts = new Map<string, number>();
+    const lines = content.split(/\r?\n/);
+    lines.forEach(line => {
+        const trimmed = line.replace(/^[\s\u00a0>*#\-•·]+/, '');
+        if (trimmed.startsWith('|') || /^(https?:\/\/|www\.)/i.test(trimmed)) return;
+        const key = trimmed
+            .replace(/[\d.,:;()\[\]\/~%+\-]+/g, ' ') // 숫자·날짜·기호
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 24)
+            .toLowerCase();
+        if (key.length < 6 || !/[a-z가-힣]{3,}/.test(key)) return;
+        counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    let repeatedLabel = 0;
+    counts.forEach(n => { if (n > repeatedLabel) repeatedLabel = n; });
+
+    // 3) 가장 큰 마크다운 표 하나의 행 수 (여러 표를 합산하지 않음)
+    let largestTable = 0, currentTable = 0;
+    lines.forEach(line => {
+        if (/^\s*\|.*\|\s*$/.test(line)) { currentTable++; largestTable = Math.max(largestTable, currentTable); }
+        else currentTable = 0;
+    });
+    const tableRows = Math.max(0, largestTable - 2);
+
+    return Math.max(recordBlocks, repeatedLabel >= 3 ? repeatedLabel : 0, tableRows >= 15 ? tableRows : 0);
 };

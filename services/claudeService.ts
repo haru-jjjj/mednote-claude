@@ -300,9 +300,11 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
             ${isTruncated ? `(NOTE: the note was longer than the limit and was cut off after ${MAX_SUMMARY_INPUT_CHARS} characters. Mention in one short line at the end that only the first part was analyzed.)` : ''}
 
             FIRST, classify the note itself:
-            - "DATA": the note is mostly pasted raw clinical records — multiple test/exam results,
-              reading reports, device interrogations, procedure records, lab tables, etc.
-              (typically several similar entries, often copied from an EMR or a spreadsheet).
+            - "DATA": the note is mostly pasted clinical documentation written by others — exam/test
+              reading reports (echo, CT, cath, EP study...), device interrogations, procedure records,
+              admission/progress/discharge notes, lab results, etc. It may be ONE record or many, in ANY
+              format: copied straight from the EMR, from a spreadsheet, split into [1]/[2] blocks or not.
+              Don't depend on the layout — judge by the content.
             - "POLISHED": already reasonably organized/detailed notes (e.g. from a textbook,
               lecture slides, or the user's own structured writing).
             - "RUSHED": a quick, informal jotting — short fragments, abbreviations, no structure,
@@ -310,26 +312,33 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
               verbal pearl) and typed in a hurry, often without any source or context.
 
             IF DATA — ignore the POLISHED/RUSHED rules and LENGTH limits below and do this instead:
-            - Goal: turn the pile of records into a reusable reference sheet for reading/reporting
-              this kind of study — the patterns across cases, the measurements that matter, the
-              decision thresholds, and how findings are typically phrased in reports.
-            - Start with ONE line stating what the data is and how many entries it contains
-              (e.g. "TTE 판독 32건 분석", "CIED interrogation 9건 분석").
-            - Then one or more markdown tables. Choose columns that fit the data type, for example:
-              · imaging/test reports: 질환·소견 | 핵심 측정 항목 | 판정 기준 (가이드라인 수치 + 이 데이터에서 관찰된 값 범위) | 판독문 표현 패턴 | 해당 케이스
-              · device interrogations: 항목 | 의미 | 정상/참고치 | 이 데이터에서 관찰된 값 | 임상적 의의
-              · procedure records: 질환 분류 | 해당 케이스 | 시술 전략·범위 | 매핑·도구 | 종료 판정 기준
-            - Table cells must be single-line (no line breaks inside a cell; separate items with "; ").
-            - After the tables, 3~6 bullets on notable patterns, outliers, or teaching points.
-            - Refer to entries by their record number when the note has one (blocks start with
-              "**[1]**", "**[2]**", ... — cite them as [1], [2]); otherwise by order of appearance
-              (#1, #2, ...). Labels like "환자#4" are already de-identified placeholders and may be
-              used. NEVER reproduce real patient identifiers (registration/ID numbers, names,
-              dates of birth), even if present.
-            - The note may have grown over time (results pasted in several batches, possibly with
-              a previous hand-written summary in between). Treat ALL entries in the note together.
+            - PURPOSE: the reader collects real records to learn HOW experienced physicians document
+              things — so that later they can recall "how is this disease/finding usually described,
+              which items do they always mention, what wording do they use". It is NOT about keeping or
+              reproducing the original layout, and not about the individual patients.
+            - Start with ONE line: what kind of records these are and roughly how many
+              (e.g. "TTE 판독 32건", "CIED interrogation 9건", "AF ablation 시술기록 19건").
+            - Then, grouped by disease / finding / procedure type ("###" heading per group, most
+              frequent first), for each group a short bullet list ("- **항목명**: ..." on one line each):
+              - **중점 항목**: which measurements/items are consistently reported for it, in the order
+                they usually appear (e.g. "Vmax → mean PG → AVA → LVEF"), and what is often omitted.
+              - **자주 쓰는 표현**: 2~5 representative phrases QUOTED VERBATIM from the records (keep their
+                original Korean/English mix and abbreviations, e.g. "~ 소견 지속됨", "c/w ischemic insult of
+                LAD territory"), plus the typical conclusion/impression sentence pattern with the variable
+                parts shown as "O" (e.g. "O degenerative AR", "LVEF O% 내외의 O LV dysfunction").
+              - **판정·등급 표현**: how severity/grades are expressed and which numbers they hang on;
+                add the guideline threshold only when it helps interpret the wording.
+              - **예시**: the record numbers where it appears ([3], [7] if the note numbers its records;
+                otherwise #3, #7 by order of appearance) — no registration numbers.
+            - Then "### 공통 서술 습관": the overall structure/ordering these records follow, frequent
+              abbreviations, and habitual wording that cuts across groups (e.g. comparison with the
+              previous exam, "~ 내외", "~ 시사").
+            - A table is fine where it genuinely makes a comparison clearer, but bullets are the default.
+              Table cells single-line.
+            - The note may have grown over time (records pasted in several batches, maybe with the
+              reader's own comments in between). Treat everything together.
             - Be complete but compact (roughly up to 4,000 Korean characters in total).
-            - Web search: at most 2 searches, only to verify the guideline thresholds you cite.
+            - Web search: at most 2 searches, only if needed to check a guideline threshold you cite.
 
             Task (POLISHED / RUSHED):
             - If POLISHED: Write a concise, ABSTRACT-STYLE Markdown summary of the key medical
@@ -348,7 +357,7 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
               details rather than trying to cover everything in the note — a shorter, focused
               summary is strongly preferred over a long, exhaustive one.
 
-            FORMATTING (STRICT):
+            FORMATTING (STRICT — for DATA, only the bullet rule applies; quoted phrases stay exactly as written, no backticks):
             - For mathematical formulas, numbers with units, chemical equations, or special symbols (like >, <, =, ->, 1mm), ALWAYS wrap them in single backticks to format them as inline code.
               - Correct Example: \`> 1mm\`, \`x^2\`, \`H2O\`, \`pH < 7.35\`
               - Do NOT use LaTeX blocks like $$...$$ or raw symbols without backticks.
@@ -358,7 +367,7 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
               alone on a line with the sentence starting on the next line.
             - Inside markdown table cells, do NOT use backticks — plain text only.
 
-            SOURCES:
+            SOURCES (POLISHED / RUSHED only — DATA follows its own web-search rule above):
             - Use the web search tool to find authoritative sources (society guidelines such as ACC/AHA, ESC, ASE, HRS; primary trials on PubMed; UpToDate) that validate these concepts, and cite them inline.
               - RUSHED notes: this is the main point of the task — search actively (up to 3 searches) to properly ground the memo in evidence.
               - POLISHED notes: keep research minimal (1-2 searches is usually enough) — citations must not make the summary longer than the length limit above.
@@ -579,7 +588,10 @@ CITATIONS (STRICT):
 - Anything NOT supported by the notes but needed for a correct answer: add it briefly and mark it
   "(메모 외 일반 지식)". Keep such additions short and clearly separated from what the notes say.
 - If notes contradict each other, or a note looks outdated / guideline-discordant, flag it with "⚠️".
-- Labels such as "환자#4" are de-identified placeholders; never try to reconstruct identities.
+- When the question is about how something is DESCRIBED or DOCUMENTED (e.g. "MR은 판독에서 어떻게
+  쓰더라", "interrogation에서 뭘 꼭 보더라"), answer from the pasted records in the notes: quote
+  representative phrases verbatim, list the items that are consistently reported (in their usual
+  order), and describe the typical conclusion sentence pattern — regardless of how the notes are formatted.
 `;
 
 export const answerFromNotes = async (question: string, notes: Note[]): Promise<string> => {

@@ -98,7 +98,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
           .slice(0, RELATED_NOTES_MAX);
   }, [note.id, note.embedding, allNotes]);
 
-  // 엑셀/EMR 결과지를 여러 건 붙여넣은 메모인지 대략 판별 → 정리 안내 카드 표시
+  // 판독문·시술기록·의무기록을 여러 건 붙여넣은 메모인지 형식과 무관하게 대략 판별 → 정리 안내 카드 표시
   const dataRecordCount = useMemo(() => estimateDataRecordCount(note.content || ''), [note.content]);
   const isDataNote = dataRecordCount >= 3;
 
@@ -303,7 +303,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                 </div>
             </div>
 
-            {/* 결과지 묶음 메모: 요약이 아직 없으면 정리 기능을 눈에 띄게 안내 */}
+            {/* 기록 묶음 메모: 요약이 아직 없으면 정리 기능을 눈에 띄게 안내 */}
             {isDataNote && !note.summary && !isSummarizing && (
                 <button
                     onClick={handleSummarize}
@@ -311,9 +311,9 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                 >
                     <Sparkles className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
                     <div className="min-w-0">
-                        <div className="font-bold text-indigo-700 text-sm">결과지 {dataRecordCount}건 — AI로 패턴·개념 정리표 만들기</div>
+                        <div className="font-bold text-indigo-700 text-sm">붙여넣은 기록 — AI로 묘사·표현 패턴 정리하기</div>
                         <div className="text-xs text-indigo-500 mt-1 leading-relaxed">
-                            측정 항목, 판정 기준, 판독문 표현, 해당 케이스를 표로 정리합니다. 나중에 결과지를 더 붙여넣고 다시 누르면 전체 기준으로 새로 정리돼요.
+                            질환·소견별로 어떤 항목을 중시하는지, 어떤 표현을 자주 쓰는지, 결론 문장을 어떻게 쓰는지 정리합니다. 기록을 더 붙여넣은 뒤 다시 누르면 전체 기준으로 새로 정리돼요.
                         </div>
                     </div>
                 </button>
@@ -326,7 +326,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         <div className="flex items-center gap-2 text-indigo-700 font-bold">
                             {isSummarizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                             <h3 className="text-base uppercase tracking-wide">
-                                {isSummarizing ? progressStatus : (isDataNote ? 'AI 결과지 정리' : 'AI Smart Summary')}
+                                {isSummarizing ? progressStatus : 'AI Smart Summary'}
                             </h3>
                         </div>
                         {!isSummarizing && note.summary && (
