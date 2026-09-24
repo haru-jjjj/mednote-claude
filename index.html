@@ -3,7 +3,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <!-- viewport-fit=cover: 아이패드/아이폰에서 상태표시줄·홈 인디케이터 영역(safe area) 크기를
+         CSS env()로 정확히 받아오기 위해 필요합니다. 실제로 콘텐츠를 그 영역 밖으로 밀어내는 건
+         아래 #root 의 padding 이 담당합니다. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- 홈 화면에 추가해서 앱처럼 쓸 때 상태표시줄을 반투명(콘텐츠 위에 겹침)이 아닌
+         불투명한 기본 스타일로 표시 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="MediNote" />
+    <meta name="theme-color" content="#ffffff" />
     <title>MediNote AI</title>
     <!-- Polyfill for importmap support in older Safari versions -->
     <script async src="https://ga.jspm.io/npm:es-module-shims@1.10.0/dist/es-module-shims.js"></script>
@@ -12,6 +22,37 @@
     <style>
       body {
         font-family: 'Noto Sans KR', 'Noto Sans JP', 'Inter', sans-serif;
+        background: #ffffff;
+      }
+      /* 아이패드/아이폰: 상태표시줄·노치·홈 인디케이터 영역(safe area)만큼 앱 전체를 안쪽으로
+         밀어서, 상단 메뉴가 상태표시줄 밑에 깔려 반투명하게 겹쳐 보이지 않도록 합니다.
+         (일반 브라우저 탭처럼 겹칠 일이 없는 환경에서는 env() 값이 0이라 아무 변화 없음) */
+      html, body {
+        height: 100%;
+      }
+      body {
+        height: 100dvh;
+      }
+      #root {
+        box-sizing: border-box;
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-right: env(safe-area-inset-right, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+        padding-left: env(safe-area-inset-left, 0px);
+        background: #ffffff;
+      }
+      /* 넓은 표(결과지 정리표 등)는 화면 밖으로 잘리지 않고 좌우 스크롤되도록 */
+      .prose table {
+        display: block;
+        max-width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        font-size: 0.85em;
+      }
+      .prose table th,
+      .prose table td {
+        min-width: 7.5rem;
+        vertical-align: top;
       }
       /* Custom Scrollbar */
       ::-webkit-scrollbar {
@@ -54,7 +95,7 @@
 </script>
 <link rel="stylesheet" href="/index.css">
 </head>
-  <body class="bg-slate-50 text-slate-900 overflow-hidden h-screen w-screen">
+  <body class="bg-white text-slate-900 overflow-hidden w-full">
     <div id="root" class="h-full w-full"></div>
   <script type="module" src="/index.tsx"></script>
 </body>

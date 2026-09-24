@@ -6,6 +6,7 @@ import { Note, Source } from '../types';
 import { marked } from 'marked';
 import { summarizeSingleNote, formatMedicalMarkdown } from '../services/claudeService';
 import { cosineSimilarity } from '../services/voyageService';
+import { estimateDataRecordCount } from '../services/pasteUtils';
 
 interface NoteDetailProps {
   note: Note;
@@ -96,6 +97,10 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
           .sort((a, b) => b.sim - a.sim)
           .slice(0, RELATED_NOTES_MAX);
   }, [note.id, note.embedding, allNotes]);
+
+  // 엑셀/EMR 결과지를 여러 건 붙여넣은 메모인지 대략 판별 → 정리 안내 카드 표시
+  const dataRecordCount = useMemo(() => estimateDataRecordCount(note.content || ''), [note.content]);
+  const isDataNote = dataRecordCount >= 3;
 
   const getSnippet = (n: Note) => {
       const text = (n.summary || n.content || '').replace(/[#*`>_-]/g, '').trim();
@@ -298,6 +303,22 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                 </div>
             </div>
 
+            {/* 결과지 묶음 메모: 요약이 아직 없으면 정리 기능을 눈에 띄게 안내 */}
+            {isDataNote && !note.summary && !isSummarizing && (
+                <button
+                    onClick={handleSummarize}
+                    className="w-full mb-6 flex items-start gap-3 text-left bg-indigo-50/60 border border-indigo-100 rounded-xl p-4 hover:bg-indigo-50 transition-colors"
+                >
+                    <Sparkles className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                        <div className="font-bold text-indigo-700 text-sm">결과지 {dataRecordCount}건 — AI로 패턴·개념 정리표 만들기</div>
+                        <div className="text-xs text-indigo-500 mt-1 leading-relaxed">
+                            측정 항목, 판정 기준, 판독문 표현, 해당 케이스를 표로 정리합니다. 나중에 결과지를 더 붙여넣고 다시 누르면 전체 기준으로 새로 정리돼요.
+                        </div>
+                    </div>
+                </button>
+            )}
+
             {/* AI Summary Section */}
             {(note.summary || isSummarizing) && (
                 <div className="mb-6 bg-indigo-50/60 border border-indigo-100 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 relative overflow-hidden">
@@ -305,7 +326,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         <div className="flex items-center gap-2 text-indigo-700 font-bold">
                             {isSummarizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                             <h3 className="text-base uppercase tracking-wide">
-                                {isSummarizing ? progressStatus : 'AI Smart Summary'}
+                                {isSummarizing ? progressStatus : (isDataNote ? 'AI 결과지 정리' : 'AI Smart Summary')}
                             </h3>
                         </div>
                         {!isSummarizing && note.summary && (
@@ -429,6 +450,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
              <button
                 onClick={() => setViewingImage(null)}
                 className="absolute top-4 right-4 p-2 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors z-50"
+                style={{ top: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }}
                 title="닫기"
              >
                  <X className="w-6 h-6" />
@@ -437,6 +459,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
              {/* Zoom Controls */}
              <div
                 className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-black/50 rounded-full px-2 py-1.5 z-50"
+                style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}
                 onClick={(e) => e.stopPropagation()}
              >
                 <button

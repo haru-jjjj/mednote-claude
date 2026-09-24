@@ -1,11 +1,12 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
 import QuizView from './components/QuizView';
 import StudyGuideView from './components/StudyGuideView';
+import AskNotesView from './components/AskNotesView';
 import { isDeviceTrusted, forgetThisDevice, getAppPin } from './services/authService';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage } from './types';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
@@ -193,7 +194,18 @@ const App: React.FC = () => {
       // 로컬에 적게 로드된 상태(예: 최근 30개)로는 관련 메모 풀이 너무 작아 사실상
       // 항상 무작위 폴백만 타게 됩니다. 화면을 열자마자 전체 메모를 불러와 임베딩
       // 백필 대상과 클러스터링 후보 풀을 넓혀줍니다.
-      if (view === ViewMode.STUDY_GUIDE) triggerAutoFetchAllOnce();
+      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES) triggerAutoFetchAllOnce();
+  }, [view]);
+
+  // "내 메모에 물어보기" 화면에서 인용된 메모를 열었다가 뒤로 가면, 목록이 아니라 방금 보던
+  // 답변 화면으로 돌아오도록 합니다. 답변 화면은 한 번 열면 숨긴 채로 유지해서(언마운트
+  // 안 함) 질문·답변 내용이 사라지지 않게 합니다.
+  const [askViewMounted, setAskViewMounted] = useState(false);
+  const [returnToAsk, setReturnToAsk] = useState(false);
+  useEffect(() => {
+      if (view === ViewMode.ASK_NOTES) setAskViewMounted(true);
+      // (답변 화면 → 메모 → 편집 → 저장 → 뒤로 에서도 답변 화면으로 돌아오도록 EDIT도 유지)
+      if (view !== ViewMode.DETAIL && view !== ViewMode.ASK_NOTES && view !== ViewMode.EDIT) setReturnToAsk(false);
   }, [view]);
 
   // --- Voyage 임베딩: 의미 기반 검색 지원 ---
@@ -223,7 +235,7 @@ const App: React.FC = () => {
           // (그 사이 삭제된 노트는 undefined가 반환되므로 건너뛰고, 되살리지 않습니다.)
           const fullNotes = await Promise.all(targets.map(t => getNoteFromDB(t.id)));
           const updated = fullNotes
-              .map((full, i) => full ? { ...full, embedding: vectors[i], embeddingUpdatedAt: now } : null)
+              .map((full, i): Note | null => full ? { ...full, embedding: vectors[i], embeddingUpdatedAt: now } : null)
               .filter((n): n is Note => n !== null);
 
           for (const n of updated) {
@@ -739,7 +751,8 @@ const App: React.FC = () => {
     reader.readAsText(file);
   };
 
-  const handleSaveNote = async (note: Note) => {
+  // 성공 여부를 돌려줍니다(정리본 저장처럼 결과에 따라 화면 표시가 달라지는 호출부용).
+  const handleSaveNote = async (note: Note): Promise<boolean> => {
     try {
         if (!note.id) throw new Error("Invalid Note ID");
         const isNewNote = !notes.some(n => n.id === note.id);
@@ -776,9 +789,11 @@ const App: React.FC = () => {
         }
         // 검색(의미 기반)에 바로 반영되도록 저장 직후 임베딩 계산 (fire-and-forget, 실패해도 무해)
         embedAndPersistNotes([note], { silent: true });
+        return true;
     } catch (e) {
         console.error("Save Error", e);
         alert("메모 저장 중 오류가 발생했습니다. 다시 시도해주세요.");
+        return false;
     }
   };
 
@@ -840,7 +855,7 @@ const App: React.FC = () => {
   const activeNote = notes.find(n => n.id === activeNoteId);
 
   return (
-    <div className="flex w-screen overflow-hidden bg-white h-screen h-[100dvh]">
+    <div className="relative flex w-full h-full overflow-hidden bg-white">
       {/* Sidebar */}
       <div className={`${showSidebar ? 'w-full md:w-80 translate-x-0' : 'w-0 -translate-x-full md:w-0'} transition-all duration-300 flex-shrink-0 bg-white border-r border-slate-100 flex flex-col h-full absolute md:relative z-50 shadow-2xl md:shadow-none overflow-hidden`}>
         <div className="p-6 h-16 flex items-center justify-between flex-shrink-0">
@@ -903,6 +918,13 @@ const App: React.FC = () => {
                  <Lightbulb className="w-3.5 h-3.5" />
              </span>
              AI 주제 탐구
+          </button>
+
+          <button onClick={() => { setView(ViewMode.ASK_NOTES); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.ASK_NOTES ? 'bg-indigo-50 text-indigo-600' : 'text-slate-600 hover:bg-indigo-50/60 hover:text-indigo-600'}`}>
+             <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-indigo-100 text-indigo-600">
+                 <MessageSquareText className="w-3.5 h-3.5" />
+             </span>
+             내 메모에 물어보기
           </button>
         </nav>
 
@@ -985,7 +1007,7 @@ const App: React.FC = () => {
                     <NoteDetail 
                         note={activeNote} 
                         allNotes={notes} 
-                        onBack={() => setView(ViewMode.LIST)} 
+                        onBack={() => setView(returnToAsk ? ViewMode.ASK_NOTES : ViewMode.LIST)} 
                         onDelete={handleDeleteNote} 
                         onSelectNote={handleFetchAndSelectNote} 
                         onEdit={() => { setView(ViewMode.EDIT); }} 
@@ -1007,6 +1029,21 @@ const App: React.FC = () => {
                         notes={notes}
                         onBack={() => setView(ViewMode.LIST)}
                     />
+                )}
+                {(askViewMounted || view === ViewMode.ASK_NOTES) && (
+                    <div className={view === ViewMode.ASK_NOTES ? 'h-full flex flex-col' : 'hidden'}>
+                        <AskNotesView
+                            notes={notes}
+                            onBack={() => setView(ViewMode.LIST)}
+                            onSelectNote={(id) => { setReturnToAsk(true); handleFetchAndSelectNote(id); }}
+                            onSaveNewNote={async (note) => {
+                                const ok = await handleSaveNote(note);
+                                if (!ok) throw new Error('메모 저장에 실패했습니다.');
+                                // 새 메모 저장은 기본적으로 목록으로 가므로, 정리본은 저장 후 답변 화면에 그대로 머무름
+                                setView(ViewMode.ASK_NOTES);
+                            }}
+                        />
+                    </div>
                 )}
             </div>
         </div>

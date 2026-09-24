@@ -32,6 +32,29 @@ const MODEL_FAST = 'claude-haiku-4-5-20251001';
 const MODEL_SMART = 'claude-sonnet-5';
 
 // ----------------------------------------------------------------------------
+// 독자 프로필: 모든 생성 프롬프트에 공통으로 붙여서, 기초 설명 대신 세부전문의
+// 수련 수준(가이드라인 수치·근거·시술 디테일·함정) 중심으로 쓰도록 맞춥니다.
+// ----------------------------------------------------------------------------
+const READER_PROFILE = `
+READER PROFILE (applies to everything you write):
+- The reader is a physician in subspecialty (fellowship) training in cardiology at a large
+  tertiary academic center in Korea, with advanced focus on electrophysiology and
+  interventional cardiology. Their notes also cover general internal medicine and other
+  clinical topics they run into at work (e.g., wound care, procedures, ward management).
+- Write at that level. Skip textbook basics and definitions they already know. Prioritize:
+  exact guideline thresholds and class of recommendation/level of evidence (ACC/AHA, ESC,
+  ASE, HRS/EHRA, KSC where relevant), landmark and recent trial data, device and procedural
+  specifics, practical pitfalls, and areas of controversy or where guidelines disagree.
+- Use standard English medical terms and abbreviations as used in clinical practice without
+  spelling out common ones (e.g., LVEF, PVI, CTI, TAVR, CRT-D, GDMT); Korean is fine for the
+  connecting prose.
+- For topics outside cardiology, keep the same attending-level density but do not invent
+  subspecialty depth the note doesn't support.
+- If something in the source is uncertain, outdated, or guideline-discordant, say so briefly
+  instead of smoothing it over.
+`;
+
+// ----------------------------------------------------------------------------
 // API 키 조회 (Vite 환경변수 → process.env 순서로 폴백)
 // ----------------------------------------------------------------------------
 const getApiKey = (): string => {
@@ -261,22 +284,54 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
             note.images.forEach(base64 => content.push(imageBlock(base64)));
         }
 
-        const textContent = note.content || "No text content. Please analyze the image context.";
+        const rawText = note.content || "No text content. Please analyze the image context.";
+        // 결과지를 여러 건 붙여넣은 메모는 수만~십수만 자가 될 수 있어 넉넉히 보냅니다.
+        // (짧은 일반 메모는 원래 길이만큼만 전송되므로 비용 차이는 없음)
+        const MAX_SUMMARY_INPUT_CHARS = 150000;
+        const isTruncated = rawText.length > MAX_SUMMARY_INPUT_CHARS;
+        const textContent = rawText.substring(0, MAX_SUMMARY_INPUT_CHARS);
 
         const prompt = `
-            You are a medical study assistant.
-            Analyze the provided medical note content and attached images (if any).
+            You are a clinical knowledge assistant.
+            ${READER_PROFILE}
+            Analyze the provided note content and attached images (if any).
 
-            Context: "${textContent.substring(0, 5000)}"
+            Context: """${textContent}"""
+            ${isTruncated ? `(NOTE: the note was longer than the limit and was cut off after ${MAX_SUMMARY_INPUT_CHARS} characters. Mention in one short line at the end that only the first part was analyzed.)` : ''}
 
             FIRST, classify the note itself:
+            - "DATA": the note is mostly pasted raw clinical records — multiple test/exam results,
+              reading reports, device interrogations, procedure records, lab tables, etc.
+              (typically several similar entries, often copied from an EMR or a spreadsheet).
             - "POLISHED": already reasonably organized/detailed notes (e.g. from a textbook,
               lecture slides, or the user's own structured writing).
             - "RUSHED": a quick, informal jotting — short fragments, abbreviations, no structure,
               things the user overheard or picked up on the fly (rounds, a colleague, a quick
               verbal pearl) and typed in a hurry, often without any source or context.
 
-            Task:
+            IF DATA — ignore the POLISHED/RUSHED rules and LENGTH limits below and do this instead:
+            - Goal: turn the pile of records into a reusable reference sheet for reading/reporting
+              this kind of study — the patterns across cases, the measurements that matter, the
+              decision thresholds, and how findings are typically phrased in reports.
+            - Start with ONE line stating what the data is and how many entries it contains
+              (e.g. "TTE 판독 32건 분석", "CIED interrogation 9건 분석").
+            - Then one or more markdown tables. Choose columns that fit the data type, for example:
+              · imaging/test reports: 질환·소견 | 핵심 측정 항목 | 판정 기준 (가이드라인 수치 + 이 데이터에서 관찰된 값 범위) | 판독문 표현 패턴 | 해당 케이스
+              · device interrogations: 항목 | 의미 | 정상/참고치 | 이 데이터에서 관찰된 값 | 임상적 의의
+              · procedure records: 질환 분류 | 해당 케이스 | 시술 전략·범위 | 매핑·도구 | 종료 판정 기준
+            - Table cells must be single-line (no line breaks inside a cell; separate items with "; ").
+            - After the tables, 3~6 bullets on notable patterns, outliers, or teaching points.
+            - Refer to entries by their record number when the note has one (blocks start with
+              "**[1]**", "**[2]**", ... — cite them as [1], [2]); otherwise by order of appearance
+              (#1, #2, ...). Labels like "환자#4" are already de-identified placeholders and may be
+              used. NEVER reproduce real patient identifiers (registration/ID numbers, names,
+              dates of birth), even if present.
+            - The note may have grown over time (results pasted in several batches, possibly with
+              a previous hand-written summary in between). Treat ALL entries in the note together.
+            - Be complete but compact (roughly up to 4,000 Korean characters in total).
+            - Web search: at most 2 searches, only to verify the guideline thresholds you cite.
+
+            Task (POLISHED / RUSHED):
             - If POLISHED: Write a concise, ABSTRACT-STYLE Markdown summary of the key medical
               concepts in this note — like a paper abstract, not a full explanation of everything.
             - If RUSHED: Treat the note's claims as something to VERIFY, not settled fact. Actively
@@ -286,7 +341,7 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
               outdated, or you cannot find support for it, say so briefly (e.g. "⚠️ 최신 가이드라인과
               다를 수 있음") rather than silently repeating it as fact.
 
-            LENGTH (STRICT — this is the most important rule):
+            LENGTH (STRICT for POLISHED / RUSHED — this is the most important rule):
             - At most 5~8 short bullet points, one sentence each.
             - Keep the ENTIRE summary under roughly 500 Korean characters (~350 words) in total.
             - Pick only the most clinically important points. Deliberately omit minor/secondary
@@ -301,16 +356,17 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
             - Each bullet MUST be a markdown list line starting with "- " immediately followed by
               its full sentence on the SAME line (e.g. "- Some sentence here."). Never put just "-"
               alone on a line with the sentence starting on the next line.
+            - Inside markdown table cells, do NOT use backticks — plain text only.
 
             SOURCES:
-            - Use the web search tool to find authoritative medical sources (e.g. CDC, NIH, Mayo Clinic, PubMed, UpToDate) that validate these concepts, and cite them inline.
+            - Use the web search tool to find authoritative sources (society guidelines such as ACC/AHA, ESC, ASE, HRS; primary trials on PubMed; UpToDate) that validate these concepts, and cite them inline.
               - RUSHED notes: this is the main point of the task — search actively (up to 3 searches) to properly ground the memo in evidence.
               - POLISHED notes: keep research minimal (1-2 searches is usually enough) — citations must not make the summary longer than the length limit above.
 
             OUTPUT RULES (STRICT):
             - Output ONLY the final summary text itself. Do NOT narrate your process (no "먼저 검색해보겠습니다",
               "추가로 확인해보겠습니다", or similar meta-commentary before/between/after the summary).
-            - Do NOT mention the "POLISHED"/"RUSHED" classification itself in the output — it's only for you to decide how to approach the task.
+            - Do NOT mention the "DATA"/"POLISHED"/"RUSHED" classification itself in the output — it's only for you to decide how to approach the task.
             - Output language: Korean (unless the note content is clearly in another language).
         `;
         content.push({ type: 'text', text: prompt });
@@ -318,10 +374,11 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
         const data = await callClaude({
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
-            // RUSHED(급하게 적은 메모) 케이스는 최대 3번까지 검색해 근거를 찾도록 허용하고,
-            // 늘어난 검색/인용 내용이 잘리지 않도록 max_tokens에 여유를 뒀습니다.
+            // RUSHED(급하게 적은 메모) 케이스는 최대 3번까지 검색해 근거를 찾도록 허용합니다.
+            // DATA(결과지 여러 건) 케이스는 정리표가 길어질 수 있어 max_tokens를 넉넉히
+            // 뒀습니다 — 일반 메모는 프롬프트의 길이 제한 때문에 실제로는 짧게 끝납니다.
             tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
-            max_tokens: 2200
+            max_tokens: 8000
         });
 
         const summary = extractText(data) || "Summary generation failed.";
@@ -354,8 +411,9 @@ export const generateStudySuggestions = async (notes: Note[], language: string =
         ).join("\n\n---\n\n");
 
         const prompt = `
-            You are a creative medical research assistant.
-            Analyze the provided medical notes (and images if any).
+            You are a creative clinical research assistant.
+            ${READER_PROFILE}
+            Analyze the provided notes (and images if any).
 
             Context: "${contextText.substring(0, 10000)}"
 
@@ -369,7 +427,8 @@ export const generateStudySuggestions = async (notes: Note[], language: string =
 
             CRITICAL RULES:
             1. **Relevance**: While being creative, ensure the topic is scientifically grounded in the context provided.
-            2. **Output Language: ${language}**.
+            2. **Level**: Topics must be worth a fellow's time — e.g. guideline discordances, trial results that changed practice, procedural decision points, mechanisms behind device/drug behavior. Nothing a resident would find basic.
+            3. **Output Language: ${language}**.
         `;
         content.push({ type: 'text', text: prompt });
 
@@ -414,13 +473,13 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
         ).join("\n\n---\n\n");
 
         const taskInstruction = modelLevel === 'detailed'
-            ? `Write a **PROFESSIONAL-GRADE, DEEP-DIVE** medical review article for this topic, intended for medical students or residents.
+            ? `Write a **PROFESSIONAL-GRADE, DEEP-DIVE** review for this topic, written for a subspecialty fellow (not students or residents).
 
                Required Depth:
-               1. **Pathophysiology**: Explain the mechanism at a molecular or cellular level.
-               2. **Clinical Presentation**: Distinguish between typical and atypical presentations.
-               3. **Diagnosis**: Specific diagnostic criteria, gold standard tests, and relevant lab values.
-               4. **Management**: Detailed treatment protocols, first-line vs second-line agents, and mechanisms of action.
+               1. **Mechanism**: Pathophysiology or device/procedural mechanism at the level needed to reason through atypical cases.
+               2. **Diagnosis & Assessment**: Exact criteria and thresholds (with guideline source and year), pitfalls in measurement/interpretation.
+               3. **Management**: Guideline recommendations with class/LOE, key trials behind them (name, population, main result), and where guidelines or experts disagree.
+               4. **Practical Pearls**: Procedural or real-world decision points and common errors.
 
                Tone: Academic, precise, and clinically oriented. Avoid superficial summaries. Be thorough,
                but write efficiently (no redundant padding or repeated points) so the full article fits
@@ -434,7 +493,8 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
                  stay condensed even when citing multiple sources, so it never gets cut off mid-sentence.`;
 
         const prompt = `
-            You are a specialized medical tutor.
+            You are a subspecialty-level clinical educator.
+            ${READER_PROFILE}
             Topic to Explain: "${topic}"
 
             Potential Context Notes (Warning: These may or may not be relevant):
@@ -479,6 +539,117 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
         console.error("Study Guide Content Gen Failed", error);
         throw error;
     }
+};
+
+// ----------------------------------------------------------------------------
+// 내 메모에 물어보기 / 여러 메모 정리본 만들기
+// - 관련 메모 검색(임베딩)은 화면(AskNotesView)에서 하고, 여기서는 찾은 메모를 근거로
+//   답변·정리본을 씁니다. 메모 번호 [메모1], [메모2] ... 는 화면에서 해당 메모로 바로 가는
+//   링크로 바뀌므로, 모델이 반드시 이 형식으로 인용하도록 합니다. (메모 안의 결과지 번호
+//   [1], [2] 와 헷갈리지 않도록 '메모'를 붙인 별도 형식을 씁니다.)
+// - 웹 검색은 쓰지 않습니다: "내 메모 기반" 답이 목적이고, 빠르고 저렴하게 유지.
+// ----------------------------------------------------------------------------
+const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: number): string => {
+    let used = 0;
+    const parts: string[] = [];
+    notes.forEach((n, i) => {
+        if (used >= totalChars) return;
+        const date = new Date(n.createdAt).toLocaleDateString('ko-KR');
+        const body = [
+            n.content || '',
+            n.transcription ? `(사진에서 추출한 텍스트: ${n.transcription})` : '',
+            n.summary ? `(이전에 만든 AI 요약: ${n.summary})` : ''
+        ].filter(Boolean).join('\n');
+        const budget = Math.min(perNoteChars, totalChars - used);
+        const clipped = body.length > budget ? body.slice(0, budget) + '\n…(이하 생략)' : body;
+        used += clipped.length;
+        parts.push(`[메모${i + 1}] ${n.title || '제목 없음'} (${date})\n${clipped}`);
+    });
+    return parts.join('\n\n=====\n\n');
+};
+
+const NOTE_CITATION_RULES = `
+CITATIONS (STRICT):
+- The notes are labelled [메모1], [메모2], ... Cite the label right after every statement that comes
+  from a note, e.g. "... LV threshold가 상승한 경우 [메모3]". Write each citation separately in exactly
+  this form (e.g. "[메모1][메모4]"). Never quote note titles as citations, never invent labels not in
+  the list, and never use bare numbers like [3] for notes.
+- Inside a note, pasted results may be numbered **[1]**, **[2]** ... To point to one of those, write
+  e.g. "메모2의 결과 #5" (no brackets) so it is not confused with a note citation.
+- Anything NOT supported by the notes but needed for a correct answer: add it briefly and mark it
+  "(메모 외 일반 지식)". Keep such additions short and clearly separated from what the notes say.
+- If notes contradict each other, or a note looks outdated / guideline-discordant, flag it with "⚠️".
+- Labels such as "환자#4" are de-identified placeholders; never try to reconstruct identities.
+`;
+
+export const answerFromNotes = async (question: string, notes: Note[]): Promise<string> => {
+    const prompt = `
+        You answer questions using the reader's OWN notes as the primary source.
+        ${READER_PROFILE}
+
+        QUESTION: """${question}"""
+
+        THE READER'S NOTES (most relevant first):
+        """
+        ${buildNotesContext(notes, 6000, 40000)}
+        """
+
+        HOW TO ANSWER:
+        - Start with the bottom line in 1~2 sentences, then supporting points as short bullets
+          ("- " + full sentence on the same line). Use a small table only if comparing options.
+        - Keep concrete numbers, thresholds, device settings and procedural details exactly as in
+          the notes.
+        - If the notes don't really address the question, say so in one line first, then answer
+          briefly from general knowledge (marked as such).
+        ${NOTE_CITATION_RULES}
+        OUTPUT: Korean (medical terms in English as usual). Output only the answer — no preamble,
+        no narration of your process.
+    `;
+
+    const data = await callClaude({
+        model: MODEL_SMART,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        max_tokens: 2500
+    });
+    const text = extractText(data);
+    if (!text) throw new Error('답변이 비어 있습니다.');
+    return text;
+};
+
+export const synthesizeNotes = async (topic: string, notes: Note[]): Promise<string> => {
+    const prompt = `
+        You merge several of the reader's own notes into ONE consolidated reference note.
+        ${READER_PROFILE}
+
+        TOPIC: """${topic}"""
+
+        SOURCE NOTES:
+        """
+        ${buildNotesContext(notes, 8000, 70000)}
+        """
+
+        WRITE THE CONSOLIDATED NOTE:
+        - Organize by the logic of the topic (e.g. indications → assessment/criteria → strategy/technique
+          → pitfalls → follow-up), using "##" / "###" headings. Do NOT add a top-level "#" title.
+        - Merge duplicates, but keep every concrete number, threshold, device parameter, drug/dose and
+          procedural detail found in the notes. Where the notes differ, show both with citations.
+        - Use a markdown table where it genuinely helps (comparisons, criteria); table cells single-line.
+        - End with "## 빈 곳 / 더 볼 것": 2~4 bullets on clinically important sub-topics the notes do
+          not cover yet (general knowledge, marked as such) — useful for the reader's next study.
+        - Ignore notes that turn out to be unrelated to the topic (don't cite them).
+        - Length: as long as needed to be complete, but no padding (roughly up to 3,500 Korean characters).
+        ${NOTE_CITATION_RULES}
+        OUTPUT: Korean (medical terms in English as usual). Output only the note itself.
+    `;
+
+    const data = await callClaude({
+        model: MODEL_SMART,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        max_tokens: 6000
+    });
+    const text = extractText(data);
+    if (!text) throw new Error('정리본이 비어 있습니다.');
+    return text;
 };
 
 // ----------------------------------------------------------------------------
@@ -533,9 +704,21 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
         ).join("\n\n---\n\n");
 
         const prompt = `
-            You are a medical professor.
-            Analyze the attached images (if any) and the following text context derived from multiple student notes.
-            Create a HIGH-QUALITY USMLE Step 2 CK style multiple choice question that integrates concepts from these notes if possible.
+            You are an attending physician writing subspecialty board-level questions.
+            ${READER_PROFILE}
+            Analyze the attached images (if any) and the following text context from the reader's own notes.
+            Create ONE high-quality multiple choice question that integrates concepts from these notes if possible.
+
+            QUESTION LEVEL:
+            - For cardiology content: cardiovascular disease subspecialty board / fellowship in-training exam level
+              (EP and interventional items at the depth expected of a fellow in those areas).
+            - For non-cardiology content: internal medicine board level, written for an attending.
+            - Test application and judgment, not recall: a clinical vignette with the data an expert would use
+              (ECG/EGM findings, echo or hemodynamic values, device parameters, labs) and a decision to make.
+            - Distractors must be plausible choices that a less experienced physician would pick
+              (e.g. an outdated threshold, the right drug in the wrong setting, a correct step in the wrong order).
+            - The keyed answer must be unambiguously correct under current major guidelines; avoid items where
+              experts genuinely disagree.
 
             CRITICAL INSTRUCTION:
             - Some notes may consist ONLY of images (e.g., handwritten notes, textbook screenshots, anatomical diagrams).
@@ -549,7 +732,8 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
             Task:
             1. Create a challenging clinical scenario based on the provided context.
             2. Provide exactly 5 options (A-E).
-            3. CRITICAL: Provide a **comprehensive medical explanation**.
+            3. CRITICAL: Provide an explanation that states why the answer is correct (with the guideline
+               threshold or trial behind it) and, briefly, why each distractor is wrong.
         `;
         content.push({ type: 'text', text: prompt });
 
@@ -557,7 +741,7 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
             model: MODEL_FAST,
             messages: [{ role: 'user', content }],
             toolName: 'submit_quiz_question',
-            toolDescription: 'Submit the generated USMLE-style multiple-choice clinical quiz question.',
+            toolDescription: 'Submit the generated subspecialty board-style multiple-choice clinical quiz question.',
             schema: {
                 type: 'object',
                 properties: {
@@ -628,7 +812,9 @@ export const generateOXQuiz = async (notes: Note[], language: QuizLanguage = 'Ko
         const targetAnswerIsTrue = Math.random() < 0.5;
 
         const prompt = `
-            Based on the following medical notes (and attached images if any), create a single "True or False" statement for a quick review quiz.
+            ${READER_PROFILE}
+            Based on the following notes (and attached images if any), create a single "True or False" statement for a quick review quiz, pitched at the reader's level above.
+            The statement must be unambiguously true or false under current major guidelines — avoid points where experts genuinely disagree.
 
             CRITICAL VISUAL ANALYSIS INSTRUCTION:
             - If a note contains BOTH text and images (charts, histology, diagrams), you MUST analyze the visual content.
@@ -651,8 +837,10 @@ export const generateOXQuiz = async (notes: Note[], language: QuizLanguage = 'Ko
             - **Techniques to use:**
                1. **Concept Swapping**: Attribute a symptom/drug/mechanism of Disease A to Disease B.
                2. **Nuance Alteration**: Change "increases" to "decreases", or "sympathetic" to "parasympathetic".
-               3. **False Association**: Connect a treatment to the wrong condition in a way that sounds medically plausible to a novice.
-            - The goal is to test if the user *really* understands the details.
+               3. **False Association**: Connect a treatment to the wrong condition in a way that sounds plausible.
+               4. **Threshold Shift**: Use a cutoff that is close to, but not, the guideline value (or an outdated one).
+               5. **Trial/Class Swap**: Attribute a result to the wrong trial, or state the wrong class of recommendation.
+            - The goal is to test whether a fellow *really* knows the details, not to catch a novice.
             ` : ''}
 
             - If False, provide an informative correction (2-3 sentences) explaining the correct medical reasoning.
@@ -704,6 +892,7 @@ export const generateDetailedQuizExplanation = async (question: string, isTrue: 
     try {
         const prompt = `
             Role: Medical Specialist presenting clinical evidence to peers.
+            ${READER_PROFILE}
 
             Task: validation of the True/False statement below.
 

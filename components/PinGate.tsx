@@ -53,7 +53,7 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
     };
 
     return (
-        <div className="min-h-screen w-full flex items-center justify-center bg-slate-50 px-6">
+        <div className="h-full w-full flex items-center justify-center bg-slate-50 px-6 overflow-y-auto">
             <form onSubmit={handleSubmit} className="w-full max-w-xs bg-white rounded-2xl shadow-lg border border-slate-200 p-6">
                 <div className="flex flex-col items-center mb-5">
                     <div className="w-12 h-12 rounded-xl bg-blue-600 flex items-center justify-center mb-3">

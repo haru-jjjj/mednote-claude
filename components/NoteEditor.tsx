@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Save, ArrowLeft, Image as ImageIcon, X, Loader2, ChevronLeft, ChevronRight, Bold, Italic, Subscript, Superscript, ArrowRight, Code, Sigma, Type, Undo, Table as TableIcon } from 'lucide-react';
 import { Note } from '../types';
 import { v4 as uuidv4 } from 'uuid';
+import { gridToMarkdown, looksLikeTsv, parseTsv, maskPatientIds, nextPatientLabelIndex, continueRecordNumbering } from '../services/pasteUtils';
 
 interface NoteEditorProps {
   onSave: (note: Note) => void;
@@ -19,7 +20,8 @@ interface NoteEditorProps {
 // ----------------------------------------------------------------------------
 const RICH_PASTE_TAG_REGEX = /<(table|ul|ol|h[1-6]|strong|b|em|i|code|pre|blockquote)[\s>]/i;
 
-const htmlToMarkdown = (root: HTMLElement): string => {
+// allowRecords: 엑셀/시트에서 온 표만 true — 긴 셀을 [n] 레코드 블록으로 바꿔도 되는 경우
+const htmlToMarkdown = (root: HTMLElement, opts: { allowRecords?: boolean } = {}): string => {
     function walk(node: Node): string {
         if (node.nodeType === Node.TEXT_NODE) {
             return (node.textContent || '').replace(/\s+/g, ' ');
@@ -36,25 +38,18 @@ const htmlToMarkdown = (root: HTMLElement): string => {
             case 'style': case 'script': case 'head': case 'meta': case 'link':
                 return '';
             case 'table': {
+                // 엑셀/EMR 표: 셀 안의 줄바꿈(<br>)을 살린 채 2차원 배열로 만든 뒤,
+                // 셀이 짧으면 마크다운 표로, 판독문처럼 길면 [1], [2] 레코드 블록으로 변환
+                // (services/pasteUtils.ts 의 gridToMarkdown 참고).
                 const rows = Array.from((el as HTMLTableElement).rows);
                 if (rows.length === 0) return '';
-                const cellToMd = (cell: HTMLTableCellElement) =>
+                const grid = rows.map(r => Array.from(r.cells).map(cell =>
                     Array.from(cell.childNodes).map(walk).join('')
-                        .replace(/\|/g, '\\|')
-                        .replace(/\r?\n+/g, ' ')
-                        .trim();
-                const headerCells = Array.from(rows[0].cells).map(cellToMd);
-                const colCount = Math.max(1, headerCells.length);
-                const lines = [
-                    '| ' + headerCells.join(' | ') + ' |',
-                    '| ' + Array(colCount).fill('---').join(' | ') + ' |'
-                ];
-                for (let i = 1; i < rows.length; i++) {
-                    const cells = Array.from(rows[i].cells).map(cellToMd);
-                    while (cells.length < colCount) cells.push('');
-                    lines.push('| ' + cells.slice(0, colCount).join(' | ') + ' |');
-                }
-                return '\n' + lines.join('\n') + '\n\n';
+                        .replace(/[ \t]*\n[ \t]*/g, '\n')
+                        .trim()
+                ));
+                const md = gridToMarkdown(grid, { allowRecords: !!opts.allowRecords });
+                return md ? '\n' + md + '\n\n' : '';
             }
             case 'strong': case 'b': { const t = children().trim(); return t ? `**${t}**` : ''; }
             case 'em': case 'i': { const t = children().trim(); return t ? `*${t}*` : ''; }
@@ -102,6 +97,17 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
   const [hasContent, setHasContent] = useState(false);
   const [images, setImages] = useState<string[]>([]);
   const [isProcessingImg, setIsProcessingImg] = useState(false);
+  // 붙여넣기 후 안내(등록번호 가림, 용량 경고 등)를 잠깐 보여주는 토스트
+  const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  const pasteNoticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showPasteNotice = (msg: string) => {
+      setPasteNotice(msg);
+      if (pasteNoticeTimerRef.current) clearTimeout(pasteNoticeTimerRef.current);
+      pasteNoticeTimerRef.current = setTimeout(() => setPasteNotice(null), 8000);
+  };
+  useEffect(() => () => {
+      if (pasteNoticeTimerRef.current) clearTimeout(pasteNoticeTimerRef.current);
+  }, []);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const loadedNoteIdRef = useRef<string | null>(null);
   const [viewingImage, setViewingImage] = useState<string | null>(null);
@@ -362,7 +368,10 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
   // 붙여넣기는 그대로 기본 동작을 사용한다(변환 과정에서 내용이 망가질 위험을 피하기 위함).
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
       // 이미지가 있으면 사진 첨부로 처리하고, 텍스트/표 붙여넣기 로직은 건너뛴다.
-      if (e.clipboardData.items && e.clipboardData.items.length > 0) {
+      // 단, 엑셀(특히 Mac)은 셀을 복사하면 텍스트/표와 함께 "셀 모양 그림"도 클립보드에
+      // 넣기 때문에, 텍스트가 같이 들어있으면 그림이 아니라 표/텍스트로 처리한다.
+      const hasClipboardText = e.clipboardData.getData('text/plain').trim().length > 0;
+      if (!hasClipboardText && e.clipboardData.items && e.clipboardData.items.length > 0) {
           const hasImage = Array.from(e.clipboardData.items).some(
               item => item.kind === 'file' && item.type.startsWith('image/')
           );
@@ -374,21 +383,49 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       }
 
       const html = e.clipboardData.getData('text/html');
-      if (!html || !RICH_PASTE_TAG_REGEX.test(html)) return; // 기본 붙여넣기(텍스트) 사용
+      const plain = e.clipboardData.getData('text/plain');
 
-      let markdown: string | null = null;
-      try {
-          const doc = new DOMParser().parseFromString(html, 'text/html');
-          markdown = htmlToMarkdown(doc.body).replace(/\n{3,}/g, '\n\n').trim();
-      } catch (err) {
-          console.error('붙여넣기 표/서식 변환 실패, 기본 텍스트 붙여넣기로 대체합니다.', err);
-          markdown = null;
+      // 0) 엑셀/구글 시트에서 복사한 경우: 탭 구분 텍스트 쪽이 셀 안 줄바꿈까지 가장 정확히
+      //    보존되므로 그걸 우선 사용. 셀 하나 또는 한 행만 복사한 경우는 표로 바꾸지 않고
+      //    일반 텍스트로 붙여넣는다(문장 중간에 붙여넣어도 빈 줄이 끼지 않도록).
+      const isSpreadsheetCopy = /urn:schemas-microsoft-com:office:excel|ProgId content="?Excel|google-sheets-html-origin/i.test(html || '');
+      let converted: string | null = null;
+      if (isSpreadsheetCopy) {
+          const grid = parseTsv(plain).filter(r => r.some(c => c.trim()));
+          const isMultiCell = grid.length >= 2 || grid.some(r => r.some(c => c.includes('\n')));
+          if (isMultiCell) {
+              converted = gridToMarkdown(grid, { allowRecords: true }) || null;
+          }
+      } else {
+          // 1) 서식/표가 있는 HTML(클로드 답변 등) → 마크다운으로 변환 (표는 항상 표로 유지)
+          if (html && RICH_PASTE_TAG_REGEX.test(html)) {
+              try {
+                  const doc = new DOMParser().parseFromString(html, 'text/html');
+                  converted = htmlToMarkdown(doc.body, { allowRecords: false }).replace(/\n{3,}/g, '\n\n').trim() || null;
+              } catch (err) {
+                  console.error('붙여넣기 표/서식 변환 실패, 기본 텍스트 붙여넣기로 대체합니다.', err);
+                  converted = null;
+              }
+          }
+          // 2) HTML 없이 탭 구분 텍스트만 오는 경우(일부 기기/앱의 엑셀 복사) — 대부분의 행이
+          //    같은 열 개수일 때만 표로 본다(일반 글에 탭이 몇 개 섞인 경우는 건드리지 않음)
+          if (!converted && !html && looksLikeTsv(plain)) {
+              converted = gridToMarkdown(parseTsv(plain), { allowRecords: true }) || null;
+          }
       }
-      if (!markdown) return; // 변환 실패 시 기본 붙여넣기(텍스트) 사용
 
-      e.preventDefault();
       const textarea = contentRef.current;
       if (!textarea) return;
+
+      // 3) 환자 등록번호로 보이는 8자리 숫자는 "환자#1" 같은 라벨로 자동 치환
+      //    (메모는 클라우드에 저장되고 AI에도 전송되므로 직접 식별정보를 남기지 않기 위함)
+      const source = converted !== null ? continueRecordNumbering(textarea.value, converted) : plain;
+      const { text: maskedText, count: maskedCount } = maskPatientIds(source, nextPatientLabelIndex(textarea.value));
+
+      // 변환도, 가릴 번호도 없으면 브라우저 기본 붙여넣기 그대로 사용
+      if (converted === null && maskedCount === 0) return;
+
+      e.preventDefault();
 
       const start = textarea.selectionStart;
       const end = textarea.selectionEnd;
@@ -396,18 +433,39 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       const before = text.substring(0, start);
       const after = text.substring(end);
 
-      // 표/블록 요소는 앞뒤에 빈 줄이 있어야 별도 블록으로 정확히 인식된다.
-      const leadingBreak = before.length === 0 || before.endsWith('\n\n') ? '' : (before.endsWith('\n') ? '\n' : '\n\n');
-      const trailingBreak = after.length === 0 || after.startsWith('\n') ? '' : '\n\n';
-      const insertion = leadingBreak + markdown + trailingBreak;
-
-      try {
-          textarea.setRangeText(insertion, start, end, 'end');
-      } catch {
-          textarea.value = before + insertion + after;
-          const pos = (before + insertion).length;
-          textarea.setSelectionRange(pos, pos);
+      let insertion = maskedText;
+      if (converted !== null) {
+          // 표/블록 요소는 앞뒤에 빈 줄이 있어야 별도 블록으로 정확히 인식된다.
+          const leadingBreak = before.length === 0 || before.endsWith('\n\n') ? '' : (before.endsWith('\n') ? '\n' : '\n\n');
+          const trailingBreak = after.length === 0 || after.startsWith('\n') ? '' : '\n\n';
+          insertion = leadingBreak + maskedText + trailingBreak;
       }
+
+      // execCommand('insertText')로 넣어야 Cmd/Ctrl+Z(실행 취소)로 되돌릴 수 있다.
+      // 지원하지 않는 환경에서만 setRangeText로 대체(이 경우 실행 취소 불가).
+      let inserted = false;
+      try {
+          textarea.focus();
+          inserted = typeof document.execCommand === 'function' && document.execCommand('insertText', false, insertion);
+      } catch {
+          inserted = false;
+      }
+      if (!inserted || textarea.value === text) {
+          try {
+              textarea.setRangeText(insertion, start, end, 'end');
+          } catch {
+              textarea.value = before + insertion + after;
+              const pos = (before + insertion).length;
+              textarea.setSelectionRange(pos, pos);
+          }
+      }
+
+      const notices: string[] = [];
+      if (maskedCount > 0) notices.push(`등록번호로 보이는 숫자 ${maskedCount}개를 '환자#번호'로 가렸습니다.`);
+      // Firestore 문서 1개는 최대 1MB라, 너무 크면 클라우드 저장이 실패할 수 있음
+      const bytes = new TextEncoder().encode(textarea.value).length;
+      if (bytes > 800_000) notices.push(`메모가 약 ${Math.round(bytes / 1024)}KB로 커서 클라우드 저장이 실패할 수 있어요. 메모 2개로 나눠 저장하는 걸 권장합니다.`);
+      if (notices.length) showPasteNotice(notices.join(' '));
 
       setTimeout(handleTextChange, 0);
   };
@@ -549,7 +607,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
         <textarea
           ref={contentRef}
           className="flex-1 w-full resize-none outline-none p-3 md:p-4 text-slate-800 text-sm leading-relaxed placeholder:text-slate-300 bg-transparent overflow-y-auto font-mono md:font-sans"
-          placeholder="메모 내용을 입력하세요... (Markdown 지원 — 표는 클로드 답변에서 그대로 복사해 붙여넣어도 됩니다. 사진도 복사해서 Ctrl/Cmd+V로 바로 붙여넣을 수 있어요)"
+          placeholder="메모 내용을 입력하세요... (Markdown 지원 — 클로드 답변의 표, 엑셀의 검사 결과지, 사진도 복사해서 그대로 붙여넣을 수 있어요)"
           defaultValue={initialNote?.content || ''}
           onChange={handleTextChange}
           onPaste={handlePaste}
@@ -558,6 +616,18 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
         />
       </div>
       
+      {pasteNotice && (
+        <div
+          className="absolute left-1/2 -translate-x-1/2 bottom-4 z-40 w-[92%] max-w-md bg-slate-800 text-white text-xs leading-relaxed px-4 py-3 rounded-xl shadow-lg flex items-start gap-2"
+          role="status"
+        >
+          <span className="flex-1">{pasteNotice}</span>
+          <button type="button" onClick={() => setPasteNotice(null)} className="shrink-0 text-slate-300 hover:text-white" aria-label="닫기">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {viewingImage && (
           <div 
             className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200"

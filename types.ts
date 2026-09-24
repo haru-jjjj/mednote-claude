@@ -27,7 +27,8 @@ export enum ViewMode {
   EDIT = 'EDIT',
   DETAIL = 'DETAIL',
   QUIZ = 'QUIZ',
-  STUDY_GUIDE = 'STUDY_GUIDE'
+  STUDY_GUIDE = 'STUDY_GUIDE',
+  ASK_NOTES = 'ASK_NOTES'
 }
 
 export type QuizType = 'MULTIPLE_CHOICE' | 'OX';
