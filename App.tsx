@@ -39,7 +39,8 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
             isProcessed: !!n.isProcessed,
             isEnhancing: false,
             quizMasteryCount: typeof n.quizMasteryCount === 'number' ? n.quizMasteryCount : 0,
-            tag: n.tag === 'memo' || n.tag === 'patient' ? n.tag : undefined
+            tag: n.tag === 'memo' || n.tag === 'patient' ? n.tag : undefined,
+            summarizedAt: typeof n.summarizedAt === 'number' ? n.summarizedAt : undefined
         };
     });
 };

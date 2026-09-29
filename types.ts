@@ -20,6 +20,7 @@ export interface Note {
   embedding?: number[]; // Voyage AI 임베딩 벡터 (의미 기반 검색용)
   embeddingUpdatedAt?: number; // embedding이 계산된 시점 — updatedAt보다 오래되면 재계산 필요
   tag?: NoteTag; // 분류 태그 (없으면 미분류)
+  summarizedAt?: number; // AI 요약을 만든 시각 — 이후 메모가 수정됐으면 "수정 전 요약" 표시
 }
 
 // 태그는 일부러 두 가지만 둡니다 (많아지면 관리가 번거로워짐).

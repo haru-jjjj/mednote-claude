@@ -103,6 +103,8 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
   // 판독문·시술기록·의무기록을 여러 건 붙여넣은 메모인지 형식과 무관하게 대략 판별 → 정리 안내 카드 표시
   const dataRecordCount = useMemo(() => estimateDataRecordCount(note.content || ''), [note.content]);
   const isPatientNote = note.tag === 'patient';
+  // 요약을 만든 뒤 메모 내용을 고쳤는지 (요약 시각을 기록한 요약만 판단 가능)
+  const isSummaryOutdated = !!note.summarizedAt && !!note.updatedAt && note.updatedAt > note.summarizedAt;
   const isDataNote = !isPatientNote && dataRecordCount >= 3;
 
   const getSnippet = (n: Note) => {
@@ -150,6 +152,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                   ...latest,
                   summary: result.summary,
                   sources: result.sources,
+                  summarizedAt: Date.now(),
                   isProcessed: true // Mark as AI processed
               };
               onUpdateNote(updatedNote);
@@ -366,12 +369,17 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             {/* AI Summary Section */}
             {(note.summary || isSummarizing) && (
                 <div className="mb-6 bg-indigo-50/60 border border-indigo-100 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 relative overflow-hidden">
-                    <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-2 text-indigo-700 font-bold">
+                    <div className="flex items-center justify-between gap-2 mb-3">
+                        <div className="flex flex-wrap items-center gap-2 text-indigo-700 font-bold min-w-0">
                             {isSummarizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
                             <h3 className="text-base uppercase tracking-wide">
                                 {isSummarizing ? progressStatus : 'AI Smart Summary'}
                             </h3>
+                            {!isSummarizing && note.summary && isSummaryOutdated && (
+                                <span className="text-[11px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded normal-case tracking-normal">
+                                    메모 수정 전 요약 · ✨로 새로 요약
+                                </span>
+                            )}
                         </div>
                         {!isSummarizing && note.summary && isPatientNote && (
                             <button

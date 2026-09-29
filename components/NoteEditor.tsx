@@ -157,9 +157,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
     let noteToSave: Note;
 
     if (initialNote) {
-        const contentChanged = currentContent !== (initialNote.content || '');
         const imagesChanged = JSON.stringify(currentImages) !== JSON.stringify(initialNote.images || []);
-        const isModified = contentChanged || imagesChanged;
 
         noteToSave = {
             ...initialNote,
@@ -168,11 +166,10 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             tag,
             updatedAt: now,
             title: (initialNote.title === 'Untitled Note' || !initialNote.title) ? initialTitle : initialNote.title,
-            // 버그 수정: 예전에는 내용/이미지를 수정하면 sources만 비우고 summary 텍스트는 그대로
-            // 남아있어서 "출처 없는 요약문"이 화면에 남는 불일치가 있었습니다. 이제 둘을 함께
-            // 초기화해서 다시 "AI 요약" 버튼을 눌러야 최신 내용 기준으로 재생성되게 합니다.
-            summary: isModified ? '' : (initialNote.summary || ''),
-            sources: isModified ? [] : (initialNote.sources || []),
+            // 메모를 고쳐도 기존 AI 요약(과 그 출처)은 그대로 둡니다. 사용자가 ✨로 다시 요약할
+            // 때만 바뀌고, 그 전까지는 상세 화면에 "메모 수정 전 요약"이라고 표시됩니다.
+            summary: initialNote.summary || '',
+            sources: initialNote.sources || [],
             isProcessed: imagesChanged ? false : !!initialNote.isProcessed,
             transcription: imagesChanged ? undefined : initialNote.transcription,
         };
