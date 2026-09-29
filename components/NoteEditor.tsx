@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Save, ArrowLeft, Image as ImageIcon, X, Loader2, ChevronLeft, ChevronRight, Bold, Italic, Subscript, Superscript, ArrowRight, Code, Sigma, Type, Undo, Table as TableIcon } from 'lucide-react';
-import { Note } from '../types';
+import { Note, NoteTag, NOTE_TAG_LABELS } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { gridToMarkdown, looksLikeTsv, parseTsv, continueRecordNumbering } from '../services/pasteUtils';
 
@@ -96,6 +96,8 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
   
   const [hasContent, setHasContent] = useState(false);
   const [images, setImages] = useState<string[]>([]);
+  // 분류 태그: 메모 / 환자 / 미선택(undefined)
+  const [tag, setTag] = useState<NoteTag | undefined>(undefined);
   const [isProcessingImg, setIsProcessingImg] = useState(false);
   // 붙여넣기 후 안내(용량 경고 등)를 잠깐 보여주는 토스트
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
@@ -120,6 +122,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             }
             setHasContent(!!(initialNote.content && initialNote.content.trim().length > 0));
             setImages(initialNote.images || []);
+            setTag(initialNote.tag);
             loadedNoteIdRef.current = initialNote.id;
         }
     } else {
@@ -129,6 +132,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             }
             setHasContent(false);
             setImages([]);
+            setTag(undefined);
             loadedNoteIdRef.current = 'new';
         }
     }
@@ -161,6 +165,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             ...initialNote,
             content: currentContent,
             images: currentImages,
+            tag,
             updatedAt: now,
             title: (initialNote.title === 'Untitled Note' || !initialNote.title) ? initialTitle : initialNote.title,
             // 버그 수정: 예전에는 내용/이미지를 수정하면 sources만 비우고 summary 텍스트는 그대로
@@ -181,6 +186,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             updatedAt: now,
             sources: [],
             images: currentImages,
+            tag,
             isEnhancing: false,
             isProcessed: false
         };
@@ -548,6 +554,26 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden bg-white z-0 relative">
+        {/* 분류 태그 (선택 안 해도 됨, 다시 누르면 해제) */}
+        <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2 border-b border-slate-100 bg-white">
+            <span className="text-[11px] font-bold text-slate-400">분류</span>
+            {(['memo', 'patient'] as NoteTag[]).map(t => (
+                <button
+                    key={t}
+                    type="button"
+                    onClick={() => setTag(prev => (prev === t ? undefined : t))}
+                    className={`px-2.5 py-1 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${
+                        tag === t
+                            ? (t === 'patient' ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-blue-50 border-blue-200 text-blue-600')
+                            : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'
+                    }`}
+                >
+                    {NOTE_TAG_LABELS[t]}
+                </button>
+            ))}
+            {!tag && <span className="text-[11px] text-slate-300">미선택</span>}
+        </div>
+
         {images.length > 0 && (
             <div className="flex-shrink-0 max-h-[30vh] overflow-y-auto p-4 border-b border-slate-100 bg-slate-50/50">
                 <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3">

@@ -2,14 +2,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
-import NoteList from './components/NoteList';
+import NoteList, { TagFilter } from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
 import QuizView from './components/QuizView';
 import StudyGuideView from './components/StudyGuideView';
 import AskNotesView from './components/AskNotesView';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
 import PinSettingsModal from './components/PinSettingsModal';
-import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage } from './types';
+import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NOTE_TAG_LABELS } from './types';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages } from './services/claudeService';
 import { syncNotesFromFirestore, saveNoteToFirestore, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
@@ -38,7 +38,8 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
             sources: Array.isArray(n.sources) ? n.sources : [],
             isProcessed: !!n.isProcessed,
             isEnhancing: false,
-            quizMasteryCount: typeof n.quizMasteryCount === 'number' ? n.quizMasteryCount : 0
+            quizMasteryCount: typeof n.quizMasteryCount === 'number' ? n.quizMasteryCount : 0,
+            tag: n.tag === 'memo' || n.tag === 'patient' ? n.tag : undefined
         };
     });
 };
@@ -202,6 +203,13 @@ const App: React.FC = () => {
   // 답변 화면으로 돌아오도록 합니다. 답변 화면은 한 번 열면 숨긴 채로 유지해서(언마운트
   // 안 함) 질문·답변 내용이 사라지지 않게 합니다.
   const [showPinSettings, setShowPinSettings] = useState(false);
+  // 메모 목록의 분류 필터 (전체/메모/환자) — 메모를 열었다 돌아와도 유지되도록 여기서 관리
+  const [tagFilter, setTagFilter] = useState<TagFilter>('all');
+  useEffect(() => {
+      // 분류로 모아볼 때는 예전 메모까지 포함되도록 전체 메모를 한 번 불러옴
+      if (tagFilter !== 'all') triggerAutoFetchAllOnce();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tagFilter]);
   const [askViewMounted, setAskViewMounted] = useState(false);
   const [returnToAsk, setReturnToAsk] = useState(false);
   useEffect(() => {
@@ -606,7 +614,7 @@ const App: React.FC = () => {
             const full = await getNoteFromDB(n.id);
             if (full) allFullNotes.push(full);
         }
-        const headers = ['Title', 'Content', 'Created At', 'Updated At'];
+        const headers = ['Title', 'Tag', 'Content', 'Created At', 'Updated At'];
         const csvRows = [headers.join(',')];
         for (const note of allFullNotes) {
             const escapeCsv = (str: string) => {
@@ -617,7 +625,8 @@ const App: React.FC = () => {
             const content = escapeCsv(note.content);
             const createdAt = escapeCsv(new Date(note.createdAt).toISOString());
             const updatedAt = escapeCsv(note.updatedAt ? new Date(note.updatedAt).toISOString() : new Date(note.createdAt).toISOString());
-            csvRows.push([title, content, createdAt, updatedAt].join(','));
+            const tag = escapeCsv(note.tag ? NOTE_TAG_LABELS[note.tag] : '');
+            csvRows.push([title, tag, content, createdAt, updatedAt].join(','));
         }
         const csvString = csvRows.join('\n');
         const blob = new Blob(['\uFEFF' + csvString], { type: 'text/csv;charset=utf-8;' });
@@ -778,7 +787,11 @@ const App: React.FC = () => {
         if (!note.isProcessed && note.images && note.images.length > 0) {
              extractTextFromImages(note.images).then(async text => {
                  if (text) {
-                     const updatedNote = { ...note, transcription: text, isProcessed: true };
+                     // 사진 글자 읽기는 몇 초 걸리므로, 그 사이 바뀐 내용(태그·요약 등)을 덮어쓰지 않도록
+                     // 최신 메모를 다시 읽어서 사진 텍스트만 얹습니다. 사진이 그새 바뀌었으면 버립니다.
+                     const latest = await getNoteFromDB(note.id).catch(() => undefined);
+                     if (!latest || JSON.stringify(latest.images || []) !== JSON.stringify(note.images || [])) return;
+                     const updatedNote = { ...latest, transcription: text, isProcessed: true };
                      // OCR 텍스트를 먼저 완전히 저장한 뒤 임베딩을 계산해야, 임베딩이
                      // OCR 이전의 오래된 내용을 참조하는 경쟁 상태(race condition)를 피할 수 있습니다.
                      await saveNoteToDB(updatedNote).catch(console.error);
@@ -807,7 +820,10 @@ const App: React.FC = () => {
         if (updatedNote.images && updatedNote.images.length > 0 && !updatedNote.isProcessed) {
             extractTextFromImages(updatedNote.images).then(async text => {
                 if (text) {
-                    const finalNote = { ...updatedNote, transcription: text, isProcessed: true };
+                    // 위와 같은 이유로 최신 메모 위에 사진 텍스트만 얹음
+                    const latest = await getNoteFromDB(updatedNote.id).catch(() => undefined);
+                    if (!latest || JSON.stringify(latest.images || []) !== JSON.stringify(updatedNote.images || [])) return;
+                    const finalNote = { ...latest, transcription: text, isProcessed: true };
                     // OCR 텍스트를 먼저 완전히 저장한 뒤 임베딩을 계산 (경쟁 상태 방지)
                     await saveNoteToDB(finalNote).catch(console.error);
                     saveNoteToFirestore(finalNote);
@@ -820,6 +836,21 @@ const App: React.FC = () => {
     } catch(e) {
         console.error("Update Error", e);
         alert("메모 수정 저장 실패");
+    }
+  };
+
+  // 분류 태그만 바꿀 때: 저장·동기화만 하고 임베딩/사진 읽기 같은 유료 호출은 하지 않음
+  const handleSetNoteTag = async (id: string, tag: Note['tag']) => {
+    try {
+        const latest = (await getNoteFromDB(id)) || notes.find(n => n.id === id);
+        if (!latest) return;
+        const updated: Note = { ...latest, tag };
+        await saveNoteToDB(updated);
+        saveNoteToFirestore(updated);
+        setNotes(prev => prev.map(n => n.id === id ? { ...n, tag } : n));
+    } catch (e) {
+        console.error("Tag update failed", e);
+        alert("분류 변경 저장에 실패했습니다.");
     }
   };
 
@@ -1011,6 +1042,8 @@ const App: React.FC = () => {
                         searchTerm={searchTerm}
                         onSearchChange={setSearchTerm}
                         embeddingBackfillProgress={embeddingBackfillProgress}
+                        tagFilter={tagFilter}
+                        onTagFilterChange={setTagFilter}
                     />
                 )}
                 {view === ViewMode.DETAIL && activeNote && (
@@ -1022,6 +1055,7 @@ const App: React.FC = () => {
                         onSelectNote={handleFetchAndSelectNote} 
                         onEdit={() => { setView(ViewMode.EDIT); }} 
                         onUpdateNote={handleUpdateNote} 
+                        onSetTag={handleSetNoteTag}
                     />
                 )}
                 {view === ViewMode.QUIZ && (

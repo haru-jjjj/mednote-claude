@@ -2,11 +2,12 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw, Link2 } from 'lucide-react';
 import DOMPurify from 'dompurify';
-import { Note, Source } from '../types';
+import { Note, Source, NoteTag, NOTE_TAG_LABELS } from '../types';
 import { marked } from 'marked';
 import { summarizeSingleNote, formatMedicalMarkdown } from '../services/claudeService';
 import { cosineSimilarity } from '../services/voyageService';
 import { estimateDataRecordCount } from '../services/pasteUtils';
+import { getNoteFromDB } from '../services/storage';
 
 interface NoteDetailProps {
   note: Note;
@@ -16,9 +17,10 @@ interface NoteDetailProps {
   onSelectNote: (id: string) => void;
   onEdit: (note: Note) => void;
   onUpdateNote: (note: Note) => void;
+  onSetTag: (id: string, tag: Note['tag']) => void;
 }
 
-const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelete, onSelectNote, onEdit, onUpdateNote }) => {
+const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelete, onSelectNote, onEdit, onUpdateNote, onSetTag }) => {
   const [viewingImage, setViewingImage] = useState<string | null>(null);
   
   // Progress State
@@ -100,7 +102,8 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
 
   // 판독문·시술기록·의무기록을 여러 건 붙여넣은 메모인지 형식과 무관하게 대략 판별 → 정리 안내 카드 표시
   const dataRecordCount = useMemo(() => estimateDataRecordCount(note.content || ''), [note.content]);
-  const isDataNote = dataRecordCount >= 3;
+  const isPatientNote = note.tag === 'patient';
+  const isDataNote = !isPatientNote && dataRecordCount >= 3;
 
   const getSnippet = (n: Note) => {
       const text = (n.summary || n.content || '').replace(/[#*`>_-]/g, '').trim();
@@ -140,8 +143,11 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
           const result = await summarizeSingleNote(note);
           if (result) {
               // SAVE result to DB via onUpdateNote (Persistence)
+              // 요약에는 수십 초가 걸릴 수 있어, 그 사이 바뀐 내용(태그 등)을 덮어쓰지 않도록
+              // 최신 메모를 다시 읽어서 요약만 얹습니다.
+              const latest = (await getNoteFromDB(note.id).catch(() => undefined)) || note;
               const updatedNote = {
-                  ...note,
+                  ...latest,
                   summary: result.summary,
                   sources: result.sources,
                   isProcessed: true // Mark as AI processed
@@ -298,10 +304,48 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
         <div className="max-w-3xl mx-auto p-4 md:p-6 pb-32">
             
             <div className="mb-6">
-                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center mb-3">
                     <span className="text-sm text-slate-400 flex items-center font-medium"><Calendar className="w-4 h-4 mr-1.5" /> {new Date(note.createdAt).toLocaleString()}</span>
                 </div>
+                {/* 분류 태그: 보기 화면에서 바로 지정·변경 (다시 누르면 해제). 편집 화면과 같은 모양. */}
+                <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-xl">
+                    <span className="text-xs font-bold text-slate-500">분류</span>
+                    {(['memo', 'patient'] as NoteTag[]).map(t => (
+                        <button
+                            key={t}
+                            onClick={() => onSetTag(note.id, note.tag === t ? undefined : t)}
+                            disabled={isSummarizing}
+                            className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors whitespace-nowrap disabled:opacity-50 ${
+                                note.tag === t
+                                    ? (t === 'patient' ? 'bg-rose-50 border-rose-300 text-rose-600' : 'bg-blue-50 border-blue-300 text-blue-600')
+                                    : 'bg-white border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+                            }`}
+                            title={note.tag === t ? '분류 해제' : `'${NOTE_TAG_LABELS[t]}'로 분류`}
+                        >
+                            {NOTE_TAG_LABELS[t]}
+                        </button>
+                    ))}
+                    <span className="text-[11px] text-slate-400">
+                        {note.tag ? '다시 누르면 해제' : '미선택 — 눌러서 분류'}
+                    </span>
+                </div>
             </div>
+
+            {/* 환자 메모: 요약이 아직 없으면 케이스 분석(추정·감별 진단, 추가 공부)을 권함 */}
+            {isPatientNote && !note.summary && !isSummarizing && (
+                <button
+                    onClick={handleSummarize}
+                    className="w-full mb-6 flex items-start gap-3 text-left bg-rose-50/60 border border-rose-100 rounded-xl p-4 hover:bg-rose-50 transition-colors"
+                >
+                    <Sparkles className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                        <div className="font-bold text-rose-700 text-sm">환자 메모 — AI로 추정·감별 진단, 추가 공부 정리</div>
+                        <div className="text-xs text-rose-500 mt-1 leading-relaxed">
+                            케이스 요약(날짜별 핵심 수치 추이), 추정 진단과 근거, 감별 진단, 추가로 확인할 것, 이 케이스로 공부할 내용을 정리합니다. 기록을 더 추가한 뒤 다시 누르면 새로 분석해요.
+                        </div>
+                    </div>
+                </button>
+            )}
 
             {/* 기록 묶음 메모: 요약이 아직 없으면 정리 기능을 눈에 띄게 안내 */}
             {isDataNote && !note.summary && !isSummarizing && (
@@ -329,6 +373,15 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                 {isSummarizing ? progressStatus : 'AI Smart Summary'}
                             </h3>
                         </div>
+                        {!isSummarizing && note.summary && isPatientNote && (
+                            <button
+                                onClick={handleSummarize}
+                                className="ml-auto mr-1 text-[11px] font-bold text-rose-500 hover:text-rose-700 whitespace-nowrap"
+                                title="환자 메모 기준으로 추정·감별 진단, 추가 공부를 다시 정리"
+                            >
+                                케이스 분석 다시 하기
+                            </button>
+                        )}
                         {!isSummarizing && note.summary && (
                             <button 
                                 onClick={handleDeleteSummary}

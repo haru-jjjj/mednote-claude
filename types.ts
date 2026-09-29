@@ -19,7 +19,12 @@ export interface Note {
   quizMasteryCount?: number; // Tracks how many times a user answered correctly related to this note
   embedding?: number[]; // Voyage AI 임베딩 벡터 (의미 기반 검색용)
   embeddingUpdatedAt?: number; // embedding이 계산된 시점 — updatedAt보다 오래되면 재계산 필요
+  tag?: NoteTag; // 분류 태그 (없으면 미분류)
 }
+
+// 태그는 일부러 두 가지만 둡니다 (많아지면 관리가 번거로워짐).
+export type NoteTag = 'memo' | 'patient';
+export const NOTE_TAG_LABELS: Record<NoteTag, string> = { memo: '메모', patient: '환자' };
 
 export enum ViewMode {
   LIST = 'LIST',

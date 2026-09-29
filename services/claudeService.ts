@@ -299,7 +299,14 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
             Context: """${textContent}"""
             ${isTruncated ? `(NOTE: the note was longer than the limit and was cut off after ${MAX_SUMMARY_INPUT_CHARS} characters. Mention in one short line at the end that only the first part was analyzed.)` : ''}
 
+            READER'S TAG FOR THIS NOTE: ${note.tag === 'patient' ? '"환자" (patient note)' : note.tag === 'memo' ? '"메모" (study/work memo — NOT a patient case)' : 'none'}
+
             FIRST, classify the note itself:
+            - "PATIENT": the note is about ONE specific patient the reader is managing — their history,
+              that patient's test results/records over time, a case write-up, admission/progress notes.
+              RULES: if the tag is "환자", ALWAYS use PATIENT (even if it contains pasted reports).
+              If the tag is "메모", NEVER use PATIENT. If there is no tag, use PATIENT only when the note
+              is clearly about one specific patient.
             - "DATA": the note is mostly pasted clinical documentation written by others — exam/test
               reading reports (echo, CT, cath, EP study...), device interrogations, procedure records,
               admission/progress/discharge notes, lab results, etc. It may be ONE record or many, in ANY
@@ -310,6 +317,29 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
             - "RUSHED": a quick, informal jotting — short fragments, abbreviations, no structure,
               things the user overheard or picked up on the fly (rounds, a colleague, a quick
               verbal pearl) and typed in a hurry, often without any source or context.
+
+            IF PATIENT — ignore the DATA/POLISHED/RUSHED rules and LENGTH limits below and do this instead.
+            This is educational decision support for a physician; they make the final call.
+            Use these "###" sections, in this order:
+            ### 케이스 요약
+              3~6 bullets: key background, the timeline of key findings WITH DATES and the trend of key
+              values (e.g. "LVEF 35% (2025.03) → 48% (2026.07)"), current problem list.
+            ### 추정 진단
+              The most likely diagnosis/diagnoses, each with the specific findings in the note that
+              support it (with dates). Say how confident, and why.
+            ### 감별 진단
+              2~5 alternatives worth excluding. For each, one line each for: 지지 소견 / 반대 소견 /
+              감별에 필요한 검사·정보.
+            ### 추가로 확인할 것
+              Missing data or tests, and guideline-based next steps worth checking (with the threshold
+              or class of recommendation where it matters). Flag anything potentially urgent with ⚠️.
+            ### 추가 공부
+              2~4 focused topics worth reading for THIS case (a guideline section, a landmark trial, a
+              mechanism or procedural point), each with one line on why it matters here.
+            - If the note doesn't contain enough to reason about something, say what is missing instead
+              of guessing.
+            - Bullets "- " with the full sentence on the same line. Up to ~3,000 Korean characters.
+            - Web search: up to 3 searches to ground guideline thresholds/recommendations; cite them.
 
             IF DATA — ignore the POLISHED/RUSHED rules and LENGTH limits below and do this instead:
             - PURPOSE: the reader collects real records to learn HOW experienced physicians document
@@ -357,7 +387,7 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
               details rather than trying to cover everything in the note — a shorter, focused
               summary is strongly preferred over a long, exhaustive one.
 
-            FORMATTING (STRICT — for DATA, only the bullet rule applies; quoted phrases stay exactly as written, no backticks):
+            FORMATTING (STRICT — for PATIENT and DATA, only the bullet rule applies; quoted phrases stay exactly as written, no backticks):
             - For mathematical formulas, numbers with units, chemical equations, or special symbols (like >, <, =, ->, 1mm), ALWAYS wrap them in single backticks to format them as inline code.
               - Correct Example: \`> 1mm\`, \`x^2\`, \`H2O\`, \`pH < 7.35\`
               - Do NOT use LaTeX blocks like $$...$$ or raw symbols without backticks.
@@ -367,7 +397,7 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
               alone on a line with the sentence starting on the next line.
             - Inside markdown table cells, do NOT use backticks — plain text only.
 
-            SOURCES (POLISHED / RUSHED only — DATA follows its own web-search rule above):
+            SOURCES (POLISHED / RUSHED only — PATIENT and DATA follow their own web-search rules above):
             - Use the web search tool to find authoritative sources (society guidelines such as ACC/AHA, ESC, ASE, HRS; primary trials on PubMed; UpToDate) that validate these concepts, and cite them inline.
               - RUSHED notes: this is the main point of the task — search actively (up to 3 searches) to properly ground the memo in evidence.
               - POLISHED notes: keep research minimal (1-2 searches is usually enough) — citations must not make the summary longer than the length limit above.
@@ -375,7 +405,7 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
             OUTPUT RULES (STRICT):
             - Output ONLY the final summary text itself. Do NOT narrate your process (no "먼저 검색해보겠습니다",
               "추가로 확인해보겠습니다", or similar meta-commentary before/between/after the summary).
-            - Do NOT mention the "DATA"/"POLISHED"/"RUSHED" classification itself in the output — it's only for you to decide how to approach the task.
+            - Do NOT mention the "PATIENT"/"DATA"/"POLISHED"/"RUSHED" classification itself in the output — it's only for you to decide how to approach the task.
             - Output language: Korean (unless the note content is clearly in another language).
         `;
         content.push({ type: 'text', text: prompt });

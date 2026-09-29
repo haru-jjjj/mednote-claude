@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Search, BookOpen, Sparkles, Loader2, ArrowUp, CloudDownload, Lightbulb, X } from 'lucide-react';
-import { Note } from '../types';
+import { Note, NoteTag, NOTE_TAG_LABELS } from '../types';
 import { embedTexts, cosineSimilarity } from '../services/voyageService';
 
 interface NoteListProps {
@@ -20,7 +20,11 @@ interface NoteListProps {
   searchTerm: string;
   onSearchChange: (term: string) => void;
   embeddingBackfillProgress?: { done: number; total: number } | null;
+  tagFilter: TagFilter;
+  onTagFilterChange: (filter: TagFilter) => void;
 }
+
+export type TagFilter = 'all' | NoteTag;
 
 // 의미 검색 결과로 인정할 최소 코사인 유사도. Voyage 임베딩 실측치를 보고
 // 너무 많이/적게 걸리면 이 값을 조절하세요(낮출수록 더 널널하게 잡힘).
@@ -54,8 +58,13 @@ const NoteCard = React.memo(({ note, onClick }: { note: Note, onClick: () => voi
                 </p>
 
                 <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-slate-100/50">
-                    <span className="text-[11px] text-slate-400 font-medium">
+                    <span className="flex items-center gap-1.5 text-[11px] text-slate-400 font-medium">
                         {new Date(note.createdAt).toLocaleDateString()}
+                        {note.tag && (
+                            <span className={`px-1.5 py-0.5 rounded font-bold ${note.tag === 'patient' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-500'}`}>
+                                {NOTE_TAG_LABELS[note.tag]}
+                            </span>
+                        )}
                     </span>
                     {note.summary && (
                         <div className="flex items-center gap-1 text-[11px] text-indigo-400 bg-indigo-50 px-1.5 py-0.5 rounded">
@@ -78,7 +87,9 @@ const NoteList: React.FC<NoteListProps> = ({
     isLoadingMore,
     searchTerm,
     onSearchChange,
-    embeddingBackfillProgress
+    embeddingBackfillProgress,
+    tagFilter,
+    onTagFilterChange
 }) => {
   // Pagination / Infinite Scroll State
   const [visibleCount, setVisibleCount] = useState(20);
@@ -115,10 +126,21 @@ const NoteList: React.FC<NoteListProps> = ({
     }
   }, [activeNoteId, onClearActiveNote]);
 
-  // Reset pagination on search change
+  // Reset pagination on search / filter change
   useEffect(() => {
       setVisibleCount(20);
-  }, [searchTerm]);
+  }, [searchTerm, tagFilter]);
+
+  // 분류(메모/환자) 필터: 검색과 함께 적용됩니다.
+  const tagFilteredNotes = useMemo(
+      () => (tagFilter === 'all' ? notes : notes.filter(n => n.tag === tagFilter)),
+      [notes, tagFilter]
+  );
+  const tagCounts = useMemo(() => {
+      const c = { memo: 0, patient: 0 };
+      notes.forEach(n => { if (n.tag === 'memo' || n.tag === 'patient') c[n.tag]++; });
+      return c;
+  }, [notes]);
 
   const scrollToTop = () => {
       listRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
@@ -167,13 +189,13 @@ const NoteList: React.FC<NoteListProps> = ({
   // spacing/order), instead of one exact substring.
   const textFilteredNotes = useMemo(() => {
     const tokens = searchTerm.toLowerCase().trim().split(/\s+/).filter(Boolean);
-    if (tokens.length === 0) return notes;
+    if (tokens.length === 0) return tagFilteredNotes;
 
-    return notes.filter(note => {
+    return tagFilteredNotes.filter(note => {
       const haystack = noteSearchIndex.get(note.id) || '';
       return tokens.every(token => haystack.includes(token));
     });
-  }, [notes, searchTerm, noteSearchIndex]);
+  }, [tagFilteredNotes, searchTerm, noteSearchIndex]);
 
   const otherNotes = textFilteredNotes;
 
@@ -201,7 +223,7 @@ const NoteList: React.FC<NoteListProps> = ({
               if (semanticRequestIdRef.current !== requestId) return; // 이미 새 검색어가 들어옴
 
               const exactMatchIds = new Set(textFilteredNotes.map(n => n.id));
-              const scored = notes
+              const scored = tagFilteredNotes
                   .filter(n => n.embedding && !exactMatchIds.has(n.id))
                   .map(n => ({ note: n, score: cosineSimilarity(queryVector, n.embedding) }))
                   .filter(s => s.score >= SEMANTIC_SIMILARITY_THRESHOLD)
@@ -217,7 +239,7 @@ const NoteList: React.FC<NoteListProps> = ({
               if (semanticRequestIdRef.current === requestId) setIsSemanticSearching(false);
           }
       })();
-  }, [searchTerm, notes]);
+  }, [searchTerm, tagFilteredNotes]);
 
   // Infinite Scroll Observer
   useEffect(() => {
@@ -275,6 +297,29 @@ const NoteList: React.FC<NoteListProps> = ({
                 )}
             </div>
         </div>
+        {/* 분류 필터 */}
+        <div className="flex items-center gap-1.5 px-0.5">
+            {(['all', 'memo', 'patient'] as TagFilter[]).map(f => {
+                const active = tagFilter === f;
+                const label = f === 'all' ? '전체' : NOTE_TAG_LABELS[f];
+                const count = f === 'all' ? null : tagCounts[f];
+                const activeClass = f === 'patient'
+                    ? 'bg-rose-50 border-rose-200 text-rose-600'
+                    : 'bg-blue-50 border-blue-200 text-blue-600';
+                return (
+                    <button
+                        key={f}
+                        type="button"
+                        onClick={() => onTagFilterChange(f)}
+                        className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${
+                            active ? activeClass : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'
+                        }`}
+                    >
+                        {label}{count !== null && count > 0 ? ` ${count}` : ''}
+                    </button>
+                );
+            })}
+        </div>
         {/* 예전 메모에 의미 기반 검색을 적용하는 중이라는 조용한 안내 (막지 않음) */}
         {embeddingBackfillProgress && (
             <p className="text-[11px] text-slate-400 px-1 flex items-center gap-1">
@@ -289,7 +334,7 @@ const NoteList: React.FC<NoteListProps> = ({
         {otherNotes.length === 0 && semanticMatches.length === 0 && !isSemanticSearching ? (
           <div className="flex flex-col items-center justify-center h-64 text-slate-300">
             <BookOpen className="w-12 h-12 mb-3 opacity-10" />
-            <p className="font-bold text-sm">메모가 없습니다.</p>
+            <p className="font-bold text-sm">{tagFilter === 'all' ? '메모가 없습니다.' : `'${NOTE_TAG_LABELS[tagFilter]}'로 분류된 메모가 없습니다.`}</p>
           </div>
         ) : (
           <>
