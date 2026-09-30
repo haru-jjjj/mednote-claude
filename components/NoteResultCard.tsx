@@ -56,11 +56,12 @@ interface Props {
     sources?: Source[];
     saveTitle: string;
     copyTemplate?: boolean; // 작성 템플릿 카드에서만 "틀 복사" 버튼 표시
+    saveExtra?: Partial<Note>; // 저장할 때 함께 넣을 값 (예: 인계장은 '업무' 분류로)
     onSelectNote: (id: string) => void;
     onSaveNewNote: (note: Note) => Promise<void>;
 }
 
-const NoteResultCard: React.FC<Props> = ({ label, markdown, refNotes, sources, saveTitle, copyTemplate, onSelectNote, onSaveNewNote }) => {
+const NoteResultCard: React.FC<Props> = ({ label, markdown, refNotes, sources, saveTitle, copyTemplate, saveExtra, onSelectNote, onSaveNewNote }) => {
     const [savedId, setSavedId] = useState<string | null>(null);
     const [isSaving, setIsSaving] = useState(false);
     const [copied, setCopied] = useState(false);
@@ -106,6 +107,7 @@ const NoteResultCard: React.FC<Props> = ({ label, markdown, refNotes, sources, s
             images: [],
             isEnhancing: false,
             isProcessed: false,
+            ...(saveExtra || {}),
             origin: 'ai'
         };
         try {

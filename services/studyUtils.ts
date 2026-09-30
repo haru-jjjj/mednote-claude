@@ -132,7 +132,8 @@ export const noteAgeDays = (n: Pick<Note, 'updatedAt' | 'createdAt'>, now: numbe
     Math.floor((now - (n.updatedAt || n.createdAt || now)) / DAY_MS);
 
 export const isGuidelineCheckCandidate = (n: Note, now: number): boolean => {
-    if (n.tag === 'patient' || n.origin === 'ai') return false;
+    // 환자 메모, AI 결과 메모, '업무'만 붙은 메모(인계 사항 등)는 제외
+    if (n.tag === 'patient' || n.origin === 'ai' || (n.work && n.tag !== 'memo')) return false;
     if (noteAgeDays(n, now) < GUIDELINE_STALE_DAYS) return false;
     const { numeric, recommendation } = guidelineSignals(`${n.content || ''}\n${n.transcription || ''}`);
     return numeric >= 2 || (numeric >= 1 && recommendation >= 1);

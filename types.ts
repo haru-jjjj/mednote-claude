@@ -20,6 +20,7 @@ export interface Note {
   embedding?: number[]; // Voyage AI 임베딩 벡터 (의미 기반 검색용)
   embeddingUpdatedAt?: number; // embedding이 계산된 시점 — updatedAt보다 오래되면 재계산 필요
   tag?: NoteTag; // 분류 태그 (없으면 미분류)
+  work?: boolean; // "업무" 분류 (인계 사항·시술 팁 등). '메모'와 함께 붙일 수 있음
   summarizedAt?: number; // AI 요약을 만든 시각 — 이후 메모가 수정됐으면 "수정 전 요약" 표시
   summaryKind?: 'journal'; // 요약 칸에 들어 있는 것이 저널클럽 분석이면 'journal' (일반 요약이면 없음)
   // --- 복습 일정 (간격 반복) ---
@@ -66,6 +67,37 @@ export interface GuidelineCheck {
 // 태그는 일부러 두 가지만 둡니다 (많아지면 관리가 번거로워짐).
 export type NoteTag = 'memo' | 'patient';
 export const NOTE_TAG_LABELS: Record<NoteTag, string> = { memo: '메모', patient: '환자' };
+
+// 화면에서 쓰는 분류 3가지: 메모 / 환자 / 업무
+// - 메모와 환자는 둘 중 하나만
+// - 업무는 메모와 함께 고를 수 있음 (구분이 모호한 경우용). 환자와는 함께 쓰지 않음
+//   (환자 메모는 팔로업·케이스 기록에 쓰이므로 인계 사항과 섞이지 않게)
+export type NoteCategory = 'memo' | 'patient' | 'work';
+export const CATEGORY_LABELS: Record<NoteCategory, string> = { memo: '메모', patient: '환자', work: '업무' };
+export const CATEGORIES: NoteCategory[] = ['memo', 'patient', 'work'];
+export interface CategoryState { tag?: NoteTag; work?: boolean }
+
+export const hasCategory = (n: CategoryState, c: NoteCategory): boolean =>
+    c === 'work' ? !!n.work : n.tag === c;
+
+export const toggleCategory = (cur: CategoryState, c: NoteCategory): CategoryState => {
+    if (c === 'work') {
+        if (cur.work) return { tag: cur.tag, work: undefined };
+        return { tag: cur.tag === 'patient' ? undefined : cur.tag, work: true };
+    }
+    if (cur.tag === c) return { tag: undefined, work: cur.work };
+    return { tag: c, work: c === 'patient' ? undefined : cur.work };
+};
+
+export const categoryLabels = (n: CategoryState): string[] =>
+    CATEGORIES.filter(c => hasCategory(n, c)).map(c => CATEGORY_LABELS[c]);
+
+// 분류별 색 (배지·버튼 공용)
+export const CATEGORY_COLORS: Record<NoteCategory, { active: string; badge: string }> = {
+    memo: { active: 'bg-blue-50 border-blue-300 text-blue-600', badge: 'bg-blue-50 text-blue-500' },
+    patient: { active: 'bg-rose-50 border-rose-300 text-rose-600', badge: 'bg-rose-50 text-rose-500' },
+    work: { active: 'bg-emerald-50 border-emerald-300 text-emerald-700', badge: 'bg-emerald-50 text-emerald-600' },
+};
 
 export enum ViewMode {
   LIST = 'LIST',

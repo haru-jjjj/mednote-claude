@@ -2,7 +2,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw, Link2, FileText, ShieldCheck, ChevronDown, ChevronUp } from 'lucide-react';
 import DOMPurify from 'dompurify';
-import { Note, Source, NoteTag, NOTE_TAG_LABELS } from '../types';
+import { Note, Source, NoteCategory, CATEGORIES, CATEGORY_LABELS, hasCategory } from '../types';
 import { marked } from 'marked';
 import { summarizeSingleNote, formatMedicalMarkdown, analyzeJournalArticle } from '../services/claudeService';
 import { looksLikePaper, isGuidelineCheckCandidate, noteAgeDays, formatAge } from '../services/studyUtils';
@@ -20,7 +20,7 @@ interface NoteDetailProps {
   onSelectNote: (id: string) => void;
   onEdit: (note: Note) => void;
   onUpdateNote: (note: Note) => void;
-  onSetTag: (id: string, tag: Note['tag']) => void;
+  onSetTag: (id: string, category: NoteCategory) => void; // 누른 분류를 켜고/끄기 (규칙은 types.ts toggleCategory)
   onCheckGuideline: (id: string) => void;
   isCheckingGuideline: boolean;
   onClearGuidelineCheck: (id: string) => void;
@@ -498,21 +498,23 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                 <div className="flex items-center gap-2">
                     <span className="text-xs font-bold text-slate-400">분류</span>
                     <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">
-                        {(['memo', 'patient'] as NoteTag[]).map(t => (
-                            <button
-                                key={t}
-                                onClick={() => onSetTag(note.id, note.tag === t ? undefined : t)}
-                                disabled={isBusy}
-                                className={`px-3 py-1 rounded-md text-xs font-bold transition-colors whitespace-nowrap disabled:opacity-50 ${
-                                    note.tag === t
-                                        ? (t === 'patient' ? 'bg-white text-rose-600 shadow-sm' : 'bg-white text-blue-600 shadow-sm')
-                                        : 'text-slate-500 hover:text-slate-700'
-                                }`}
-                                title={note.tag === t ? '다시 누르면 분류 해제' : `'${NOTE_TAG_LABELS[t]}'로 분류`}
-                            >
-                                {NOTE_TAG_LABELS[t]}
-                            </button>
-                        ))}
+                        {CATEGORIES.map(c => {
+                            const on = hasCategory(note, c);
+                            const color = c === 'patient' ? 'text-rose-600' : c === 'work' ? 'text-emerald-700' : 'text-blue-600';
+                            return (
+                                <button
+                                    key={c}
+                                    onClick={() => onSetTag(note.id, c)}
+                                    disabled={isBusy}
+                                    className={`px-3 py-1 rounded-md text-xs font-bold transition-colors whitespace-nowrap disabled:opacity-50 ${
+                                        on ? `bg-white shadow-sm ${color}` : 'text-slate-500 hover:text-slate-700'
+                                    }`}
+                                    title={on ? '다시 누르면 분류 해제' : c === 'work' ? "'업무'로 분류 (메모와 함께 고를 수 있음)" : `'${CATEGORY_LABELS[c]}'로 분류`}
+                                >
+                                    {CATEGORY_LABELS[c]}
+                                </button>
+                            );
+                        })}
                     </div>
                 </div>
             </div>

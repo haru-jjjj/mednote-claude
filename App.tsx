@@ -12,7 +12,7 @@ import InsightsView from './components/InsightsView';
 import { followUpStatus, contentForAnalysis } from './services/insightUtils';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
 import PinSettingsModal from './components/PinSettingsModal';
-import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NOTE_TAG_LABELS } from './types';
+import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NoteCategory, toggleCategory, categoryLabels } from './types';
 import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote } from './services/studyUtils';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines } from './services/claudeService';
@@ -44,6 +44,7 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
             isEnhancing: false,
             quizMasteryCount: typeof n.quizMasteryCount === 'number' ? n.quizMasteryCount : 0,
             tag: n.tag === 'memo' || n.tag === 'patient' ? n.tag : undefined,
+            work: n.work === true ? true : undefined,
             summarizedAt: typeof n.summarizedAt === 'number' ? n.summarizedAt : undefined,
             summaryKind: n.summaryKind === 'journal' ? 'journal' : undefined,
             reviewDueAt: typeof n.reviewDueAt === 'number' ? n.reviewDueAt : undefined,
@@ -854,7 +855,7 @@ const App: React.FC = () => {
             const content = escapeCsv(note.content);
             const createdAt = escapeCsv(new Date(note.createdAt).toISOString());
             const updatedAt = escapeCsv(note.updatedAt ? new Date(note.updatedAt).toISOString() : new Date(note.createdAt).toISOString());
-            const tag = escapeCsv(note.tag ? NOTE_TAG_LABELS[note.tag] : '');
+            const tag = escapeCsv(categoryLabels(note).join('+'));
             csvRows.push([title, tag, content, createdAt, updatedAt].join(','));
         }
         const csvString = csvRows.join('\n');
@@ -1055,7 +1056,7 @@ const App: React.FC = () => {
                         ...incoming,
                         quizMasteryCount: latest.quizMasteryCount, reviewDueAt: latest.reviewDueAt,
                         reviewIntervalDays: latest.reviewIntervalDays, lastReviewedAt: latest.lastReviewedAt,
-                        wrongAnswers: latest.wrongAnswers, guidelineCheck: latest.guidelineCheck, tag: latest.tag,
+                        wrongAnswers: latest.wrongAnswers, guidelineCheck: latest.guidelineCheck, tag: latest.tag, work: latest.work,
                         followUpIntervalDays: latest.followUpIntervalDays, followUpDueAt: latest.followUpDueAt,
                         followUpCheckedAt: Math.max(latest.followUpCheckedAt || 0, incoming.followUpCheckedAt || 0) || undefined,
                         metaUpdatedAt: latest.metaUpdatedAt
@@ -1094,9 +1095,13 @@ const App: React.FC = () => {
   };
 
   // 분류 태그만 바꿀 때: 저장·동기화만 하고 임베딩/사진 읽기 같은 유료 호출은 하지 않음
-  const handleSetNoteTag = async (id: string, tag: Note['tag']) => {
+  const handleSetNoteTag = async (id: string, category: NoteCategory) => {
     try {
-        const saved = await patchNoteMeta(id, () => ({ tag }));
+        // 저장 직전의 최신 분류를 기준으로 켜고/끔 (빠르게 연달아 눌러도 앞의 변경이 사라지지 않게)
+        const saved = await patchNoteMeta(id, latest => {
+            const next = toggleCategory(latest, category);
+            return { tag: next.tag, work: next.work ? true : undefined };
+        });
         if (!saved) throw new Error('note not found');
     } catch (e) {
         console.error("Tag update failed", e);

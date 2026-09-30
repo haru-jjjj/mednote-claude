@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Layers, Loader2, AlertTriangle, CalendarDays, Search, FileText, ClipboardList, EyeOff, Sparkles, Lightbulb, Users, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { ArrowLeft, Layers, Loader2, AlertTriangle, CalendarDays, Search, FileText, ClipboardList, EyeOff, Sparkles, Lightbulb, Users, Check, ChevronDown, ChevronUp, ClipboardCheck } from 'lucide-react';
 import { Note, Source } from '../types';
 import NoteResultCard, { renderLinkedMarkdown } from './NoteResultCard';
 import {
     generateWeeklyDigest, findCoverageGaps, buildDocumentationTemplate, extractCaseLogBatch, synthesizeNotes,
-    notesWithinContextBudget, CONTEXT_BUDGETS, summarizeSingleNote
+    notesWithinContextBudget, CONTEXT_BUDGETS, summarizeSingleNote, buildHandoverDocument
 } from '../services/claudeService';
 import { getNoteFromDB } from '../services/storage';
 import { contentForAnalysis } from '../services/insightUtils';
@@ -36,10 +36,11 @@ interface Props {
     nowTick: number; // 몇 분마다 갱신되는 현재 시각 (자정이 지나면 "확인할 차례"가 바뀌도록)
 }
 
-type Tab = 'weekly' | 'patients' | 'similar' | 'gap' | 'template' | 'cases';
+type Tab = 'weekly' | 'handover' | 'patients' | 'similar' | 'gap' | 'template' | 'cases';
 
 const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
     { key: 'weekly', label: '이번 주', icon: <CalendarDays className="w-3.5 h-3.5" /> },
+    { key: 'handover', label: '인계장 정리', icon: <ClipboardCheck className="w-3.5 h-3.5" /> },
     { key: 'patients', label: '환자 팔로업', icon: <Users className="w-3.5 h-3.5" /> },
     { key: 'similar', label: '비슷한 메모 묶기', icon: <Layers className="w-3.5 h-3.5" /> },
     { key: 'gap', label: '빈 곳 찾기', icon: <Search className="w-3.5 h-3.5" /> },
@@ -184,6 +185,144 @@ const WeeklyTab: React.FC<Props> = ({ notes, reviewDueCount, onSelectNote, onSav
                     markdown={digest.markdown}
                     refNotes={refNotes}
                     saveTitle={`주간 돌아보기 (${new Date(digest.createdAt).toLocaleDateString()})`}
+                    onSelectNote={onSelectNote}
+                    onSaveNewNote={onSaveNewNote}
+                />
+            )}
+        </div>
+    );
+};
+
+// ---------------------------------------------------------------------------
+// 인계장 정리: '업무' 메모를 모아 분류별 제목·소제목이 있는 하나의 인계장으로
+// ---------------------------------------------------------------------------
+const HANDOVER_PERIODS: { key: string; label: string; days: number | null }[] = [
+    { key: 'all', label: '전체', days: null },
+    { key: '3m', label: '3개월', days: 92 },
+    { key: '1m', label: '1개월', days: 31 },
+    { key: '1w', label: '1주', days: 7 },
+];
+
+const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote }) => {
+    const [period, setPeriod] = useState('all');
+    const p = HANDOVER_PERIODS.find(x => x.key === period) || HANDOVER_PERIODS[0];
+    const workNotes = useMemo(() => {
+        const since = p.days === null ? 0 : Date.now() - p.days * DAY_MS;
+        return notes
+            .filter(n => n.work && (n.updatedAt || n.createdAt || 0) >= since)
+            .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    }, [notes, p.days]);
+
+    // 체크 해제한 메모만 기억 (새로 생긴 업무 메모는 기본으로 포함)
+    const [excluded, setExcluded] = useState<Set<string>>(new Set());
+    const selected = workNotes.filter(n => !excluded.has(n.id));
+    const [purpose, setPurpose] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [notice, setNotice] = useState<string | null>(null);
+    const [showList, setShowList] = useState(false);
+    const [result, setResult] = useState<{ markdown: string; refNotes: Note[]; createdAt: number } | null>(null);
+
+    const toggle = (id: string) => setExcluded(prev => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+    });
+
+    const handleRun = async () => {
+        if (busy || selected.length === 0) return;
+        setBusy(true);
+        setError(null);
+        setNotice(null);
+        try {
+            // 분량 한도는 최신 메모부터 채우고(오래된 것이 빠지도록), AI에는 오래된 순으로 넘겨서
+            // 같은 항목이 다르면 수정 날짜로 최신을 고르게 함
+            const all = await hydrateNotes(selected); // selected: 최신 수정 순
+            const fittedNewest = notesWithinContextBudget(all, CONTEXT_BUDGETS.handover[0], CONTEXT_BUDGETS.handover[1]);
+            if (fittedNewest.length < all.length) {
+                setNotice(`업무 메모 ${all.length}개 중 분량 한도 안에 들어간 최근 ${fittedNewest.length}개만 정리했어요. 기간을 줄이거나 일부 메모를 빼고 다시 만들어보세요.`);
+            }
+            const fitted = [...fittedNewest].sort((a, b) => (a.updatedAt || a.createdAt || 0) - (b.updatedAt || b.createdAt || 0));
+            const markdown = await buildHandoverDocument(fitted, purpose.trim());
+            setResult({ markdown, refNotes: fitted, createdAt: Date.now() });
+        } catch (e: any) {
+            setError(e?.message || '인계장을 만들지 못했습니다.');
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+        <div className="space-y-4">
+            <Intro cost="1회 약 100~400원 (업무 메모 양에 따라). 원래 메모는 바뀌지 않아요.">
+                <b>'업무'로 분류한 메모</b>(인계 사항, 시술 팁 등)를 모아 <b>분류별 제목 · 소제목</b>이 있는 하나의 인계장으로 정리합니다.
+                맨 위에 "한눈에", 끝에 "확인 필요"(서로 다르거나 빠진 내용)가 붙고, 항목마다 [메모N]으로 원래 메모가 연결돼요.
+                저장하면 '업무' 분류로 남고, 메모 화면에서 제목별로 접었다 펼 수 있습니다.
+            </Intro>
+
+            {workNotes.length === 0 && notes.every(n => !n.work) ? (
+                <p className="text-sm text-slate-400">아직 '업무'로 분류한 메모가 없어요. 메모를 쓸 때나 메모 화면 날짜 옆 분류에서 <b>업무</b>를 누르면 여기에 모입니다(메모와 함께 고를 수 있어요).</p>
+            ) : (
+                <>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">
+                            {HANDOVER_PERIODS.map(x => (
+                                <button key={x.key} onClick={() => setPeriod(x.key)} disabled={busy}
+                                    className={`px-3 py-1 rounded-md text-xs font-bold ${period === x.key ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                                    {x.label}
+                                </button>
+                            ))}
+                        </div>
+                        <button onClick={() => setShowList(v => !v)} className="flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-slate-700">
+                            업무 메모 {selected.length}/{workNotes.length}개 포함 {showList ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        </button>
+                    </div>
+
+                    {showList && (
+                        <div className="bg-white border border-slate-200 rounded-xl p-3">
+                            <div className="flex items-center gap-3 mb-2 text-xs font-bold">
+                                <button onClick={() => setExcluded(new Set())} className="text-slate-500 hover:text-slate-700">모두 선택</button>
+                                <button onClick={() => setExcluded(new Set(workNotes.map(n => n.id)))} className="text-slate-500 hover:text-slate-700">모두 해제</button>
+                            </div>
+                            <div className="space-y-1 max-h-72 overflow-y-auto">
+                                {workNotes.map(n => (
+                                    <label key={n.id} className="flex items-center gap-2 text-sm">
+                                        <input type="checkbox" checked={!excluded.has(n.id)} onChange={() => toggle(n.id)} disabled={busy}
+                                            className="w-4 h-4 shrink-0 rounded border-slate-300 text-emerald-600" />
+                                        <span className="flex-1 min-w-0 truncate text-slate-700">{n.title || '(제목 없음)'}</span>
+                                        <span className="text-[11px] text-slate-400 shrink-0">{new Date(n.updatedAt || n.createdAt).toLocaleDateString()}</span>
+                                        <button type="button" onClick={() => onSelectNote(n.id)} className="text-[11px] text-slate-400 hover:text-emerald-700 shrink-0">열기</button>
+                                    </label>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                            value={purpose}
+                            onChange={e => setPurpose(e.target.value)}
+                            placeholder="용도·받는 사람 (선택) — 예: 주말 당직 인계, EP lab 새로 오는 fellow용"
+                            className={inputCls}
+                        />
+                        <button onClick={handleRun} disabled={busy || selected.length === 0} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ClipboardCheck className="w-4 h-4" />}
+                            {busy ? '인계장 정리 중…' : '인계장 정리하기'}
+                        </button>
+                    </div>
+                    {workNotes.length === 0 && <p className="text-xs text-slate-400">이 기간에 쓰거나 고친 업무 메모가 없어요. 기간을 넓혀보세요.</p>}
+                </>
+            )}
+
+            {error && !busy && <ErrorBox message={error} />}
+            {notice && !busy && <p className="text-xs text-amber-600 px-1">{notice}</p>}
+            {result && !busy && (
+                <NoteResultCard
+                    label={`인계장 · ${new Date(result.createdAt).toLocaleDateString()} · 업무 메모 ${result.refNotes.length}개`}
+                    markdown={result.markdown}
+                    refNotes={result.refNotes}
+                    saveTitle={`인계장${purpose.trim() ? ` — ${purpose.trim()}` : ''} (${new Date(result.createdAt).toLocaleDateString()})`}
+                    saveExtra={{ work: true }}
                     onSelectNote={onSelectNote}
                     onSaveNewNote={onSaveNewNote}
                 />
@@ -406,7 +545,8 @@ const STRICTNESS: { key: string; label: string; threshold: number }[] = [
 const GROUP_PAGE = 15;
 
 const SimilarTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote }) => {
-    const pool = useMemo(() => notes.filter(n => n.tag !== 'patient'), [notes]);
+    // 환자 메모와 '업무'만 붙은 메모(인계 사항 등)는 공부용 묶음에서 제외
+    const pool = useMemo(() => notes.filter(n => n.tag !== 'patient' && !(n.work && n.tag !== 'memo')), [notes]);
     const withEmb = pool.filter(n => n.embedding && n.embedding.length > 0).length;
     const byId = useMemo(() => new Map(notes.map(n => [n.id, n])), [notes]);
 
@@ -566,7 +706,7 @@ const GapTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote }) => {
         setError(null);
         setBusy('search');
         try {
-            const found = await findRelatedNotes(t, notes.filter(n => n.tag !== 'patient'), 15, 0.3);
+            const found = await findRelatedNotes(t, notes.filter(n => n.tag !== 'patient' && !(n.work && n.tag !== 'memo')), 15, 0.3);
             const list = notesWithinContextBudget(found.list, CONTEXT_BUDGETS.gap[0], CONTEXT_BUDGETS.gap[1]);
             setBusy('gen');
             const { text, sources } = await findCoverageGaps(t, list);
@@ -901,6 +1041,7 @@ const InsightsView: React.FC<Props> = (rawProps) => {
                 <div className="max-w-3xl mx-auto p-4 md:p-6 pb-24">
                     {/* 탭은 숨기기만 해서 결과가 유지되게 함 */}
                     <div className={tab === 'weekly' ? '' : 'hidden'}><WeeklyTab {...props} /></div>
+                    <div className={tab === 'handover' ? '' : 'hidden'}><HandoverTab {...props} /></div>
                     <div className={tab === 'patients' ? '' : 'hidden'}><PatientsTab {...props} /></div>
                     <div className={tab === 'similar' ? '' : 'hidden'}><SimilarTab {...props} /></div>
                     <div className={tab === 'gap' ? '' : 'hidden'}><GapTab {...props} /></div>

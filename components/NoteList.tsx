@@ -1,7 +1,7 @@
 
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Search, BookOpen, Sparkles, Loader2, ArrowUp, CloudDownload, Lightbulb, X } from 'lucide-react';
-import { Note, NoteTag, NOTE_TAG_LABELS } from '../types';
+import { Note, NoteCategory, CATEGORIES, CATEGORY_LABELS, CATEGORY_COLORS, hasCategory } from '../types';
 import { embedTexts, cosineSimilarity, hasVoyageApiKey } from '../services/voyageService';
 
 interface NoteListProps {
@@ -27,7 +27,7 @@ interface NoteListProps {
   onOpenReview?: () => void;
 }
 
-export type TagFilter = 'all' | NoteTag;
+export type TagFilter = 'all' | NoteCategory;
 
 // 의미 검색 결과로 인정할 최소 코사인 유사도. Voyage 임베딩 실측치를 보고
 // 너무 많이/적게 걸리면 이 값을 조절하세요(낮출수록 더 널널하게 잡힘).
@@ -71,11 +71,11 @@ const NoteCard = React.memo(({ note, onClick, badge }: { note: Note, onClick: ()
                 <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-slate-100/50">
                     <span className="flex items-center gap-1.5 text-[11px] text-slate-400 font-medium">
                         {new Date(note.createdAt).toLocaleDateString()}
-                        {note.tag && (
-                            <span className={`px-1.5 py-0.5 rounded font-bold ${note.tag === 'patient' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-500'}`}>
-                                {NOTE_TAG_LABELS[note.tag]}
+                        {CATEGORIES.filter(c => hasCategory(note, c)).map(c => (
+                            <span key={c} className={`px-1.5 py-0.5 rounded font-bold ${CATEGORY_COLORS[c].badge}`}>
+                                {CATEGORY_LABELS[c]}
                             </span>
-                        )}
+                        ))}
                     </span>
                     <div className="flex items-center gap-1.5">
                         {note.guidelineCheck?.status === 'changed' && (
@@ -155,12 +155,12 @@ const NoteList: React.FC<NoteListProps> = ({
 
   // 분류(메모/환자) 필터: 검색과 함께 적용됩니다.
   const tagFilteredNotes = useMemo(
-      () => (tagFilter === 'all' ? notes : notes.filter(n => n.tag === tagFilter)),
+      () => (tagFilter === 'all' ? notes : notes.filter(n => hasCategory(n, tagFilter))),
       [notes, tagFilter]
   );
   const tagCounts = useMemo(() => {
-      const c = { memo: 0, patient: 0 };
-      notes.forEach(n => { if (n.tag === 'memo' || n.tag === 'patient') c[n.tag]++; });
+      const c: Record<NoteCategory, number> = { memo: 0, patient: 0, work: 0 };
+      notes.forEach(n => CATEGORIES.forEach(k => { if (hasCategory(n, k)) c[k]++; }));
       return c;
   }, [notes]);
 
@@ -335,14 +335,12 @@ const NoteList: React.FC<NoteListProps> = ({
             </div>
         </div>
         {/* 분류 필터 */}
-        <div className="flex items-center gap-1.5 px-0.5">
-            {(['all', 'memo', 'patient'] as TagFilter[]).map(f => {
+        <div className="flex flex-wrap items-center gap-1.5 px-0.5">
+            {(['all', ...CATEGORIES] as TagFilter[]).map(f => {
                 const active = tagFilter === f;
-                const label = f === 'all' ? '전체' : NOTE_TAG_LABELS[f];
+                const label = f === 'all' ? '전체' : CATEGORY_LABELS[f];
                 const count = f === 'all' ? null : tagCounts[f];
-                const activeClass = f === 'patient'
-                    ? 'bg-rose-50 border-rose-200 text-rose-600'
-                    : 'bg-blue-50 border-blue-200 text-blue-600';
+                const activeClass = f === 'all' ? 'bg-blue-50 border-blue-200 text-blue-600' : CATEGORY_COLORS[f].active;
                 return (
                     <button
                         key={f}
@@ -387,7 +385,7 @@ const NoteList: React.FC<NoteListProps> = ({
                             예전 메모까지 불러오는 중 · 지금은 {tagFilteredNotes.length}개에서 검색
                         </span>
                     ) : (
-                        <span>메모 {tagFilteredNotes.length}개에서 검색{tagFilter !== 'all' ? ` (${NOTE_TAG_LABELS[tagFilter]} 분류만)` : ''}</span>
+                        <span>메모 {tagFilteredNotes.length}개에서 검색{tagFilter !== 'all' ? ` (${CATEGORY_LABELS[tagFilter]} 분류만)` : ''}</span>
                     )}
                     {semanticStatus !== 'unavailable' && embeddedCount < tagFilteredNotes.length && (
                         <span className="flex items-center gap-1">
@@ -415,7 +413,7 @@ const NoteList: React.FC<NoteListProps> = ({
             <p className="font-bold text-sm">
                 {isSearching
                     ? (isFetchingAll ? '아직 결과가 없습니다 — 예전 메모를 불러오는 중이에요.' : '검색 결과가 없습니다.')
-                    : (tagFilter === 'all' ? '메모가 없습니다.' : `'${NOTE_TAG_LABELS[tagFilter]}'로 분류된 메모가 없습니다.`)}
+                    : (tagFilter === 'all' ? '메모가 없습니다.' : `'${CATEGORY_LABELS[tagFilter]}'로 분류된 메모가 없습니다.`)}
             </p>
           </div>
         ) : (

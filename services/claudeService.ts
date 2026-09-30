@@ -310,13 +310,16 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
             Context: """${textContent}"""
             ${isTruncated ? `(NOTE: the note was longer than the limit and was cut off after ${MAX_SUMMARY_INPUT_CHARS} characters. Mention in one short line at the end that only the first part was analyzed.)` : ''}
 
-            READER'S TAG FOR THIS NOTE: ${note.tag === 'patient' ? '"환자" (patient note)' : note.tag === 'memo' ? '"메모" (study/work memo — NOT a patient case)' : 'none'}
+            READER'S TAG FOR THIS NOTE: ${note.tag === 'patient' ? '"환자" (patient note)' : [note.tag === 'memo' ? '"메모" (study memo — NOT a patient case)' : '', note.work ? '"업무" (work note: handover items, ward/procedure workflow, practical procedure tips — NOT a patient case)' : ''].filter(Boolean).join(' + ') || 'none'}
+            ${note.work ? `- This is a WORK note. Whatever mode you choose below, keep every actionable detail exactly (steps,
+              order of actions, settings, doses, device/catheter names and sizes, extension numbers, who/when to call),
+              and organize it so it can be followed on the job. Never use PATIENT for it.` : ''}
 
             FIRST, classify the note itself:
             - "PATIENT": the note is about ONE specific patient the reader is managing — their history,
               that patient's test results/records over time, a case write-up, admission/progress notes.
               RULES: if the tag is "환자", ALWAYS use PATIENT (even if it contains pasted reports).
-              If the tag is "메모", NEVER use PATIENT. If there is no tag, use PATIENT only when the note
+              If the tag is "메모" or "업무", NEVER use PATIENT. If there is no tag, use PATIENT only when the note
               is clearly about one specific patient.
             - "DATA": the note is mostly pasted clinical documentation written by others — exam/test
               reading reports (echo, CT, cath, EP study...), device interrogations, procedure records,
@@ -599,12 +602,15 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
 //   [1], [2] 와 헷갈리지 않도록 '메모'를 붙인 별도 형식을 씁니다.)
 // - 웹 검색은 쓰지 않습니다: "내 메모 기반" 답이 목적이고, 빠르고 저렴하게 유지.
 // ----------------------------------------------------------------------------
-const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: number): string => {
+// dateMode 'updated': 각 메모에 마지막 수정 날짜를 붙임(인계장처럼 최신 내용을 가려야 할 때)
+const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: number, dateMode: 'created' | 'updated' = 'created'): string => {
     let used = 0;
     const parts: string[] = [];
     notes.forEach((n, i) => {
         if (used >= totalChars) return;
-        const date = new Date(n.createdAt).toLocaleDateString('ko-KR');
+        const date = dateMode === 'updated'
+            ? `마지막 수정 ${new Date(n.updatedAt || n.createdAt).toLocaleDateString('ko-KR')}`
+            : new Date(n.createdAt).toLocaleDateString('ko-KR');
         const body = [
             n.content || '',
             n.transcription ? `(사진에서 추출한 텍스트: ${n.transcription})` : '',
@@ -638,7 +644,8 @@ export const CONTEXT_BUDGETS = {
     weekly: [2500, 50000],
     gap: [5000, 60000],
     template: [30000, 90000],
-    synthesize: [8000, 70000]
+    synthesize: [8000, 70000],
+    handover: [5000, 90000]
 } as const;
 
 // 답이 분량 한도에서 잘렸으면 안내 문구를 붙임
@@ -1408,4 +1415,52 @@ export const extractCaseLogBatch = async (
             memorable: !!it.memorable,
             learningPoint: typeof it.learningPoint === 'string' ? it.learningPoint : ''
         }));
+};
+
+// ---- 인계장 정리: '업무' 메모들을 분류별 제목·소제목이 있는 하나의 인계장으로 ----
+export const buildHandoverDocument = async (notes: Note[], purpose: string): Promise<string> => {
+    const today = new Date().toLocaleDateString('ko-KR');
+    const prompt = `
+        You compile the reader's WORK notes into ONE handover document (인계장) that a colleague (or the reader
+        later) can read top to bottom and act on. The notes are handover items, ward / on-call workflow,
+        cath lab / EP lab workflow, and practical procedure tips written by a cardiology fellow.
+        ${READER_PROFILE}
+
+        PURPOSE / AUDIENCE: """${purpose || '일반 업무 인계 (따로 지정 없음)'}"""
+        TODAY: ${today}
+
+        WORK NOTES (labelled [메모1], [메모2], ..., oldest first, each with its last-modified date):
+        """
+        ${buildNotesContext(notes, CONTEXT_BUDGETS.handover[0], CONTEXT_BUDGETS.handover[1], 'updated')}
+        """
+
+        STRUCTURE (Korean, with the usual English terms/abbreviations):
+        - Start with "## 한눈에": 3~6 bullets — the most important or time-sensitive items.
+        - Then group everything by category: "##" for major categories, "###" for subcategories. Infer the
+          categories from the content; typical ones: 병동·당직 업무 / 시술 (subcategories per procedure, e.g.
+          CAG·PCI, EP study·ablation, device implantation, structural) / 약물·오더 / 검사·예약 / 장비·물품 /
+          전산(EMR)·서류 / 연락처·절차 / 기타. Include only categories that have content, ordered by practical
+          importance. Adapt to the stated purpose (e.g. an on-call handover puts on-call items first).
+        - Items: "- **짧은 항목명**: 내용" on one line where possible. Step-by-step procedures as numbered
+          sub-steps. Keep EXACTLY as written: numbers, doses, settings, catheter/device names and sizes,
+          extension/phone numbers, names and roles, timing.
+        - FIDELITY FIRST: this is a handover, not a lecture. Do not add clinical content that is not in the notes.
+          If a short clarification is truly needed for safety, mark it "(메모 외 보충)".
+        - Merge duplicates. When notes conflict, keep the most recently modified one in the item and add
+          "⚠️ 이전 메모와 다름: …" with both citations.
+        - Put the citation right after each item, e.g. "... [메모3]" or "[메모2][메모5]". Never invent labels.
+        - End with "## 확인 필요": items that look outdated, conflicting, or incomplete (e.g. who to call is
+          missing). Omit this section if there is nothing.
+        OUTPUT: only the handover document — no preamble, no narration.
+    `;
+    const data = await callClaude({
+        model: MODEL_SMART,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        max_tokens: 10000
+    });
+    let text = extractText(data);
+    if (!text) throw new Error('인계장 결과가 비어 있습니다.');
+    const first = text.indexOf('## ');
+    if (first > 0 && first < 300) text = text.slice(first);
+    return withTruncationNotice(text, data);
 };

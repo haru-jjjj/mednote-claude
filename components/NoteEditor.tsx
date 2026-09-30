@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Save, ArrowLeft, Image as ImageIcon, X, Loader2, ChevronLeft, ChevronRight, Bold, Italic, Subscript, Superscript, ArrowRight, Code, Sigma, Type, Undo, Table as TableIcon, Calendar } from 'lucide-react';
-import { Note, NoteTag, NOTE_TAG_LABELS } from '../types';
+import { Note, NoteTag, CATEGORIES, CATEGORY_LABELS, CATEGORY_COLORS, hasCategory, toggleCategory } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { gridToMarkdown, looksLikeTsv, parseTsv, continueRecordNumbering } from '../services/pasteUtils';
 import { todayHeadingText } from '../services/sectionize';
@@ -99,6 +99,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
   const [images, setImages] = useState<string[]>([]);
   // 분류 태그: 메모 / 환자 / 미선택(undefined)
   const [tag, setTag] = useState<NoteTag | undefined>(undefined);
+  const [work, setWork] = useState<boolean | undefined>(undefined);
   const [isProcessingImg, setIsProcessingImg] = useState(false);
   // 붙여넣기 후 안내(용량 경고 등)를 잠깐 보여주는 토스트
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
@@ -124,6 +125,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             setHasContent(!!(initialNote.content && initialNote.content.trim().length > 0));
             setImages(initialNote.images || []);
             setTag(initialNote.tag);
+            setWork(initialNote.work);
             loadedNoteIdRef.current = initialNote.id;
         }
     } else {
@@ -134,6 +136,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             setHasContent(false);
             setImages([]);
             setTag(undefined);
+            setWork(undefined);
             loadedNoteIdRef.current = 'new';
         }
     }
@@ -165,6 +168,9 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             content: currentContent,
             images: currentImages,
             tag,
+            work: work ? true : undefined,
+            // 분류를 바꿨으면 부가정보 수정 시각도 갱신 (다른 기기의 예전 분류가 이 변경을 덮지 않게)
+            ...((tag !== initialNote.tag || !!work !== !!initialNote.work) ? { metaUpdatedAt: now } : {}),
             updatedAt: now,
             title: (initialNote.title === 'Untitled Note' || !initialNote.title) ? initialTitle : initialNote.title,
             // 메모를 고쳐도 기존 AI 요약(과 그 출처)은 그대로 둡니다. 사용자가 ✨로 다시 요약할
@@ -185,6 +191,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             sources: [],
             images: currentImages,
             tag,
+            work: work ? true : undefined,
             isEnhancing: false,
             isProcessed: false
         };
@@ -589,21 +596,23 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
         {/* 분류 태그 (선택 안 해도 됨, 다시 누르면 해제) */}
         <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2 border-b border-slate-100 bg-white">
             <span className="text-[11px] font-bold text-slate-400">분류</span>
-            {(['memo', 'patient'] as NoteTag[]).map(t => (
-                <button
-                    key={t}
-                    type="button"
-                    onClick={() => setTag(prev => (prev === t ? undefined : t))}
-                    className={`px-2.5 py-1 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${
-                        tag === t
-                            ? (t === 'patient' ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-blue-50 border-blue-200 text-blue-600')
-                            : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'
-                    }`}
-                >
-                    {NOTE_TAG_LABELS[t]}
-                </button>
-            ))}
-            {!tag && <span className="text-[11px] text-slate-300">미선택</span>}
+            {CATEGORIES.map(c => {
+                const on = hasCategory({ tag, work }, c);
+                return (
+                    <button
+                        key={c}
+                        type="button"
+                        onClick={() => { const next = toggleCategory({ tag, work }, c); setTag(next.tag); setWork(next.work); }}
+                        className={`px-2.5 py-1 rounded-full text-xs font-bold border transition-colors whitespace-nowrap ${
+                            on ? CATEGORY_COLORS[c].active : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'
+                        }`}
+                    >
+                        {CATEGORY_LABELS[c]}
+                    </button>
+                );
+            })}
+            {!tag && !work && <span className="text-[11px] text-slate-300">미선택</span>}
+            {tag !== 'patient' && <span className="text-[11px] text-slate-300 hidden sm:inline">· 업무는 메모와 함께 고를 수 있어요</span>}
         </div>
 
         {images.length > 0 && (
