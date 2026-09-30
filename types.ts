@@ -40,6 +40,15 @@ export interface Note {
   followUpCheckedAt?: number; // 마지막으로 "확인함"을 누른 시각
   followUpIntervalDays?: number; // 확인 주기(일)
   followUpDueAt?: number; // 다음 확인일(그날 0시)
+  // 이 메모가 "인계장" 문서일 때: 어떤 업무 메모를 어느 버전까지 반영했는지
+  handover?: HandoverMeta;
+}
+
+export interface HandoverMeta {
+  sources: Record<string, number>; // 업무 메모 id → 반영할 때의 수정 시각(updatedAt)
+  refs: string[]; // [메모N]의 고정 번호 순서 (N = 인덱스+1)
+  updatedAt: number; // 마지막으로 정리한 시각
+  purpose?: string; // 용도·받는 사람
 }
 
 export interface WrongAnswer {

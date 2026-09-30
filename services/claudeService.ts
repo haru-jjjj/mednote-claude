@@ -635,7 +635,8 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
 // - 웹 검색은 쓰지 않습니다: "내 메모 기반" 답이 목적이고, 빠르고 저렴하게 유지.
 // ----------------------------------------------------------------------------
 // dateMode 'updated': 각 메모에 마지막 수정 날짜를 붙임(인계장처럼 최신 내용을 가려야 할 때)
-const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: number, dateMode: 'created' | 'updated' = 'created'): string => {
+// labelNumbers: [메모N]의 N을 순서대로가 아니라 지정한 번호로 붙일 때 (인계장처럼 번호가 계속 유지돼야 할 때)
+const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: number, dateMode: 'created' | 'updated' = 'created', labelNumbers?: number[]): string => {
     let used = 0;
     const parts: string[] = [];
     notes.forEach((n, i) => {
@@ -651,7 +652,7 @@ const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: numb
         const budget = Math.min(perNoteChars, totalChars - used);
         const clipped = body.length > budget ? body.slice(0, budget) + '\n…(이하 생략)' : body;
         used += clipped.length;
-        parts.push(`[메모${i + 1}] ${n.title || '제목 없음'} (${date})\n${clipped}`);
+        parts.push(`[메모${labelNumbers?.[i] ?? i + 1}] ${n.title || '제목 없음'} (${date})\n${clipped}`);
     });
     return parts.join('\n\n=====\n\n');
 };
@@ -1449,41 +1450,68 @@ export const extractCaseLogBatch = async (
         }));
 };
 
-// ---- 인계장 정리: '업무' 메모들을 분류별 제목·소제목이 있는 하나의 인계장으로 ----
-export const buildHandoverDocument = async (notes: Note[], purpose: string): Promise<string> => {
+// ---- 인계장: '업무' 메모로 만든 인계장 문서를 새로 만들거나, 바뀐 메모만 반영해 갱신 ----
+// - [메모N] 번호는 인계장마다 고정(한 번 붙은 번호는 계속 같은 메모)이라, 갱신할 때 새/수정 메모만 보내도
+//   기존 항목의 인용이 그대로 맞습니다.
+export const updateHandoverDocument = async (params: {
+    current: string;            // 지금 인계장 (처음이면 '')
+    notes: Note[];              // 이번에 반영할 새/수정 업무 메모
+    labels: number[];           // notes와 같은 순서의 고정 번호
+    modifiedLabels: number[];   // 그중 "수정된" 메모의 번호 (예전 항목을 새 내용으로 바꿔야 함)
+    removedLabels: number[];    // 삭제됐거나 업무 분류가 풀린 메모의 번호 (그 메모만 근거인 항목은 삭제)
+    purpose: string;
+    purposeChanged?: boolean;   // 용도·받는 사람이 바뀜 → 분류 순서·"한눈에"를 새 용도에 맞게
+}): Promise<string> => {
+    const { current, notes, labels, modifiedLabels, removedLabels, purpose, purposeChanged } = params;
     const today = new Date().toLocaleDateString('ko-KR');
+    const lbl = (ns: number[]) => ns.map(n => `[메모${n}]`).join(' ');
+    const isFirst = !current.trim();
     const prompt = `
-        You compile the reader's WORK notes into ONE handover document (인계장) that a colleague (or the reader
-        later) can read top to bottom and act on. The notes are handover items, ward / on-call workflow,
-        cath lab / EP lab workflow, and practical procedure tips written by a cardiology fellow.
+        You maintain ONE handover document (인계장) built from the reader's WORK notes: handover items,
+        ward / on-call workflow, cath lab / EP lab workflow, and practical procedure tips written by a cardiology fellow.
+        A colleague (or the reader later) should be able to read it top to bottom and act on it.
         ${READER_PROFILE}
 
         PURPOSE / AUDIENCE: """${purpose || '일반 업무 인계 (따로 지정 없음)'}"""
         TODAY: ${today}
 
-        WORK NOTES (labelled [메모1], [메모2], ..., oldest first, each with its last-modified date):
+        ${isFirst ? 'There is no document yet — build it from the notes below.' : `CURRENT HANDOVER DOCUMENT (citations like [메모3] are permanent labels of the source notes):
         """
-        ${buildNotesContext(notes, CONTEXT_BUDGETS.handover[0], CONTEXT_BUDGETS.handover[1], 'updated')}
+        ${current}
+        """`}
+
+        ${notes.length > 0 ? `NOTES TO ${isFirst ? 'USE' : 'INTEGRATE (new or modified since the last update)'} (each with its permanent label and last-modified date, oldest first):
         """
+        ${buildNotesContext(notes, CONTEXT_BUDGETS.handover[0], CONTEXT_BUDGETS.handover[1], 'updated', labels)}
+        """` : ''}
+        ${modifiedLabels.length > 0 ? `MODIFIED NOTES: ${lbl(modifiedLabels)} — these notes were edited. Re-derive every item that cites them from the new content above: update changed details, remove items that are no longer in the note, keep the rest.` : ''}
+        ${purposeChanged && !isFirst ? `THE PURPOSE / AUDIENCE CHANGED: reorder the categories and rewrite "## 한눈에" for the new purpose, but keep each item's wording and citations.` : ''}
+        ${removedLabels.length > 0 ? `REMOVED NOTES: ${lbl(removedLabels)} — deleted or no longer marked as work. Delete items that cite only these labels; for items that also cite other notes, just drop these labels.` : ''}
+
+        ${isFirst ? '' : `UPDATE RULES:
+        - Return the FULL updated document, not a diff. Keep every item that is not affected EXACTLY as it is
+          (same wording, same citations, same position — except for reordering asked by a PURPOSE CHANGED note)
+          — the reader may have edited it by hand.
+        - Put new items into the matching existing category/subcategory; create a new "##"/"###" only when nothing fits.
+        - Refresh "## 한눈에" and "## 확인 필요" to reflect the whole updated document.`}
 
         STRUCTURE (Korean, with the usual English terms/abbreviations):
-        - Start with "## 한눈에": 3~6 bullets — the most important or time-sensitive items.
-        - Then group everything by category: "##" for major categories, "###" for subcategories. Infer the
-          categories from the content; typical ones: 병동·당직 업무 / 시술 (subcategories per procedure, e.g.
-          CAG·PCI, EP study·ablation, device implantation, structural) / 약물·오더 / 검사·예약 / 장비·물품 /
-          전산(EMR)·서류 / 연락처·절차 / 기타. Include only categories that have content, ordered by practical
-          importance. Adapt to the stated purpose (e.g. an on-call handover puts on-call items first).
-        - Items: "- **짧은 항목명**: 내용" on one line where possible. Step-by-step procedures as numbered
-          sub-steps. Keep EXACTLY as written: numbers, doses, settings, catheter/device names and sizes,
-          extension/phone numbers, names and roles, timing.
-        - FIDELITY FIRST: this is a handover, not a lecture. Do not add clinical content that is not in the notes.
-          If a short clarification is truly needed for safety, mark it "(메모 외 보충)".
-        - Merge duplicates. When notes conflict, keep the most recently modified one in the item and add
+        - "## 한눈에": 3~6 bullets — the most important or time-sensitive items.
+        - Then everything grouped by category: "##" major categories, "###" subcategories. Typical categories:
+          병동·당직 업무 / 시술 (subcategories per procedure, e.g. CAG·PCI, EP study·ablation, device implantation,
+          structural) / 약물·오더 / 검사·예약 / 장비·물품 / 전산(EMR)·서류 / 연락처·절차 / 기타. Only categories
+          with content, ordered by practical importance (adapt to the purpose).
+        - Items: "- **짧은 항목명**: 내용" on one line where possible; step-by-step procedures as numbered sub-steps.
+          Keep EXACTLY as written: numbers, doses, settings, catheter/device names and sizes, extension/phone numbers,
+          names and roles, timing.
+        - FIDELITY FIRST: do not add clinical content that is not in the notes; if a short clarification is truly
+          needed for safety, mark it "(메모 외 보충)".
+        - Merge duplicates. When notes conflict, keep the most recently modified one and add
           "⚠️ 이전 메모와 다름: …" with both citations.
-        - Put the citation right after each item, e.g. "... [메모3]" or "[메모2][메모5]". Never invent labels.
-        - End with "## 확인 필요": items that look outdated, conflicting, or incomplete (e.g. who to call is
-          missing). Omit this section if there is nothing.
-        OUTPUT: only the handover document — no preamble, no narration.
+        - Cite right after each item using ONLY the permanent labels, e.g. "... [메모3]" or "[메모2][메모5]".
+          Never invent labels.
+        - End with "## 확인 필요" for outdated, conflicting or incomplete items (omit if none).
+        OUTPUT: only the handover document — no preamble, no narration, no summary of what changed.
     `;
     const data = await callClaude({
         model: MODEL_SMART,
@@ -1493,8 +1521,11 @@ export const buildHandoverDocument = async (notes: Note[], purpose: string): Pro
         effort: 'medium'
     });
     let text = extractText(data);
-    if (!text) throw new Error(`인계장 결과가 비어 있습니다 (중단 사유: ${data?.stop_reason || '알 수 없음'}). 포함할 메모 수를 줄여 다시 시도해보세요.`);
+    if (!text) throw new Error(`인계장 결과가 비어 있습니다 (중단 사유: ${data?.stop_reason || '알 수 없음'}). 잠시 후 다시 시도해보세요.`);
     const first = text.indexOf('## ');
     if (first > 0 && first < 300) text = text.slice(first);
-    return withTruncationNotice(text, data);
+    if (data?.stop_reason === 'max_tokens') {
+        throw new Error('인계장이 너무 길어 분량 한도에 걸렸습니다. 기존 인계장은 그대로 두었어요. 오래된 항목을 인계장 메모에서 직접 정리한 뒤 다시 시도해주세요.');
+    }
+    return text;
 };

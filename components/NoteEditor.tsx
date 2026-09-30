@@ -171,7 +171,8 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             work: work ? true : undefined,
             // 분류를 바꿨으면 부가정보 수정 시각도 갱신 (다른 기기의 예전 분류가 이 변경을 덮지 않게)
             ...((tag !== initialNote.tag || !!work !== !!initialNote.work) ? { metaUpdatedAt: now } : {}),
-            updatedAt: now,
+            // 내용·사진이 그대로면 "내용 수정 시각"은 유지 (인계장·팔로업에서 괜히 "수정됨"으로 뜨지 않게)
+            updatedAt: (currentContent !== (initialNote.content || '') || imagesChanged) ? now : (initialNote.updatedAt || now),
             title: (initialNote.title === 'Untitled Note' || !initialNote.title) ? initialTitle : initialNote.title,
             // 메모를 고쳐도 기존 AI 요약(과 그 출처)은 그대로 둡니다. 사용자가 ✨로 다시 요약할
             // 때만 바뀌고, 그 전까지는 상세 화면에 "메모 수정 전 요약"이라고 표시됩니다.

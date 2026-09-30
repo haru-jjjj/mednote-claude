@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Layers, Loader2, AlertTriangle, CalendarDays, Search, FileText, ClipboardList, EyeOff, Sparkles, Lightbulb, Users, Check, ChevronDown, ChevronUp, ClipboardCheck } from 'lucide-react';
-import { Note, Source } from '../types';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { v4 as uuidv4 } from 'uuid';
+import { ArrowLeft, Layers, Loader2, AlertTriangle, CalendarDays, Search, FileText, ClipboardList, EyeOff, Sparkles, Lightbulb, Users, Check, ChevronDown, ChevronUp, ClipboardCheck, Copy, RotateCw } from 'lucide-react';
+import { Note, Source, HandoverMeta } from '../types';
+import { sectionizeHtml } from '../services/sectionize';
 import NoteResultCard, { renderLinkedMarkdown } from './NoteResultCard';
 import {
     generateWeeklyDigest, findCoverageGaps, buildDocumentationTemplate, extractCaseLogBatch, synthesizeNotes,
-    notesWithinContextBudget, CONTEXT_BUDGETS, summarizeSingleNote, buildHandoverDocument
+    notesWithinContextBudget, CONTEXT_BUDGETS, summarizeSingleNote, updateHandoverDocument
 } from '../services/claudeService';
 import { getNoteFromDB } from '../services/storage';
 import { contentForAnalysis } from '../services/insightUtils';
@@ -31,7 +33,8 @@ interface Props {
     onBack: () => void;
     onSelectNote: (id: string) => void;
     onSaveNewNote: (note: Note) => Promise<void>;
-    onUpdateNote: (note: Note) => void; // 케이스 분석 갱신 저장용
+    onUpdateNote: (note: Note) => void | Promise<void>; // 케이스 분석 갱신·인계장 저장용
+    handoverDoc?: Note; // 저장돼 있는 인계장 (메모 활용 > 인계장 정리)
     onFollowUpCheck: (id: string, intervalDays: number) => void; // "확인함"
     nowTick: number; // 몇 분마다 갱신되는 현재 시각 (자정이 지나면 "확인할 차례"가 바뀌도록)
 }
@@ -196,136 +199,273 @@ const WeeklyTab: React.FC<Props> = ({ notes, reviewDueCount, onSelectNote, onSav
 // ---------------------------------------------------------------------------
 // 인계장 정리: '업무' 메모를 모아 분류별 제목·소제목이 있는 하나의 인계장으로
 // ---------------------------------------------------------------------------
-const HANDOVER_PERIODS: { key: string; label: string; days: number | null }[] = [
-    { key: 'all', label: '전체', days: null },
-    { key: '3m', label: '3개월', days: 92 },
-    { key: '1m', label: '1개월', days: 31 },
-    { key: '1w', label: '1주', days: 7 },
-];
+type HandoverStatus = 'done' | 'new' | 'changed';
+const handoverVersion = (n: Note) => n.updatedAt || n.createdAt || 0;
+const HANDOVER_MAX_BATCHES = 6;
 
-const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote }) => {
-    const [period, setPeriod] = useState('all');
-    const p = HANDOVER_PERIODS.find(x => x.key === period) || HANDOVER_PERIODS[0];
-    const workNotes = useMemo(() => {
-        const since = p.days === null ? 0 : Date.now() - p.days * DAY_MS;
-        return notes
-            .filter(n => n.work && (n.updatedAt || n.createdAt || 0) >= since)
-            .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    }, [notes, p.days]);
+const HANDOVER_MAX_DOC_CHARS = 30000; // 인계장 전체를 매번 다시 쓰므로, 이보다 길면 한도에 걸리기 쉬움
 
-    // 체크 해제한 메모만 기억 (새로 생긴 업무 메모는 기본으로 포함)
-    const [excluded, setExcluded] = useState<Set<string>>(new Set());
-    const selected = workNotes.filter(n => !excluded.has(n.id));
-    const [purpose, setPurpose] = useState('');
-    const [busy, setBusy] = useState(false);
+const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUpdateNote, handoverDoc, isFetchingAll }) => {
+    const meta: HandoverMeta = handoverDoc?.handover || { sources: {}, refs: [], updatedAt: 0 };
+    const byId = useMemo(() => new Map(notes.map(n => [n.id, n])), [notes]);
+    // 업무 메모 (AI 결과 메모는 InsightsView에서 이미 빠짐)
+    const workNotes = useMemo(() => notes.filter(n => n.work), [notes]);
+    const statusOf = (n: Note): HandoverStatus => {
+        const v = meta.sources[n.id];
+        if (v === undefined) return 'new';
+        return handoverVersion(n) > v ? 'changed' : 'done';
+    };
+    const withStatus = workNotes
+        .map(n => ({ n, status: statusOf(n) }))
+        .sort((a, b) => handoverVersion(b.n) - handoverVersion(a.n));
+    const pending = withStatus.filter(x => x.status !== 'done');
+    // 반영했던 메모 중 업무 분류가 풀렸거나(목록에 있는데 업무 아님) 목록에 없는(삭제됐을 수 있는) 것.
+    // 목록에 없는 것은 실행할 때 기기 저장소에서 한 번 더 확인하고, 예전 메모를 불러오는 중에는 실행하지 않음.
+    const removedIds = Object.keys(meta.sources).filter(id => { const n = byId.get(id); return !n || !n.work; });
+
+    const [purpose, setPurpose] = useState(meta.purpose || '');
+    useEffect(() => { setPurpose(meta.purpose || ''); }, [handoverDoc?.id, meta.purpose]); // eslint-disable-line react-hooks/exhaustive-deps
+    const runningRef = useRef(false); // 두 번 눌러도 한 번만 실행
+    const [busy, setBusy] = useState<string | null>(null); // 진행 표시 문구
     const [error, setError] = useState<string | null>(null);
-    const [notice, setNotice] = useState<string | null>(null);
     const [showList, setShowList] = useState(false);
-    const [result, setResult] = useState<{ markdown: string; refNotes: Note[]; createdAt: number } | null>(null);
+    const [copied, setCopied] = useState(false);
+    const docBoxRef = useRef<HTMLDivElement>(null);
 
-    const toggle = (id: string) => setExcluded(prev => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id); else next.add(id);
-        return next;
-    });
+    // [메모N] → 고정 번호 순서의 메모 (삭제된 메모는 자리만 유지)
+    const refNotes = meta.refs.map(id => byId.get(id) || ({ id, title: '(삭제·분류 해제된 메모)' } as Note));
+    const docHtml = useMemo(
+        () => handoverDoc?.content ? sectionizeHtml(renderLinkedMarkdown(handoverDoc.content, meta.refs.length)).html : '',
+        [handoverDoc?.content, meta.refs.length]
+    );
 
-    const handleRun = async () => {
-        if (busy || selected.length === 0) return;
-        setBusy(true);
+    // expectedUpdatedAt: 정리를 시작할 때(또는 직전 저장 때)의 인계장 메모 수정 시각. 그 사이 다른 곳에서 고쳤으면 덮지 않음.
+    const persist = async (docId: string | null, content: string, next: HandoverMeta, expectedUpdatedAt: number | null): Promise<{ id: string; savedAt: number }> => {
+        const now = Date.now();
+        if (!docId) {
+            const note: Note = {
+                id: uuidv4(),
+                title: '인계장',
+                content,
+                summary: '',
+                createdAt: now,
+                updatedAt: now,
+                sources: [],
+                images: [],
+                isEnhancing: false,
+                isProcessed: false,
+                work: true,
+                origin: 'ai',
+                handover: next
+            };
+            await onSaveNewNote(note);
+            return { id: note.id, savedAt: now };
+        }
+        const latest = await getNoteFromDB(docId).catch(() => undefined);
+        if (!latest) throw new Error('인계장 메모를 찾지 못했습니다(삭제됐을 수 있음). "처음부터 다시 정리"를 눌러주세요.');
+        if (expectedUpdatedAt !== null && (latest.updatedAt || 0) !== expectedUpdatedAt) {
+            throw new Error('정리하는 동안 인계장 메모가 수정돼서(이 기기 또는 다른 기기) 덮어쓰지 않았어요. 다시 눌러주세요.');
+        }
+        await onUpdateNote({ ...latest, content, updatedAt: now, handover: next });
+        const check = await getNoteFromDB(docId).catch(() => undefined);
+        if (!check || check.updatedAt !== now) throw new Error('인계장 저장에 실패했습니다. 잠시 후 다시 시도해주세요.');
+        return { id: docId, savedAt: now };
+    };
+
+    // mode 'update': 새/수정/삭제된 업무 메모만 반영 · 'rebuild': 처음부터 다시
+    const run = async (mode: 'update' | 'rebuild') => {
+        if (runningRef.current || busy) return;
+        if (isFetchingAll) { setError('예전 메모를 불러오는 중이에요. 잠시 뒤에 다시 눌러주세요.'); return; }
+        if (mode === 'rebuild' && handoverDoc && !window.confirm('인계장을 처음부터 다시 정리할까요? 인계장 메모에 직접 고친 내용은 사라지고, 업무 메모 전체로 새로 만듭니다.')) return;
+        if (mode === 'update' && (handoverDoc?.content || '').length > HANDOVER_MAX_DOC_CHARS) {
+            setError(`인계장이 길어져(${Math.round((handoverDoc?.content || '').length / 1000)}천 자) 한 번에 다시 쓰기 어려워요. 인계장 메모에서 지난 항목을 정리하거나 "처음부터 다시 정리"를 눌러주세요.`);
+            return;
+        }
+        runningRef.current = true;
+        setBusy('준비 중…');
         setError(null);
-        setNotice(null);
+        let docId = handoverDoc?.id || null;
+        let expected: number | null = handoverDoc ? (handoverDoc.updatedAt || 0) : null;
+        let current = mode === 'rebuild' ? '' : (handoverDoc?.content || '');
+        const sources: Record<string, number> = mode === 'rebuild' ? {} : { ...meta.sources };
+        const refs: string[] = mode === 'rebuild' ? [] : [...meta.refs];
+        // 오래된 메모부터 반영 (같은 항목이 다르면 나중 메모가 이기도록)
+        let queue = (mode === 'rebuild' ? workNotes : pending.map(x => x.n))
+            .slice().sort((a, b) => handoverVersion(a) - handoverVersion(b));
+        const cleanPurpose = purpose.trim();
         try {
-            // 분량 한도는 최신 메모부터 채우고(오래된 것이 빠지도록), AI에는 오래된 순으로 넘겨서
-            // 같은 항목이 다르면 수정 날짜로 최신을 고르게 함
-            const all = await hydrateNotes(selected); // selected: 최신 수정 순
-            const fittedNewest = notesWithinContextBudget(all, CONTEXT_BUDGETS.handover[0], CONTEXT_BUDGETS.handover[1]);
-            if (fittedNewest.length < all.length) {
-                setNotice(`업무 메모 ${all.length}개 중 분량 한도 안에 들어간 최근 ${fittedNewest.length}개만 정리했어요. 기간을 줄이거나 일부 메모를 빼고 다시 만들어보세요.`);
+            // 목록에 없는 메모는 정말 지워진 것인지 기기 저장소에서 확인 (아직 안 불러온 메모를 지우지 않도록)
+            let removed: string[] = [];
+            if (mode === 'update') {
+                for (const id of removedIds) {
+                    const inList = byId.get(id);
+                    if (inList) { if (!inList.work) removed.push(id); continue; }
+                    const stored = await getNoteFromDB(id).catch(() => undefined);
+                    if (!stored || !stored.work) removed.push(id);
+                }
             }
-            const fitted = [...fittedNewest].sort((a, b) => (a.updatedAt || a.createdAt || 0) - (b.updatedAt || b.createdAt || 0));
-            const markdown = await buildHandoverDocument(fitted, purpose.trim());
-            setResult({ markdown, refNotes: fitted, createdAt: Date.now() });
+            for (let batch = 1; batch <= HANDOVER_MAX_BATCHES && (queue.length > 0 || removed.length > 0 || batch === 1); batch++) {
+                if (queue.length === 0 && removed.length === 0 && current.trim() && cleanPurpose === (meta.purpose || '')) break;
+                const hydrated = await hydrateNotes(queue);
+                // 기존 인계장 분량만큼 메모 몫을 줄여서 한 번에 보낼 양을 맞춤 (최소 1개는 포함)
+                const budget = Math.max(20000, CONTEXT_BUDGETS.handover[1] - current.length);
+                let fit = notesWithinContextBudget(hydrated, CONTEXT_BUDGETS.handover[0], budget);
+                if (fit.length === 0 && hydrated.length > 0) fit = [hydrated[0]];
+                setBusy(queue.length > fit.length || batch > 1
+                    ? `정리 중… (${batch}번째 묶음, 메모 ${fit.length}개)`
+                    : `정리 중… (메모 ${fit.length}개)`);
+                const labels = fit.map(n => {
+                    let idx = refs.indexOf(n.id);
+                    if (idx < 0) { refs.push(n.id); idx = refs.length - 1; }
+                    return idx + 1;
+                });
+                const modifiedLabels = fit.filter(n => sources[n.id] !== undefined).map(n => refs.indexOf(n.id) + 1);
+                const removedLabels = removed.map(id => refs.indexOf(id) + 1).filter(x => x > 0);
+                current = await updateHandoverDocument({
+                    current, notes: fit, labels, modifiedLabels, removedLabels, purpose: cleanPurpose,
+                    purposeChanged: batch === 1 && mode === 'update' && cleanPurpose !== (meta.purpose || '')
+                });
+                fit.forEach(n => { sources[n.id] = handoverVersion(n); });
+                removed.forEach(id => { delete sources[id]; });
+                removed = [];
+                const fitIds = new Set(fit.map(n => n.id));
+                queue = queue.filter(n => !fitIds.has(n.id));
+                // 묶음마다 저장 → 중간에 끊겨도 반영한 만큼은 남음
+                const saved = await persist(docId, current, { sources, refs, updatedAt: Date.now(), purpose: cleanPurpose || undefined }, expected);
+                docId = saved.id;
+                expected = saved.savedAt;
+            }
+            if (queue.length > 0) setError(`업무 메모가 많아 ${queue.length}개는 아직 반영하지 못했어요. "새 업무 메모 반영"을 한 번 더 눌러주세요.`);
         } catch (e: any) {
-            setError(e?.message || '인계장을 만들지 못했습니다.');
+            setError(e?.message || '인계장을 정리하지 못했습니다.');
         } finally {
-            setBusy(false);
+            runningRef.current = false;
+            setBusy(null);
         }
     };
 
+    const handleCopy = async () => {
+        if (!handoverDoc?.content) return;
+        // 인용 표시 [메모N]은 빼고 복사 (메신저 등에 붙여넣기용)
+        const text = handoverDoc.content.replace(/\s*\[메모\s?\d{1,3}(?:\s*[,·]\s*(?:메모\s?)?\d{1,3})*\]/g, '');
+        try {
+            await navigator.clipboard.writeText(text);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+        } catch {
+            setError('복사하지 못했습니다. 인계장 메모를 열어 직접 복사해주세요.');
+        }
+    };
+
+    const handleDocClick = (e: React.MouseEvent) => {
+        const target = (e.target as HTMLElement).closest('[data-note-ref]');
+        if (!target) return;
+        const n = refNotes[Number(target.getAttribute('data-note-ref')) - 1];
+        if (n && byId.has(n.id)) onSelectNote(n.id);
+    };
+    const setAllSections = (open: boolean) => {
+        docBoxRef.current?.querySelectorAll('details.md-section').forEach(d => {
+            if (open) d.setAttribute('open', ''); else d.removeAttribute('open');
+        });
+    };
+
+    const newCount = pending.filter(x => x.status === 'new').length;
+    const changedCount = pending.filter(x => x.status === 'changed').length;
+    const hasWork = pending.length > 0 || removedIds.length > 0;
+    const statusBadge = (st: HandoverStatus) =>
+        st === 'done' ? <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded shrink-0">반영됨</span>
+        : st === 'new' ? <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded shrink-0">새 메모</span>
+        : <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded shrink-0">수정됨</span>;
+
     return (
         <div className="space-y-4">
-            <Intro cost="1회 약 100~400원 (업무 메모 양에 따라). 원래 메모는 바뀌지 않아요.">
-                <b>'업무'로 분류한 메모</b>(인계 사항, 시술 팁 등)를 모아 <b>분류별 제목 · 소제목</b>이 있는 하나의 인계장으로 정리합니다.
-                맨 위에 "한눈에", 끝에 "확인 필요"(서로 다르거나 빠진 내용)가 붙고, 항목마다 [메모N]으로 원래 메모가 연결돼요.
-                저장하면 '업무' 분류로 남고, 메모 화면에서 제목별로 접었다 펼 수 있습니다.
+            <Intro cost="처음 정리는 1회 약 100~400원, 이후 새 메모만 반영할 때는 인계장 길이에 따라 약 50~200원.">
+                <b>'업무'로 분류한 메모</b>(인계 사항, 시술 팁 등)로 인계장 하나를 만들어 <b>여기에 계속 보관</b>합니다(모든 기기에 동기화).
+                다음부터는 <b>새로 쓰거나 고친 업무 메모만</b> 반영해서 갱신하고, 이미 반영된 메모는 건너뜁니다.
+                인계장은 '인계장'이라는 업무 메모로도 저장돼서, 메모 화면에서 직접 고칠 수도 있어요. 고친 내용은 다음 갱신 때도 유지되고, 원래 업무 메모를 고친 경우에만 그 메모에서 나온 항목이 새 내용으로 바뀝니다.
             </Intro>
 
-            {workNotes.length === 0 && notes.every(n => !n.work) ? (
+            {workNotes.length === 0 && !handoverDoc ? (
                 <p className="text-sm text-slate-400">아직 '업무'로 분류한 메모가 없어요. 메모를 쓸 때나 메모 화면 날짜 옆 분류에서 <b>업무</b>를 누르면 여기에 모입니다(메모와 함께 고를 수 있어요).</p>
             ) : (
                 <>
-                    <div className="flex flex-wrap items-center gap-2">
-                        <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">
-                            {HANDOVER_PERIODS.map(x => (
-                                <button key={x.key} onClick={() => setPeriod(x.key)} disabled={busy}
-                                    className={`px-3 py-1 rounded-md text-xs font-bold ${period === x.key ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
-                                    {x.label}
-                                </button>
-                            ))}
+                    <div className="bg-white border border-slate-200 rounded-xl p-3 space-y-3">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                            <span className="font-bold text-slate-600">업무 메모 {workNotes.length}개</span>
+                            <span className="text-slate-400">반영됨 {withStatus.length - pending.length}</span>
+                            {newCount > 0 && <span className="font-bold text-emerald-700">새 메모 {newCount}</span>}
+                            {changedCount > 0 && <span className="font-bold text-amber-700">수정됨 {changedCount}</span>}
+                            {removedIds.length > 0 && <span className="font-bold text-rose-600">삭제·분류 해제 {removedIds.length}</span>}
+                            <button onClick={() => setShowList(v => !v)} className="ml-auto flex items-center gap-1 font-bold text-slate-500 hover:text-slate-700">
+                                목록 {showList ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                            </button>
                         </div>
-                        <button onClick={() => setShowList(v => !v)} className="flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-slate-700">
-                            업무 메모 {selected.length}/{workNotes.length}개 포함 {showList ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                        </button>
-                    </div>
-
-                    {showList && (
-                        <div className="bg-white border border-slate-200 rounded-xl p-3">
-                            <div className="flex items-center gap-3 mb-2 text-xs font-bold">
-                                <button onClick={() => setExcluded(new Set())} className="text-slate-500 hover:text-slate-700">모두 선택</button>
-                                <button onClick={() => setExcluded(new Set(workNotes.map(n => n.id)))} className="text-slate-500 hover:text-slate-700">모두 해제</button>
-                            </div>
-                            <div className="space-y-1 max-h-72 overflow-y-auto">
-                                {workNotes.map(n => (
-                                    <label key={n.id} className="flex items-center gap-2 text-sm">
-                                        <input type="checkbox" checked={!excluded.has(n.id)} onChange={() => toggle(n.id)} disabled={busy}
-                                            className="w-4 h-4 shrink-0 rounded border-slate-300 text-emerald-600" />
+                        {showList && (
+                            <div className="space-y-1 max-h-72 overflow-y-auto border-t border-slate-100 pt-2">
+                                {withStatus.map(({ n, status }) => (
+                                    <button key={n.id} onClick={() => onSelectNote(n.id)} className="w-full flex items-center gap-2 text-left text-sm hover:text-emerald-700">
+                                        {statusBadge(status)}
                                         <span className="flex-1 min-w-0 truncate text-slate-700">{n.title || '(제목 없음)'}</span>
-                                        <span className="text-[11px] text-slate-400 shrink-0">{new Date(n.updatedAt || n.createdAt).toLocaleDateString()}</span>
-                                        <button type="button" onClick={() => onSelectNote(n.id)} className="text-[11px] text-slate-400 hover:text-emerald-700 shrink-0">열기</button>
-                                    </label>
+                                        <span className="text-[11px] text-slate-400 shrink-0">{new Date(handoverVersion(n)).toLocaleDateString()}</span>
+                                    </button>
                                 ))}
                             </div>
-                        </div>
-                    )}
-
-                    <div className="flex flex-col sm:flex-row gap-2">
+                        )}
                         <input
                             value={purpose}
                             onChange={e => setPurpose(e.target.value)}
                             placeholder="용도·받는 사람 (선택) — 예: 주말 당직 인계, EP lab 새로 오는 fellow용"
                             className={inputCls}
                         />
-                        <button onClick={handleRun} disabled={busy || selected.length === 0} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-                            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ClipboardCheck className="w-4 h-4" />}
-                            {busy ? '인계장 정리 중…' : '인계장 정리하기'}
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <button
+                                onClick={() => run(handoverDoc ? 'update' : 'rebuild')}
+                                disabled={!!busy || !!isFetchingAll || (handoverDoc ? !hasWork && purpose.trim() === (meta.purpose || '') : workNotes.length === 0)}
+                                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                            >
+                                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ClipboardCheck className="w-4 h-4" />}
+                                {busy ? busy
+                                    : isFetchingAll ? '예전 메모 불러오는 중…'
+                                    : !handoverDoc ? '인계장 만들기'
+                                    : hasWork ? `새 업무 메모 반영 (${pending.length + removedIds.length})`
+                                    : purpose.trim() !== (meta.purpose || '') ? '용도 바꿔서 다시 정리'
+                                    : '새로 반영할 메모 없음'}
+                            </button>
+                            {handoverDoc && (
+                                <button onClick={() => run('rebuild')} disabled={!!busy || !!isFetchingAll || workNotes.length === 0}
+                                    className="flex items-center gap-1 px-3 py-2 rounded-lg text-xs font-bold text-slate-500 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-40">
+                                    <RotateCw className="w-3.5 h-3.5" /> 처음부터 다시 정리
+                                </button>
+                            )}
+                        </div>
                     </div>
-                    {workNotes.length === 0 && <p className="text-xs text-slate-400">이 기간에 쓰거나 고친 업무 메모가 없어요. 기간을 넓혀보세요.</p>}
-                </>
-            )}
 
-            {error && !busy && <ErrorBox message={error} />}
-            {notice && !busy && <p className="text-xs text-amber-600 px-1">{notice}</p>}
-            {result && !busy && (
-                <NoteResultCard
-                    label={`인계장 · ${new Date(result.createdAt).toLocaleDateString()} · 업무 메모 ${result.refNotes.length}개`}
-                    markdown={result.markdown}
-                    refNotes={result.refNotes}
-                    saveTitle={`인계장${purpose.trim() ? ` — ${purpose.trim()}` : ''} (${new Date(result.createdAt).toLocaleDateString()})`}
-                    saveExtra={{ work: true }}
-                    onSelectNote={onSelectNote}
-                    onSaveNewNote={onSaveNewNote}
-                />
+                    {error && !busy && <ErrorBox message={error} />}
+
+                    {handoverDoc && (
+                        <div className="bg-white border border-slate-200 rounded-xl p-4 md:p-5 shadow-sm">
+                            <div className="flex flex-wrap items-center gap-2 mb-3">
+                                <span className="text-xs font-bold text-emerald-700">
+                                    인계장 · {meta.updatedAt ? `${new Date(meta.updatedAt).toLocaleString()} 정리` : ''} · 업무 메모 {Object.keys(meta.sources).length}개 반영
+                                </span>
+                                <div className="ml-auto flex items-center gap-3 text-[11px] font-bold text-slate-400">
+                                    <button onClick={() => setAllSections(true)} className="hover:text-slate-600">모두 펼치기</button>
+                                    <button onClick={() => setAllSections(false)} className="hover:text-slate-600">모두 접기</button>
+                                    <button onClick={handleCopy} className="flex items-center gap-1 hover:text-slate-600">
+                                        {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />} {copied ? '복사됨' : '복사'}
+                                    </button>
+                                    <button onClick={() => onSelectNote(handoverDoc.id)} className="hover:text-slate-600">메모로 열기·고치기</button>
+                                </div>
+                            </div>
+                            <div
+                                ref={docBoxRef}
+                                className="prose prose-sm prose-slate max-w-none text-slate-700 leading-relaxed break-words"
+                                onClick={handleDocClick}
+                                dangerouslySetInnerHTML={{ __html: docHtml }}
+                            />
+                        </div>
+                    )}
+                </>
             )}
         </div>
     );
@@ -1002,7 +1142,11 @@ const TAB_KEY = 'medinote_insights_tab';
 const InsightsView: React.FC<Props> = (rawProps) => {
     // AI 결과를 저장한 메모는 분석 대상에서 제외 (결과가 다시 입력으로 섞이지 않게)
     const sourceNotes = useMemo(() => rawProps.notes.filter(n => n.origin !== 'ai'), [rawProps.notes]);
-    const props: Props = { ...rawProps, notes: sourceNotes };
+    // 보관 중인 인계장 (여러 개면 가장 최근에 정리한 것)
+    const handoverDoc = useMemo(() => rawProps.notes
+        .filter(n => n.handover)
+        .sort((a, b) => (b.handover?.updatedAt || 0) - (a.handover?.updatedAt || 0))[0], [rawProps.notes]);
+    const props: Props = { ...rawProps, notes: sourceNotes, handoverDoc };
     const [tab, setTab] = useState<Tab>(() => {
         const saved = safeGet(TAB_KEY) as Tab | null;
         return saved && TABS.some(t => t.key === saved) ? saved : 'weekly';

@@ -65,7 +65,10 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
             origin: n.origin === 'ai' ? 'ai' : undefined,
             followUpCheckedAt: typeof n.followUpCheckedAt === 'number' ? n.followUpCheckedAt : undefined,
             followUpIntervalDays: typeof n.followUpIntervalDays === 'number' ? n.followUpIntervalDays : undefined,
-            followUpDueAt: typeof n.followUpDueAt === 'number' ? n.followUpDueAt : undefined
+            followUpDueAt: typeof n.followUpDueAt === 'number' ? n.followUpDueAt : undefined,
+            handover: n.handover && typeof n.handover === 'object' && Array.isArray(n.handover.refs) && n.handover.sources && typeof n.handover.sources === 'object'
+                ? { sources: n.handover.sources, refs: n.handover.refs, updatedAt: Number(n.handover.updatedAt) || 0, purpose: typeof n.handover.purpose === 'string' ? n.handover.purpose : undefined }
+                : undefined
         };
     });
 };
