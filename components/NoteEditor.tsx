@@ -5,11 +5,15 @@ import { Note, NoteTag, CATEGORIES, CATEGORY_LABELS, CATEGORY_COLORS, hasCategor
 import { v4 as uuidv4 } from 'uuid';
 import { gridToMarkdown, looksLikeTsv, parseTsv, continueRecordNumbering } from '../services/pasteUtils';
 import { todayHeadingText } from '../services/sectionize';
+import { extractPatientId, firstLineOf, dateHeading } from '../services/patientId';
 
 interface NoteEditorProps {
   onSave: (note: Note) => void;
   onCancel: () => void;
   initialNote?: Note | null;
+  // 환자 식별번호(제목 맨 앞)가 같은 메모 찾기 / 새 메모를 기존 메모에 이어붙여 저장
+  findSamePatient?: (pid: string) => Note[];
+  onAppendToPatient?: (targetId: string, content: string, images: string[]) => Promise<boolean>;
 }
 
 // ----------------------------------------------------------------------------
@@ -89,7 +93,7 @@ const htmlToMarkdown = (root: HTMLElement, opts: { allowRecords?: boolean } = {}
     return walk(root);
 };
 
-const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }) => {
+const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote, findSamePatient, onAppendToPatient }) => {
   const contentRef = useRef<HTMLTextAreaElement>(null);
   
   // Ref to throttle rapid firing events (Hardware/Software debounce)
@@ -100,6 +104,12 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
   // 분류 태그: 메모 / 환자 / 미선택(undefined)
   const [tag, setTag] = useState<NoteTag | undefined>(undefined);
   const [work, setWork] = useState<boolean | undefined>(undefined);
+  // 환자 번호 중복 확인
+  const [typedPatientId, setTypedPatientId] = useState<string | null>(null);
+  const idTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (idTimerRef.current) clearTimeout(idTimerRef.current); }, []);
+  const [appendTargetId, setAppendTargetId] = useState<string | null>(null);
+  const [isAppending, setIsAppending] = useState(false);
   const [isProcessingImg, setIsProcessingImg] = useState(false);
   // 붙여넣기 후 안내(용량 경고 등)를 잠깐 보여주는 토스트
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
@@ -126,6 +136,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             setImages(initialNote.images || []);
             setTag(initialNote.tag);
             setWork(initialNote.work);
+            setTypedPatientId(extractPatientId(firstLineOf(initialNote.content || '')));
             loadedNoteIdRef.current = initialNote.id;
         }
     } else {
@@ -142,14 +153,33 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
     }
   }, [initialNote]);
 
+  // 지금 쓰는 메모와 같은 번호의 다른 환자 메모 (환자 분류일 때만)
+  const samePatientNotes = (tag === 'patient' && typedPatientId && findSamePatient)
+      ? findSamePatient(typedPatientId).filter(n => n.id !== initialNote?.id)
+      : [];
+  useEffect(() => {
+      // 번호가 바뀌어 대상이 없어지면 이어붙이기 선택 해제
+      if (appendTargetId && !samePatientNotes.some(n => n.id === appendTargetId)) setAppendTargetId(null);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typedPatientId, tag]);
+
   const handleSave = () => {
-    if (isProcessingImg) return;
+    if (isProcessingImg || isAppending) return;
 
     const currentContent = contentRef.current?.value || '';
     const currentImages = images || [];
 
     if (!currentContent.trim() && currentImages.length === 0) {
         onCancel(); 
+        return;
+    }
+
+    // 같은 번호의 기존 환자 메모에 이어붙이기를 골랐으면 새 메모를 만들지 않음
+    if (!initialNote && appendTargetId && onAppendToPatient && samePatientNotes.some(n => n.id === appendTargetId)) {
+        setIsAppending(true);
+        onAppendToPatient(appendTargetId, currentContent, currentImages)
+            .catch(e => { console.error(e); alert('이어붙이기에 실패했습니다.'); return false; })
+            .finally(() => setIsAppending(false));
         return;
     }
 
@@ -207,6 +237,12 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       if (hasText !== hasContent) {
           setHasContent(hasText);
       }
+      // 첫 줄의 환자 번호 (입력을 잠깐 멈췄을 때만 확인)
+      if (idTimerRef.current) clearTimeout(idTimerRef.current);
+      idTimerRef.current = setTimeout(() => {
+          const pid = extractPatientId(firstLineOf(contentRef.current?.value || ''));
+          setTypedPatientId(prev => (prev === pid ? prev : pid));
+      }, 400);
   };
 
   const resizeAndCompressImage = (file: File): Promise<string> => {
@@ -580,15 +616,15 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
 
              <button
               onClick={handleSave}
-              disabled={(!hasContent && images.length === 0) || isProcessingImg}
+              disabled={(!hasContent && images.length === 0) || isProcessingImg || isAppending}
               className={`flex items-center px-3 py-1.5 rounded-md font-bold text-white text-sm transition-all shadow-sm
                 ${(!hasContent && images.length === 0) || isProcessingImg
                   ? 'bg-slate-300 cursor-not-allowed' 
                   : 'bg-blue-600 hover:bg-blue-700 hover:shadow-md active:scale-95'
                 }`}
             >
-              <Save className="w-3.5 h-3.5 mr-2" />
-              저장
+              {isAppending ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <Save className="w-3.5 h-3.5 mr-2" />}
+              {appendTargetId && !initialNote ? '이어붙여 저장' : '저장'}
             </button>
         </div>
       </div>
@@ -615,6 +651,32 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
             {!tag && !work && <span className="text-[11px] text-slate-300">미선택</span>}
             {tag !== 'patient' && <span className="text-[11px] text-slate-300 hidden sm:inline">· 업무는 메모와 함께 고를 수 있어요</span>}
         </div>
+
+        {/* 같은 환자 번호의 메모가 이미 있으면 알려줌 (새 메모는 기존 메모에 이어붙이기 선택 가능) */}
+        {samePatientNotes.length > 0 && (
+            <div className="flex-shrink-0 px-3 py-2 border-b border-amber-100 bg-amber-50/70 text-xs text-amber-800 space-y-1.5">
+                <div className="font-bold">⚠️ '{typedPatientId}' 번호의 환자 메모가 이미 {samePatientNotes.length}개 있어요</div>
+                <ul className="space-y-0.5">
+                    {samePatientNotes.slice(0, 3).map(n => (
+                        <li key={n.id} className="truncate">· {n.title || '(제목 없음)'} <span className="text-amber-600">({new Date(n.createdAt).toLocaleDateString()})</span></li>
+                    ))}
+                    {samePatientNotes.length > 3 && <li className="text-amber-600">· 외 {samePatientNotes.length - 3}개</li>}
+                </ul>
+                {!initialNote && onAppendToPatient ? (
+                    <button
+                        type="button"
+                        onClick={() => setAppendTargetId(prev => (prev ? null : samePatientNotes[0].id))}
+                        className={`px-2.5 py-1 rounded-full font-bold border transition-colors ${
+                            appendTargetId ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-amber-300 text-amber-700 hover:bg-amber-100'
+                        }`}
+                    >
+                        {appendTargetId ? '✓ ' : ''}저장할 때 새 메모 대신 '{samePatientNotes[0].title || typedPatientId}' 끝에 {dateHeading(Date.now())} 소제목으로 이어붙이기
+                    </button>
+                ) : (
+                    <div className="text-amber-700">저장한 뒤 메모 화면에서 같은 번호 메모를 하나로 합칠 수 있어요.</div>
+                )}
+            </div>
+        )}
 
         {images.length > 0 && (
             <div className="flex-shrink-0 max-h-[30vh] overflow-y-auto p-4 border-b border-slate-100 bg-slate-50/50">

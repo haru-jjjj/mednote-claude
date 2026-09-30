@@ -9,6 +9,7 @@ import {
     notesWithinContextBudget, CONTEXT_BUDGETS, summarizeSingleNote, updateHandoverDocument
 } from '../services/claudeService';
 import { getNoteFromDB } from '../services/storage';
+import { buildPatientIndex, duplicatePatientGroups } from '../services/patientId';
 import { contentForAnalysis } from '../services/insightUtils';
 import { hasVoyageApiKey } from '../services/voyageService';
 import { findRelatedNotes, hydrateNotes } from '../services/noteSearch';
@@ -35,6 +36,7 @@ interface Props {
     onSaveNewNote: (note: Note) => Promise<void>;
     onUpdateNote: (note: Note) => void | Promise<void>; // 케이스 분석 갱신·인계장 저장용
     handoverDoc?: Note; // 저장돼 있는 인계장 (메모 활용 > 인계장 정리)
+    onMergePatient?: (ids: string[]) => Promise<void>; // 같은 환자 번호 메모 합치기
     onFollowUpCheck: (id: string, intervalDays: number) => void; // "확인함"
     nowTick: number; // 몇 분마다 갱신되는 현재 시각 (자정이 지나면 "확인할 차례"가 바뀌도록)
 }
@@ -572,9 +574,12 @@ const MiniMarkdown: React.FC<{ markdown: string }> = ({ markdown }) => (
         dangerouslySetInnerHTML={{ __html: renderLinkedMarkdown(markdown, 0) }} />
 );
 
-const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFollowUpCheck, nowTick }) => {
+const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFollowUpCheck, nowTick, onMergePatient }) => {
     const now = Date.now();
     const patients = useMemo(() => notes.filter(n => n.tag === 'patient'), [notes]);
+    // 같은 식별번호(제목 맨 앞)의 환자 메모 묶음
+    const dupGroups = useMemo(() => duplicatePatientGroups(buildPatientIndex(patients)), [patients]);
+    const [mergingId, setMergingId] = useState<string | null>(null);
     const withStatus = useMemo(() => {
         const t = Date.now();
         return patients.map(n => ({ n, status: followUpStatus(n, t) as FollowUpStatus, analysis: analysisTextOf(n) }));
@@ -647,6 +652,39 @@ const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFol
             <Intro cost="목록·확인 기록·공부 목록은 무료. 케이스 분석(갱신)은 누를 때만, 1회 약 50~150원.">
                 '환자' 메모를 주기적으로 열어 경과를 확인하는 곳입니다. 확인한 뒤 <b>확인함</b>을 누르면 정한 주기(3일~1달) 뒤에 다시 <b>확인할 차례</b>로 올라오고, 그 사이 기록을 추가하면 <b>새 기록</b>으로 표시됩니다.
             </Intro>
+
+            {dupGroups.length > 0 && (
+                <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 space-y-2">
+                    <div className="text-sm font-bold text-amber-800">⚠️ 같은 번호의 환자 메모 {dupGroups.length}건</div>
+                    <p className="text-xs text-amber-700">제목 맨 앞 번호가 같은 메모들이에요. 합치면 가장 오래된 메모에 작성 날짜 소제목(## 날짜)으로 이어 붙이고 나머지는 지웁니다(합치기 전 확인 창).</p>
+                    {dupGroups.map(g => (
+                        <div key={g.id} className="bg-white border border-amber-100 rounded-lg p-2">
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-amber-800">{g.id}</span>
+                                <span className="text-[11px] text-slate-400">메모 {g.notes.length}개</span>
+                                {onMergePatient && (
+                                    <button
+                                        onClick={async () => { setMergingId(g.id); try { await onMergePatient(g.notes.map(n => n.id)); } finally { setMergingId(null); } }}
+                                        disabled={!!mergingId}
+                                        className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold disabled:opacity-50"
+                                    >
+                                        {mergingId === g.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />} 하나로 합치기
+                                    </button>
+                                )}
+                            </div>
+                            <ul className="mt-1 space-y-0.5">
+                                {g.notes.map(n => (
+                                    <li key={n.id}>
+                                        <button onClick={() => onSelectNote(n.id)} className="text-xs text-slate-600 hover:text-indigo-600 text-left truncate max-w-full">
+                                            · {n.title || '(제목 없음)'} <span className="text-slate-400">({new Date(n.createdAt).toLocaleDateString()})</span>
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             <div className="flex flex-wrap items-center gap-1.5">
                 {chip('due', '확인할 차례', counts.due, 'bg-amber-50 border-amber-200 text-amber-700')}

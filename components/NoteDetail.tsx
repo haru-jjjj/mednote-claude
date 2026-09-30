@@ -24,9 +24,11 @@ interface NoteDetailProps {
   onCheckGuideline: (id: string) => void;
   isCheckingGuideline: boolean;
   onClearGuidelineCheck: (id: string) => void;
+  samePatientNotes?: Note[]; // 같은 환자 번호의 다른 메모들
+  onMergePatient?: (ids: string[]) => void | Promise<void>;
 }
 
-const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelete, onSelectNote, onEdit, onUpdateNote, onSetTag, onCheckGuideline, isCheckingGuideline, onClearGuidelineCheck }) => {
+const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelete, onSelectNote, onEdit, onUpdateNote, onSetTag, onCheckGuideline, isCheckingGuideline, onClearGuidelineCheck, samePatientNotes = [], onMergePatient }) => {
   const [viewingImage, setViewingImage] = useState<string | null>(null);
   
   // Progress State
@@ -518,6 +520,31 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                     </div>
                 </div>
             </div>
+
+            {/* 같은 환자 번호의 메모가 더 있으면 알려주고 합치기 제안 */}
+            {isPatientNote && samePatientNotes.length > 0 && (
+                <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50/70 p-3 text-sm">
+                    <div className="font-bold text-amber-800 mb-1">⚠️ 같은 번호의 환자 메모가 {samePatientNotes.length}개 더 있어요</div>
+                    <ul className="text-xs space-y-0.5 mb-2">
+                        {samePatientNotes.map(n => (
+                            <li key={n.id}>
+                                <button onClick={() => onSelectNote(n.id)} className="text-amber-800 hover:underline text-left">
+                                    · {n.title || '(제목 없음)'} <span className="text-amber-600">({new Date(n.createdAt).toLocaleDateString()})</span>
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                    {onMergePatient && (
+                        <button
+                            onClick={() => onMergePatient([note.id, ...samePatientNotes.map(n => n.id)])}
+                            disabled={isBusy}
+                            className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold disabled:opacity-50"
+                        >
+                            하나로 합치기 (작성 날짜 소제목으로)
+                        </button>
+                    )}
+                </div>
+            )}
 
             {/* 가이드라인 점검 결과 */}
             {(note.guidelineCheck || isCheckingGuideline) && (

@@ -10,6 +10,7 @@ import AskNotesView from './components/AskNotesView';
 import GuidelineCheckView from './components/GuidelineCheckView';
 import InsightsView from './components/InsightsView';
 import { followUpStatus, contentForAnalysis } from './services/insightUtils';
+import { buildPatientIndex, patientIdOf, buildMergedPatientContent, buildAppendedContent } from './services/patientId';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
 import PinSettingsModal from './components/PinSettingsModal';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NoteCategory, toggleCategory, categoryLabels } from './types';
@@ -1112,6 +1113,82 @@ const App: React.FC = () => {
     }
   };
 
+  // --- 환자 식별번호(제목 맨 앞) ---
+  const patientIndex = React.useMemo(() => buildPatientIndex(notes), [notes]);
+  const findSamePatient = (pid: string) => patientIndex.get(pid) || [];
+
+  // 같은 번호 환자 메모들을 가장 오래된 메모 하나로 합침 (날짜 소제목으로 이어붙이고 나머지는 삭제)
+  const handleMergePatientNotes = async (ids: string[]): Promise<string | null> => {
+      try {
+          const full = (await Promise.all(ids.map(id => getNoteFromDB(id).catch(() => undefined))))
+              .filter((n): n is Note => !!n)
+              .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+          if (full.length < 2) { alert('합칠 메모를 불러오지 못했습니다.'); return null; }
+          const pid = patientIdOf(full[0]);
+          if (!pid || full.some(n => patientIdOf(n) !== pid)) { alert('번호가 같은 환자 메모만 합칠 수 있어요.'); return null; }
+          const images = Array.from(new Set(full.flatMap(n => n.images || [])));
+          const imageChars = images.reduce((s, i) => s + i.length, 0);
+          const msg = `'${pid}' 환자 메모 ${full.length}개를 하나로 합칠까요?\n\n` +
+              `가장 오래된 메모에 나머지 메모를 작성 날짜 소제목(## 날짜)으로 이어 붙이고, 나머지 ${full.length - 1}개는 삭제합니다.\n` +
+              `(각 메모의 AI 요약은 없어지니, 합친 뒤 ✨로 새로 요약해주세요)` +
+              (imageChars > 700_000 ? `\n\n⚠️ 사진이 많아(약 ${Math.round(imageChars / 1024)}KB) 클라우드 저장 한도(1MB)를 넘을 수 있어요.` : '');
+          if (!window.confirm(msg)) return null;
+          const target = full[0];
+          const others = full.slice(1);
+          const now = Date.now();
+          const latestCheck = full.reduce((a, b) => ((b.followUpCheckedAt || 0) > (a.followUpCheckedAt || 0) ? b : a));
+          const dues = full.map(n => n.reviewDueAt).filter((x): x is number => typeof x === 'number');
+          const merged: Note = {
+              ...target,
+              content: buildMergedPatientContent(full, pid),
+              images,
+              transcription: full.map(n => n.transcription).filter(Boolean).join('\n\n') || undefined,
+              // 사진 글자 읽기가 모두 끝난 메모들만이면 다시 읽지 않음
+              isProcessed: full.every(n => !(n.images && n.images.length) || n.isProcessed),
+              summary: '', sources: [], summarizedAt: undefined, summaryKind: undefined,
+              guidelineCheck: undefined,
+              embedding: undefined, embeddingUpdatedAt: undefined,
+              followUpCheckedAt: latestCheck.followUpCheckedAt,
+              followUpIntervalDays: latestCheck.followUpIntervalDays,
+              followUpDueAt: latestCheck.followUpDueAt,
+              reviewDueAt: dues.length ? Math.min(...dues) : undefined,
+              wrongAnswers: full.flatMap(n => n.wrongAnswers || []).slice(0, 5),
+              updatedAt: now,
+              metaUpdatedAt: now
+          };
+          await handleUpdateNote(merged);
+          for (const o of others) {
+              await deleteNoteFromDB(o.id);
+              deleteNoteFromFirestore(o.id);
+          }
+          const removed = new Set(others.map(o => o.id));
+          setNotes(prev => prev.filter(n => !removed.has(n.id)));
+          return target.id;
+      } catch (e: any) {
+          console.error('Merge failed', e);
+          alert(`합치는 중 오류가 발생했습니다: ${e?.message || '알 수 없는 오류'}`);
+          return null;
+      }
+  };
+
+  // 작성 중인 새 환자 메모를 같은 번호의 기존 메모 끝에 오늘 날짜 소제목으로 이어붙여 저장
+  const handleAppendToPatientNote = async (targetId: string, added: string, images: string[]): Promise<boolean> => {
+      const latest = await getNoteFromDB(targetId).catch(() => undefined);
+      const pid = latest ? patientIdOf(latest) : null;
+      if (!latest || !pid) { alert('이어붙일 메모를 찾지 못했습니다. 새 메모로 저장해주세요.'); return false; }
+      const now = Date.now();
+      await handleUpdateNote({
+          ...latest,
+          content: buildAppendedContent(latest.content || '', added, pid, now),
+          images: [...(latest.images || []), ...images],
+          isProcessed: images.length > 0 ? false : latest.isProcessed,
+          updatedAt: now
+      });
+      setActiveNoteId(targetId);
+      setView(ViewMode.DETAIL);
+      return true;
+  };
+
   const handleDeleteNote = async (id: string) => {
     if(confirm('삭제하시겠습니까?')) {
         await deleteNoteFromDB(id);
@@ -1304,8 +1381,8 @@ const App: React.FC = () => {
 
         <div className="flex-1 overflow-hidden relative flex flex-col">
             <div className="flex-1 w-full bg-white overflow-hidden flex flex-col relative">
-                {view === ViewMode.CREATE && <NoteEditor onSave={handleSaveNote} onCancel={() => setView(ViewMode.LIST)} />}
-                {view === ViewMode.EDIT && activeNote && <NoteEditor initialNote={activeNote} onSave={handleSaveNote} onCancel={() => setView(ViewMode.DETAIL)} />}
+                {view === ViewMode.CREATE && <NoteEditor onSave={handleSaveNote} onCancel={() => setView(ViewMode.LIST)} findSamePatient={findSamePatient} onAppendToPatient={handleAppendToPatientNote} />}
+                {view === ViewMode.EDIT && activeNote && <NoteEditor initialNote={activeNote} onSave={handleSaveNote} onCancel={() => setView(ViewMode.DETAIL)} findSamePatient={findSamePatient} />}
                 {/* 목록 화면은 메모를 열었다 돌아와도 검색어·검색 결과·스크롤 위치가 그대로 남도록
                     다른 화면으로 가도 없애지 않고 숨겨만 둡니다. */}
                 <div className={view === ViewMode.LIST ? 'h-full flex flex-col' : 'hidden'}>
@@ -1342,6 +1419,8 @@ const App: React.FC = () => {
                         onEdit={() => { setView(ViewMode.EDIT); }} 
                         onUpdateNote={handleUpdateNote} 
                         onSetTag={handleSetNoteTag}
+                        samePatientNotes={(() => { const pid = patientIdOf(activeNote); return pid ? findSamePatient(pid).filter(n => n.id !== activeNote.id) : []; })()}
+                        onMergePatient={async (ids) => { const id = await handleMergePatientNotes(ids); if (id) handleFetchAndSelectNote(id); }}
                         onCheckGuideline={handleCheckGuideline}
                         isCheckingGuideline={guidelineCheckingIds.includes(activeNote.id)}
                         onClearGuidelineCheck={handleClearGuidelineCheck}
@@ -1398,6 +1477,7 @@ const App: React.FC = () => {
                             }}
                             onUpdateNote={handleUpdateNote}
                             onFollowUpCheck={handleFollowUpCheck}
+                            onMergePatient={async (ids) => { await handleMergePatientNotes(ids); }}
                             nowTick={nowTick}
                         />
                     </div>
