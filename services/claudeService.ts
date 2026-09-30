@@ -21,6 +21,7 @@
 // ============================================================================
 
 import { Note, Source, QuizQuestion, QuizLanguage, GuidelineCheck } from "../types";
+import { applySectionPatch } from "./handoverPatch";
 import { v4 as uuidv4 } from 'uuid';
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -1476,6 +1477,8 @@ export const updateHandoverDocument = async (params: {
     const today = new Date().toLocaleDateString('ko-KR');
     const lbl = (ns: number[]) => ns.map(n => `[메모${n}]`).join(' ');
     const isFirst = !current.trim();
+    // 처음 만들 때·용도가 바뀌었을 때만 전체를 쓰고, 그 외에는 "바뀐 ## 구역만" 받아서 앱이 끼워 넣음
+    const patchMode = !isFirst && !purposeChanged;
     const prompt = `
         You maintain ONE handover document (인계장) built from the reader's WORK notes: handover items,
         ward / on-call workflow, cath lab / EP lab workflow, and practical procedure tips written by a cardiology fellow.
@@ -1504,11 +1507,9 @@ export const updateHandoverDocument = async (params: {
         ${removedLabels.length > 0 ? `REMOVED NOTES: ${lbl(removedLabels)} — deleted or no longer marked as work. Delete items that cite only these labels; for items that also cite other notes, just drop these labels.` : ''}
 
         ${isFirst ? '' : `UPDATE RULES:
-        - Return the FULL updated document, not a diff. Keep every item that is not affected EXACTLY as it is
-          (same wording, same citations, same position — except for reordering asked by a PURPOSE CHANGED note)
-          — the reader may have edited it by hand.
+        - Keep every item that is not affected EXACTLY as it is (same wording, same citations, same position${patchMode ? '' : ' — except for reordering asked by the PURPOSE CHANGED note'}) — the reader may have edited it by hand.
         - Put new items into the matching existing category/subcategory; create a new "##"/"###" only when nothing fits.
-        - Refresh "## 한눈에" and "## 확인 필요" to reflect the whole updated document.`}
+        - Refresh "## 한눈에" and "## 확인 필요" if they should change.`}
 
         STRUCTURE (Korean, with the usual English terms/abbreviations):
         - "## 한눈에": 3~6 bullets — the most important or time-sensitive items.
@@ -1526,21 +1527,42 @@ export const updateHandoverDocument = async (params: {
         - Cite right after each item using ONLY the permanent labels, e.g. "... [메모3]" or "[메모2][메모5]".
           Never invent labels.
         - End with "## 확인 필요" for outdated, conflicting or incomplete items (omit if none).
-        OUTPUT: only the handover document — no preamble, no narration, no summary of what changed.
+        ${patchMode ? `OUTPUT FORMAT (STRICT) — return ONLY the "##" sections that change, NOT the whole document:
+        - For every "##" section you change or add, output that WHOLE section (its "##" line, all its "###"
+          subsections and every item, including the unchanged items inside it), wrapped exactly like this:
+          @@@SECTION
+          ## 섹션 제목
+          ...
+          @@@END
+        - When replacing an existing section, copy its "##" title EXACTLY as in the current document.
+        - To delete a whole "##" section, output one line: @@@DELETE ## 섹션 제목
+        - Do NOT output sections that stay exactly the same. No other text before, between or after the blocks.` :
+        `OUTPUT: only the handover document — no preamble, no narration, no summary of what changed.`}
     `;
     const data = await callClaude({
         model: MODEL_SMART,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-        max_tokens: 24000,
-        // 정리·재배열 작업이라 깊은 생각보다 긴 본문이 중요 → 생각 깊이를 중간으로
-        effort: 'medium'
+        // 한국어는 글자당 토큰이 많고, 생각(thinking)도 이 한도에 포함됨 → 넉넉히 (Sonnet 5 출력 최대 128K)
+        max_tokens: patchMode ? 32000 : 48000,
+        // 정리·재배열 작업이라 깊은 생각보다 본문이 중요 → 생각은 짧게
+        effort: 'low'
     });
     let text = extractText(data);
     if (!text) throw new Error(`인계장 결과가 비어 있습니다 (중단 사유: ${data?.stop_reason || '알 수 없음'}). 잠시 후 다시 시도해보세요.`);
+    if (data?.stop_reason === 'max_tokens') {
+        const err: any = new Error('한 번에 반영할 내용이 많아 분량 한도에 걸렸습니다. 기존 인계장은 그대로 두었어요.');
+        err.code = 'MAX_TOKENS'; // 호출한 쪽에서 더 작게 나눠 다시 시도
+        throw err;
+    }
+    if (patchMode) {
+        const patched = applySectionPatch(current, text);
+        if (patched) return patched.doc;
+        // 형식을 안 지키고 전체 문서를 돌려준 경우: 충분히 길면 전체로 받아들임
+        const first = text.indexOf('## ');
+        if (first >= 0 && first < 300 && text.length > current.length * 0.6) return text.slice(first);
+        throw new Error('AI 응답 형식이 맞지 않아 반영하지 않았습니다. 기존 인계장은 그대로 두었어요. 다시 시도해주세요.');
+    }
     const first = text.indexOf('## ');
     if (first > 0 && first < 300) text = text.slice(first);
-    if (data?.stop_reason === 'max_tokens') {
-        throw new Error('인계장이 너무 길어 분량 한도에 걸렸습니다. 기존 인계장은 그대로 두었어요. 오래된 항목을 인계장 메모에서 직접 정리한 뒤 다시 시도해주세요.');
-    }
     return text;
 };

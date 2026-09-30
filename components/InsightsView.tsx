@@ -201,10 +201,13 @@ const WeeklyTab: React.FC<Props> = ({ notes, reviewDueCount, onSelectNote, onSav
 // ---------------------------------------------------------------------------
 type HandoverStatus = 'done' | 'new' | 'changed' | 'truncated';
 const handoverVersion = (n: Note) => n.updatedAt || n.createdAt || 0;
-const HANDOVER_MAX_BATCHES = 10;
+const HANDOVER_MAX_BATCHES = 20;
 const HANDOVER_META_VERSION = 2;
-const HANDOVER_BATCH_CHARS = 70000;  // 한 번에 보낼 메모 분량(기존 인계장 분량만큼 줄어듦)
-const HANDOVER_CHUNK_CHARS = 30000;  // 이보다 긴 메모만 여러 조각으로 나눔 (자르지 않음)
+// 한 번에 보낼 메모 분량. 새로 들어갈 내용이 곧 AI가 써야 할 분량이라 작게 나눠 여러 번 반영
+// (한국어는 글자당 토큰이 많음). 한도에 걸리면 자동으로 절반씩 줄여 다시 시도.
+const HANDOVER_BATCH_CHARS = 24000;
+const HANDOVER_MIN_BATCH_CHARS = 6000;
+const HANDOVER_CHUNK_CHARS = 12000;  // 이보다 긴 메모는 여러 조각으로 나눔 (자르지 않음)
 const LEGACY_CLIP_CHARS = 4500;      // 이전 버전은 메모당 약 5천 자까지만 보냈음 → 이보다 긴 메모는 다시 반영
 
 // 인계장에 보낼 메모 본문: 요약 칸은 빼고, "메모 내용으로 저장"한 요약도 빼고 원래 기록 + 사진 글자
@@ -232,7 +235,7 @@ export const splitForHandover = (text: string, max: number): string[] => {
     return parts;
 };
 
-const HANDOVER_MAX_DOC_CHARS = 30000; // 인계장 전체를 매번 다시 쓰므로, 이보다 길면 한도에 걸리기 쉬움
+const HANDOVER_MAX_DOC_CHARS = 80000; // 인계장은 바뀐 구역만 다시 쓰지만, 너무 길면 매번 읽는 비용이 커짐
 
 const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUpdateNote, handoverDoc, isFetchingAll }) => {
     const meta: HandoverMeta = handoverDoc?.handover || { sources: {}, refs: [], updatedAt: 0 };
@@ -345,14 +348,15 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
                     if (!stored || !stored.work) removed.push(id);
                 }
             }
+            let batchChars = HANDOVER_BATCH_CHARS;
+            let purposeDone = false;
             for (let batch = 1; batch <= HANDOVER_MAX_BATCHES && (pieces.length > 0 || removed.length > 0 || batch === 1); batch++) {
                 if (pieces.length === 0 && removed.length === 0 && current.trim() && cleanPurpose === (meta.purpose || '')) break;
-                // 기존 인계장 분량만큼 메모 몫을 줄여서 한 번에 보낼 양을 맞춤 (최소 1조각은 포함)
-                const budget = Math.max(15000, HANDOVER_BATCH_CHARS - current.length);
+                // 한 번에 보낼 조각들 (최소 1조각)
                 const take: Piece[] = [];
                 let used = 0;
                 for (const p of pieces) {
-                    if (take.length > 0 && used + p.text.length > budget) break;
+                    if (take.length > 0 && used + p.text.length > batchChars) break;
                     take.push(p);
                     used += p.text.length;
                 }
@@ -374,10 +378,31 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
                     .filter(p => p.part === 1 && sources[p.note.id] !== undefined)
                     .map(p => refs.indexOf(p.note.id) + 1)));
                 const removedLabels = removed.map(id => refs.indexOf(id) + 1).filter(x => x > 0);
-                current = await updateHandoverDocument({
-                    current, items, modifiedLabels, removedLabels, purpose: cleanPurpose,
-                    purposeChanged: batch === 1 && mode === 'update' && cleanPurpose !== (meta.purpose || '')
-                });
+                try {
+                    current = await updateHandoverDocument({
+                        current, items, modifiedLabels, removedLabels, purpose: cleanPurpose,
+                        purposeChanged: !purposeDone && mode === 'update' && cleanPurpose !== (meta.purpose || '')
+                    });
+                    purposeDone = true;
+                } catch (e: any) {
+                    // 분량 한도: 더 작게 나눠 같은 묶음부터 다시 (조각 하나가 커서 걸린 경우는 그 조각을 반으로)
+                    if (e?.code === 'MAX_TOKENS' && (take.length > 1 || take[0].text.length > HANDOVER_MIN_BATCH_CHARS)) {
+                        if (take.length === 1) {
+                            const big = take[0];
+                            const halves = splitForHandover(big.text, Math.ceil(big.text.length / 2) + 1);
+                            const sameNote = pieces.filter(p => p.note.id === big.note.id);
+                            const texts = sameNote.flatMap(p => p === big ? halves : [p.text]);
+                            // 이미 반영한 앞 조각 번호는 그대로 이어서 매김 (1번 조각이 아니면 "이어지는 내용"으로 처리되도록)
+                            const startPart = sameNote[0].part;
+                            const rebuilt = texts.map((text, i) => ({ note: big.note, part: startPart + i, parts: startPart - 1 + texts.length, text }));
+                            const firstIdx = pieces.indexOf(sameNote[0]);
+                            pieces = [...pieces.slice(0, firstIdx), ...rebuilt, ...pieces.slice(firstIdx + sameNote.length)];
+                        }
+                        batchChars = Math.max(HANDOVER_MIN_BATCH_CHARS, Math.floor(batchChars / 2));
+                        continue;
+                    }
+                    throw e;
+                }
                 // 마지막 조각까지 반영한 메모만 "반영됨"으로 기록
                 take.filter(p => p.part === p.parts).forEach(p => { sources[p.note.id] = handoverVersion(p.note); });
                 removed.forEach(id => { delete sources[id]; });
