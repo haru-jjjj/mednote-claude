@@ -8,6 +8,7 @@ import { summarizeSingleNote, formatMedicalMarkdown, analyzeJournalArticle } fro
 import { looksLikePaper, isGuidelineCheckCandidate, noteAgeDays, formatAge } from '../services/studyUtils';
 import { cosineSimilarity } from '../services/voyageService';
 import { buildContentWithSummary, splitMovedContent, contentForAnalysis } from '../services/insightUtils';
+import { sectionizeHtml } from '../services/sectionize';
 import { estimateDataRecordCount } from '../services/pasteUtils';
 import { getNoteFromDB } from '../services/storage';
 
@@ -35,6 +36,14 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
   // HTML Content State (Async Loading to prevent freeze)
   const [htmlContent, setHtmlContent] = useState('');
   const [isContentRendering, setIsContentRendering] = useState(true);
+  // 제목(#·##·###)마다 접기/펼치기 구역으로 바꾼 개수 (2개 이상이면 "모두 펼치기/접기" 표시)
+  const [sectionInfo, setSectionInfo] = useState({ sectionCount: 0, dateSectionCount: 0 });
+  const contentBoxRef = useRef<HTMLDivElement>(null);
+  const setAllSections = (open: boolean) => {
+      contentBoxRef.current?.querySelectorAll('details.md-section').forEach(d => {
+          if (open) d.setAttribute('open', ''); else d.removeAttribute('open');
+      });
+  };
 
   // Async Markdown Parsing
   useEffect(() => {
@@ -47,7 +56,9 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             // marked.parse can be async in v12+
             const parsed = await marked.parse(formatted, { breaks: true, gfm: true });
             if (isMounted) {
-                setHtmlContent(DOMPurify.sanitize(parsed as string));
+                const sec = sectionizeHtml(DOMPurify.sanitize(parsed as string));
+                setHtmlContent(sec.html);
+                setSectionInfo({ sectionCount: sec.sectionCount, dateSectionCount: sec.dateSectionCount });
             }
         } catch (e) {
             console.error("Markdown parsing error", e);
@@ -732,10 +743,20 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                     <span className="text-base text-slate-400">Rendering large content...</span>
                 </div>
             ) : (
-                <div
-                    className="prose prose-base prose-slate max-w-none text-slate-700 leading-relaxed mb-12 prose-headings:font-bold break-words overflow-x-hidden"
-                    dangerouslySetInnerHTML={{ __html: htmlContent }}
-                />
+                <>
+                    {sectionInfo.sectionCount >= 2 && (
+                        <div className="flex items-center justify-end gap-3 mb-2 text-[11px] font-bold text-slate-400">
+                            {sectionInfo.dateSectionCount >= 3 && <span className="mr-auto font-medium">날짜 {sectionInfo.dateSectionCount}개 · 최근 날짜만 펼쳐서 보여줘요</span>}
+                            <button onClick={() => setAllSections(true)} className="hover:text-slate-600">모두 펼치기</button>
+                            <button onClick={() => setAllSections(false)} className="hover:text-slate-600">모두 접기</button>
+                        </div>
+                    )}
+                    <div
+                        ref={contentBoxRef}
+                        className="prose prose-base prose-slate max-w-none text-slate-700 leading-relaxed mb-12 prose-headings:font-bold break-words overflow-x-hidden"
+                        dangerouslySetInnerHTML={{ __html: htmlContent }}
+                    />
+                </>
             )}
 
             {/* 관련 메모 (임베딩 기반, 저장된 벡터 재사용 — 추가 API 호출 없음) */}

@@ -1,9 +1,10 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Save, ArrowLeft, Image as ImageIcon, X, Loader2, ChevronLeft, ChevronRight, Bold, Italic, Subscript, Superscript, ArrowRight, Code, Sigma, Type, Undo, Table as TableIcon } from 'lucide-react';
+import { Save, ArrowLeft, Image as ImageIcon, X, Loader2, ChevronLeft, ChevronRight, Bold, Italic, Subscript, Superscript, ArrowRight, Code, Sigma, Type, Undo, Table as TableIcon, Calendar } from 'lucide-react';
 import { Note, NoteTag, NOTE_TAG_LABELS } from '../types';
 import { v4 as uuidv4 } from 'uuid';
 import { gridToMarkdown, looksLikeTsv, parseTsv, continueRecordNumbering } from '../services/pasteUtils';
+import { todayHeadingText } from '../services/sectionize';
 
 interface NoteEditorProps {
   onSave: (note: Note) => void;
@@ -330,6 +331,40 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
       });
   };
 
+  // 오늘 날짜 소제목 넣기: 커서가 있는 줄 앞에 "## 2026.09.30 (수)" 한 줄을 넣고 그 아래로 커서 이동.
+  // 보기 화면에서는 이 제목마다 접었다 펼 수 있음. 실행 취소(Ctrl/Cmd+Z)로 되돌릴 수 있게 insertText 사용.
+  const insertDateHeading = () => {
+      executeAction(() => {
+          const textarea = contentRef.current;
+          if (!textarea) return;
+          const text = textarea.value;
+          const pos = typeof textarea.selectionStart === 'number' ? textarea.selectionStart : text.length;
+          const before = text.substring(0, pos);
+          const after = text.substring(textarea.selectionEnd ?? pos);
+          const lead = before.length === 0 ? '' : before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+          const trail = after.length === 0 || after.startsWith('\n') ? '\n' : '\n\n';
+          const insertion = `${lead}## ${todayHeadingText()}${trail}`;
+          let inserted = false;
+          try {
+              textarea.focus();
+              inserted = typeof document.execCommand === 'function' && document.execCommand('insertText', false, insertion);
+          } catch {
+              inserted = false;
+          }
+          if (!inserted || textarea.value === text) {
+              try {
+                  textarea.setRangeText(insertion, pos, textarea.selectionEnd ?? pos, 'end');
+              } catch {
+                  textarea.value = before + insertion + after;
+              }
+          }
+          // 제목 다음 줄(내용 쓸 자리)로 커서 이동
+          const caret = before.length + lead.length + `## ${todayHeadingText()}\n`.length;
+          try { textarea.setSelectionRange(caret, caret); } catch { /* 무시 */ }
+          setTimeout(handleTextChange, 0);
+      });
+  };
+
   const getImageSrc = (imgString: string) => {
       if (imgString.startsWith('http')) return imgString;
       return `data:image/jpeg;base64,${imgString}`;
@@ -610,6 +645,12 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote }
         {/* Formatting Toolbar */}
         <div className="flex items-center gap-1 p-1.5 bg-white border-b border-slate-100 overflow-x-auto flex-none sticky top-0 z-10 hide-scrollbar">
             <ToolbarButton icon={<Undo size={14}/>} onClick={handleUndo} label="Undo" />
+            <div className="w-px h-5 bg-slate-200 mx-1"></div>
+            <ToolbarButton
+                icon={<span className="flex items-center gap-1 px-0.5 text-xs font-bold text-rose-600 whitespace-nowrap"><Calendar size={14}/>날짜</span>}
+                onClick={insertDateHeading}
+                label="오늘 날짜 소제목 넣기 (보기 화면에서 접기/펼치기)"
+            />
             <div className="w-px h-5 bg-slate-200 mx-1"></div>
             <ToolbarButton icon={<Bold size={14}/>} onClick={() => insertFormatting('**', '**')} label="Bold" />
             <ToolbarButton icon={<Italic size={14}/>} onClick={() => insertFormatting('*', '*')} label="Italic" />
