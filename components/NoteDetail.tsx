@@ -1,10 +1,11 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw, Link2 } from 'lucide-react';
+import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw, Link2, FileText, ShieldCheck, ChevronDown, ChevronUp } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { Note, Source, NoteTag, NOTE_TAG_LABELS } from '../types';
 import { marked } from 'marked';
-import { summarizeSingleNote, formatMedicalMarkdown } from '../services/claudeService';
+import { summarizeSingleNote, formatMedicalMarkdown, analyzeJournalArticle } from '../services/claudeService';
+import { looksLikePaper, isGuidelineCheckCandidate, noteAgeDays, formatAge } from '../services/studyUtils';
 import { cosineSimilarity } from '../services/voyageService';
 import { estimateDataRecordCount } from '../services/pasteUtils';
 import { getNoteFromDB } from '../services/storage';
@@ -18,9 +19,12 @@ interface NoteDetailProps {
   onEdit: (note: Note) => void;
   onUpdateNote: (note: Note) => void;
   onSetTag: (id: string, tag: Note['tag']) => void;
+  onCheckGuideline: (id: string) => void;
+  isCheckingGuideline: boolean;
+  onClearGuidelineCheck: (id: string) => void;
 }
 
-const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelete, onSelectNote, onEdit, onUpdateNote, onSetTag }) => {
+const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelete, onSelectNote, onEdit, onUpdateNote, onSetTag, onCheckGuideline, isCheckingGuideline, onClearGuidelineCheck }) => {
   const [viewingImage, setViewingImage] = useState<string | null>(null);
   
   // Progress State
@@ -85,6 +89,26 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
       return () => { isMounted = false; };
   }, [note.summary]);
 
+  // 가이드라인 점검 결과 렌더링
+  const [guidelineHtml, setGuidelineHtml] = useState('');
+  const [guidelineOpen, setGuidelineOpen] = useState(true);
+  useEffect(() => {
+      let isMounted = true;
+      const report = note.guidelineCheck?.report || '';
+      if (!report) { setGuidelineHtml(''); return; }
+      (async () => {
+          try {
+              const parsed = await marked.parse(formatMedicalMarkdown(report), { breaks: false, gfm: true });
+              if (isMounted) setGuidelineHtml(DOMPurify.sanitize(parsed as string));
+          } catch {
+              if (isMounted) setGuidelineHtml(DOMPurify.sanitize(report));
+          }
+      })();
+      return () => { isMounted = false; };
+  }, [note.guidelineCheck?.report]);
+  // 다른 메모로 넘어가면 점검 결과는 다시 펼친 상태로
+  useEffect(() => { setGuidelineOpen(true); }, [note.id]);
+
   // 관련 메모: 이미 계산되어 저장된 Voyage 임베딩끼리 코사인 유사도만 비교합니다.
   // 추가 API 호출이 전혀 없고(검색/주제 탐구 기능이 이미 계산해 둔 벡터를 재사용),
   // 완전히 클라이언트에서 계산되므로 항상 즉시 표시됩니다.
@@ -106,6 +130,13 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
   // 요약을 만든 뒤 메모 내용을 고쳤는지 (요약 시각을 기록한 요약만 판단 가능)
   const isSummaryOutdated = !!note.summarizedAt && !!note.updatedAt && note.updatedAt > note.summarizedAt;
   const isDataNote = !isPatientNote && dataRecordCount >= 3;
+  const isJournalSummary = note.summaryKind === 'journal';
+  const isPaperNote = useMemo(
+      () => !isPatientNote && looksLikePaper(`${note.content || ''}\n${note.transcription || ''}`),
+      [note.content, note.transcription, isPatientNote]
+  );
+  const ageDays = noteAgeDays(note, Date.now());
+  const isOldCheckable = isGuidelineCheckCandidate(note, Date.now());
 
   const getSnippet = (n: Note) => {
       const text = (n.summary || n.content || '').replace(/[#*`>_-]/g, '').trim();
@@ -122,6 +153,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
   }, []);
 
   const handleSummarize = async () => {
+      if (note.summaryKind === 'journal' && note.summary && !window.confirm('저널클럽 분석을 일반 AI 요약으로 바꿀까요?')) return;
       setIsSummarizing(true);
       setProgressStatus("노트 분석 시작...");
       
@@ -153,6 +185,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                   summary: result.summary,
                   sources: result.sources,
                   summarizedAt: Date.now(),
+                  summaryKind: undefined, // 일반 요약 (저널클럽 분석을 덮어쓴 경우 표시도 원래대로)
                   isProcessed: true // Mark as AI processed
               };
               onUpdateNote(updatedNote);
@@ -169,6 +202,54 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
       }
   };
 
+  // 저널클럽 준비: 결과를 요약 칸에 저장 (summaryKind: 'journal')
+  const [isAnalyzingJournal, setIsAnalyzingJournal] = useState(false);
+  const handleJournalClub = async () => {
+      if (isSummarizing || isAnalyzingJournal) return;
+      if (note.summary && !isJournalSummary && !window.confirm('지금 있는 AI 요약을 저널클럽 분석으로 바꿀까요?')) return;
+      setIsAnalyzingJournal(true);
+      setProgressStatus("논문 확인 중...");
+      const statuses = [
+          "연구 설계·결과 정리 중...",
+          "비뚤림 위험 평가 중...",
+          "기존 연구·가이드라인 찾는 중...",
+          "예상 질문 만드는 중...",
+          "마무리 정리 중..."
+      ];
+      let statusIdx = 0;
+      statusTimerRef.current = setInterval(() => {
+          if (statusIdx < statuses.length) {
+              setProgressStatus(statuses[statusIdx]);
+              statusIdx++;
+          }
+      }, 4000);
+      try {
+          const full = (await getNoteFromDB(note.id).catch(() => undefined)) || note;
+          const result = await analyzeJournalArticle(full);
+          if (!result) {
+              alert("저널클럽 분석을 만들지 못했습니다. 잠시 후 다시 시도해주세요.");
+              return;
+          }
+          // 분석에는 1분 가까이 걸릴 수 있어, 그 사이 바뀐 내용을 덮지 않도록 최신 메모 위에 얹음
+          const latest = (await getNoteFromDB(note.id).catch(() => undefined)) || full;
+          onUpdateNote({
+              ...latest,
+              summary: result.summary,
+              sources: result.sources,
+              summarizedAt: Date.now(),
+              summaryKind: 'journal'
+          });
+      } catch (e: any) {
+          console.error(e);
+          alert(`저널클럽 분석 중 오류가 발생했습니다: ${e?.message || '알 수 없는 오류'}`);
+      } finally {
+          if (statusTimerRef.current) clearInterval(statusTimerRef.current);
+          setIsAnalyzingJournal(false);
+          setProgressStatus("");
+      }
+  };
+  const isBusy = isSummarizing || isAnalyzingJournal;
+
   const handleDeleteSummary = async () => {
       if (window.confirm("AI 요약을 삭제하시겠습니까?")) {
           // 화면에 있는 메모가 사진이 빠진 가벼운 버전일 수도 있어, 저장 전에 전체 메모를 다시 읽음
@@ -176,7 +257,8 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
           const updatedNote = {
               ...latest,
               summary: '',
-              sources: []
+              sources: [],
+              summaryKind: undefined
           };
           onUpdateNote(updatedNote);
       }
@@ -292,8 +374,8 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
         <div className="flex items-center gap-1 sm:gap-2">
              <button
                 onClick={handleSummarize} 
-                disabled={isSummarizing}
-                className={`text-slate-400 p-2 transition-colors ${isSummarizing ? 'cursor-not-allowed' : 'hover:text-indigo-500'}`} 
+                disabled={isBusy}
+                className={`text-slate-400 p-2 transition-colors ${isBusy ? 'cursor-not-allowed' : 'hover:text-indigo-500'}`} 
                 title="AI 요약"
              >
                 {isSummarizing ? <Loader2 className="w-5 h-5 animate-spin text-indigo-500" /> : <Sparkles className="w-5 h-5" />}
@@ -319,7 +401,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         <button
                             key={t}
                             onClick={() => onSetTag(note.id, note.tag === t ? undefined : t)}
-                            disabled={isSummarizing}
+                            disabled={isBusy}
                             className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors whitespace-nowrap disabled:opacity-50 ${
                                 note.tag === t
                                     ? (t === 'patient' ? 'bg-rose-50 border-rose-300 text-rose-600' : 'bg-blue-50 border-blue-300 text-blue-600')
@@ -334,10 +416,112 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         {note.tag ? '다시 누르면 해제' : '미선택 — 눌러서 분류'}
                     </span>
                 </div>
+                {/* AI 도구: 저널클럽 준비 / 최신 가이드라인 점검 (누를 때만 실행) */}
+                <div className="flex flex-wrap items-center gap-2 mt-2 px-1">
+                    <button
+                        onClick={handleJournalClub}
+                        disabled={isBusy}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-violet-200 bg-white text-violet-600 hover:bg-violet-50 transition-colors disabled:opacity-50"
+                        title="붙여넣은 논문 초록/본문으로 설계·결과(NNT)·비뚤림·적용·기존 연구와의 관계·예상 질문 정리"
+                    >
+                        {isAnalyzingJournal ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
+                        저널클럽 준비
+                    </button>
+                    <button
+                        onClick={() => onCheckGuideline(note.id)}
+                        disabled={isCheckingGuideline}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50 transition-colors disabled:opacity-50"
+                        title="메모의 수치·권고가 지금도 최신 가이드라인과 맞는지 웹 검색으로 확인"
+                    >
+                        {isCheckingGuideline ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                        {isCheckingGuideline ? '가이드라인 점검 중…' : '최신 가이드라인 점검'}
+                    </button>
+                    {isOldCheckable && !note.guidelineCheck && !isCheckingGuideline && (
+                        <span className="text-[11px] text-amber-600">{formatAge(ageDays)} 수정한 메모 — 점검 권장</span>
+                    )}
+                </div>
             </div>
 
+            {/* 가이드라인 점검 결과 */}
+            {(note.guidelineCheck || isCheckingGuideline) && (
+                <div className={`mb-6 rounded-xl border p-4 ${
+                    isCheckingGuideline ? 'bg-emerald-50/50 border-emerald-100'
+                    : note.guidelineCheck?.status === 'changed' ? 'bg-amber-50/70 border-amber-200'
+                    : note.guidelineCheck?.status === 'ok' ? 'bg-emerald-50/60 border-emerald-100'
+                    : 'bg-slate-50 border-slate-200'
+                }`}>
+                    <div className="flex items-center gap-2">
+                        {isCheckingGuideline ? (
+                            <>
+                                <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
+                                <span className="text-sm font-bold text-emerald-700">최신 가이드라인과 비교하는 중… (30초~1분, 다른 화면에 가도 계속 진행)</span>
+                            </>
+                        ) : note.guidelineCheck && (
+                            <>
+                                <span className={`text-sm font-bold ${
+                                    note.guidelineCheck.status === 'changed' ? 'text-amber-700'
+                                    : note.guidelineCheck.status === 'ok' ? 'text-emerald-700' : 'text-slate-600'
+                                }`}>
+                                    {note.guidelineCheck.status === 'changed' ? '⚠️ 최신 가이드라인과 달라진 내용 있음'
+                                        : note.guidelineCheck.status === 'ok' ? '✅ 최신 가이드라인과 일치' : '❔ 확인이 어려움'}
+                                </span>
+                                <span className="text-[11px] text-slate-400">{new Date(note.guidelineCheck.checkedAt).toLocaleDateString()} 점검</span>
+                                <div className="ml-auto flex items-center gap-1">
+                                    <button onClick={() => setGuidelineOpen(o => !o)} className="p-1 text-slate-400 hover:text-slate-600" title={guidelineOpen ? '접기' : '펼치기'}>
+                                        {guidelineOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                    </button>
+                                    <button
+                                        onClick={() => { if (window.confirm('점검 결과를 지울까요?')) onClearGuidelineCheck(note.id); }}
+                                        className="p-1 text-slate-400 hover:text-red-500"
+                                        title="점검 결과 삭제"
+                                    >
+                                        <X className="w-4 h-4" />
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                    {!isCheckingGuideline && note.guidelineCheck && guidelineOpen && (
+                        <>
+                            <div
+                                className="prose prose-sm prose-slate max-w-none text-slate-700 leading-relaxed mt-3 break-words [&_code]:break-all [&_code]:whitespace-pre-wrap"
+                                dangerouslySetInnerHTML={{ __html: guidelineHtml }}
+                            />
+                            {note.guidelineCheck.sources && note.guidelineCheck.sources.length > 0 && (
+                                <div className="flex flex-wrap gap-2 pt-3 mt-3 border-t border-black/5">
+                                    {note.guidelineCheck.sources.map((src, idx) => (
+                                        <a key={idx} href={src.uri} target="_blank" rel="noopener noreferrer"
+                                           className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-emerald-700 rounded-lg text-sm font-medium border border-emerald-100 hover:border-emerald-300 transition-colors shadow-sm">
+                                            <Globe className="w-3 h-3" />
+                                            <span className="truncate max-w-[180px]">{src.title}</span>
+                                        </a>
+                                    ))}
+                                </div>
+                            )}
+                            <p className="text-[11px] text-slate-400 mt-3">AI가 웹 검색으로 비교한 결과입니다. 중요한 수치는 인용된 가이드라인 원문에서 한 번 더 확인하세요.</p>
+                        </>
+                    )}
+                </div>
+            )}
+
+            {/* 논문으로 보이는 메모: 저널클럽 준비 안내 */}
+            {isPaperNote && !note.summary && !isBusy && (
+                <button
+                    onClick={handleJournalClub}
+                    className="w-full mb-6 flex items-start gap-3 text-left bg-violet-50/60 border border-violet-100 rounded-xl p-4 hover:bg-violet-50 transition-colors"
+                >
+                    <FileText className="w-5 h-5 text-violet-500 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                        <div className="font-bold text-violet-700 text-sm">논문으로 보이는 메모 — 저널클럽 준비 정리</div>
+                        <div className="text-xs text-violet-500 mt-1 leading-relaxed">
+                            연구 설계(PICO), 핵심 결과(ARR·NNT), 비뚤림 위험, 적용 가능성, 기존 연구·가이드라인과의 관계, 교수님이 물어볼 만한 질문과 답을 정리합니다. 초록만 붙여넣어도 됩니다.
+                        </div>
+                    </div>
+                </button>
+            )}
+
             {/* 환자 메모: 요약이 아직 없으면 케이스 분석(추정·감별 진단, 추가 공부)을 권함 */}
-            {isPatientNote && !note.summary && !isSummarizing && (
+            {isPatientNote && !note.summary && !isBusy && (
                 <button
                     onClick={handleSummarize}
                     className="w-full mb-6 flex items-start gap-3 text-left bg-rose-50/60 border border-rose-100 rounded-xl p-4 hover:bg-rose-50 transition-colors"
@@ -353,7 +537,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             )}
 
             {/* 기록 묶음 메모: 요약이 아직 없으면 정리 기능을 눈에 띄게 안내 */}
-            {isDataNote && !note.summary && !isSummarizing && (
+            {isDataNote && !isPaperNote && !note.summary && !isBusy && (
                 <button
                     onClick={handleSummarize}
                     className="w-full mb-6 flex items-start gap-3 text-left bg-indigo-50/60 border border-indigo-100 rounded-xl p-4 hover:bg-indigo-50 transition-colors"
@@ -369,21 +553,30 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             )}
 
             {/* AI Summary Section */}
-            {(note.summary || isSummarizing) && (
+            {(note.summary || isBusy) && (
                 <div className="mb-6 bg-indigo-50/60 border border-indigo-100 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 relative overflow-hidden">
                     <div className="flex items-center justify-between gap-2 mb-3">
                         <div className="flex flex-wrap items-center gap-2 text-indigo-700 font-bold min-w-0">
-                            {isSummarizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                            {isBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : isJournalSummary ? <FileText className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />}
                             <h3 className="text-base uppercase tracking-wide">
-                                {isSummarizing ? progressStatus : 'AI Smart Summary'}
+                                {isBusy ? progressStatus : isJournalSummary ? 'Journal Club' : 'AI Smart Summary'}
                             </h3>
-                            {!isSummarizing && note.summary && isSummaryOutdated && (
+                            {!isBusy && note.summary && isSummaryOutdated && (
                                 <span className="text-[11px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded normal-case tracking-normal">
-                                    메모 수정 전 요약 · ✨로 새로 요약
+                                    {isJournalSummary ? '메모 수정 전 분석 · 다시 분석 가능' : '메모 수정 전 요약 · ✨로 새로 요약'}
                                 </span>
                             )}
                         </div>
-                        {!isSummarizing && note.summary && isPatientNote && (
+                        {!isBusy && note.summary && isJournalSummary && (
+                            <button
+                                onClick={handleJournalClub}
+                                className="ml-auto mr-1 text-[11px] font-bold text-violet-500 hover:text-violet-700 whitespace-nowrap"
+                                title="저널클럽 분석을 새로 만들기"
+                            >
+                                저널클럽 분석 다시 하기
+                            </button>
+                        )}
+                        {!isBusy && note.summary && isPatientNote && !isJournalSummary && (
                             <button
                                 onClick={handleSummarize}
                                 className="ml-auto mr-1 text-[11px] font-bold text-rose-500 hover:text-rose-700 whitespace-nowrap"
@@ -392,7 +585,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                 케이스 분석 다시 하기
                             </button>
                         )}
-                        {!isSummarizing && note.summary && (
+                        {!isBusy && note.summary && (
                             <button 
                                 onClick={handleDeleteSummary}
                                 className="p-1.5 text-indigo-400 hover:text-red-500 hover:bg-white rounded-full transition-all"
@@ -403,7 +596,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         )}
                     </div>
                     
-                    {isSummarizing ? (
+                    {isBusy ? (
                         <div className="space-y-2 animate-pulse">
                             <div className="h-5 bg-indigo-200/50 rounded w-3/4"></div>
                             <div className="h-5 bg-indigo-200/50 rounded w-full"></div>

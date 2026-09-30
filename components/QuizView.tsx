@@ -1,22 +1,32 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Note, QuizState, QuizQuestion, Source, QuizLanguage } from '../types';
-import { BrainCircuit, CheckCircle2, XCircle, ArrowRight, AlertTriangle, BookOpen, RotateCw, ExternalLink, Sparkles, Loader2, Zap, Trophy, Play, ArrowLeft, Layers, Microscope, Languages, FileText, X } from 'lucide-react';
+import { BrainCircuit, CheckCircle2, XCircle, ArrowRight, AlertTriangle, BookOpen, RotateCw, ExternalLink, Sparkles, Loader2, Zap, Trophy, Play, ArrowLeft, Layers, Microscope, Languages, FileText, X, Calendar, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { generateDetailedQuizExplanation, formatMedicalMarkdown } from '../services/claudeService';
 import { getNoteFromDB } from '../services/storage';
+import { collectWrongAnswers, WrongAnswerWithNote } from '../services/studyUtils';
 
 interface QuizViewProps {
   notes: Note[];
   quizState: QuizState;
-  onStart: (mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage) => void;
-  onNext: (wasCorrect: boolean) => void;
+  onStart: (mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source?: 'RANDOM' | 'REVIEW') => void;
+  onNext: (wasCorrect: boolean, chosenIndex: number | null) => void;
   onStop: () => void;
+  onEndSession: () => void;
+  onRetry: () => void;
   onBack: () => void;
+  reviewDueCount: number;
+  onStartWrongReview: (entries: WrongAnswerWithNote[]) => void;
+  onDeleteWrongAnswer: (noteId: string, questionId: string) => void;
+  onOpenNote: (id: string) => void;
+  isFetchingAll?: boolean;
 }
 
-const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, onStop, onBack }) => {
+const WRONG_LIST_PAGE = 10;
+
+const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, onStop, onEndSession, onRetry, onBack, reviewDueCount, onStartWrongReview, onDeleteWrongAnswer, onOpenNote, isFetchingAll }) => {
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
   const [isRevealed, setIsRevealed] = useState(false);
   
@@ -33,6 +43,11 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   
   // State for Full Screen Image Viewing
   const [viewingImage, setViewingImage] = useState<string | null>(null);
+
+  // 오답 노트
+  const wrongAnswers = useMemo(() => collectWrongAnswers(notes), [notes]);
+  const [wrongVisible, setWrongVisible] = useState(WRONG_LIST_PAGE);
+  const [expandedWrongId, setExpandedWrongId] = useState<string | null>(null);
 
   // Reset local state when question changes
   useEffect(() => {
@@ -85,7 +100,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   const handleNext = () => {
       if (!quizState.currentQuestion) return;
       const isCorrect = selectedOption === quizState.currentQuestion.correctAnswerIndex;
-      onNext(isCorrect);
+      onNext(isCorrect, selectedOption);
   };
 
   const handleRequestDetail = async () => {
@@ -168,6 +183,47 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                           </div>
                       </div>
                       
+                      {/* 오늘의 복습: 복습일이 된 메모로만 문제를 냄 (메모 1개당 1문제) */}
+                      <div className={`mb-6 rounded-2xl border p-5 md:p-6 ${reviewDueCount > 0 ? 'bg-amber-50/70 border-amber-200' : 'bg-white border-slate-200'}`}>
+                          <div className="flex items-start gap-3">
+                              <div className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ${reviewDueCount > 0 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-400'}`}>
+                                  <Calendar className="w-5 h-5" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                  <h3 className="text-lg font-bold text-slate-900">
+                                      오늘의 복습 {reviewDueCount > 0 && <span className="text-amber-700">{reviewDueCount}개</span>}
+                                  </h3>
+                                  <p className="text-sm text-slate-500 leading-relaxed mt-1">
+                                      {reviewDueCount > 0
+                                          ? '복습일이 된 메모로 한 문제씩 냅니다. 맞히면 다음 복습이 3일 → 8일 → 20일 → 50일…로 늘고, 틀리면 내일 다시 나옵니다.'
+                                          : '오늘 복습할 메모가 없어요. 아래 퀴즈를 풀면 문제에 쓰인 메모마다 다음 복습일이 자동으로 잡힙니다.'}
+                                      {isFetchingAll && ' (예전 메모 불러오는 중…)'}
+                                  </p>
+                                  {reviewDueCount > 0 && (
+                                      <div className="flex flex-wrap gap-2 mt-3">
+                                          <button
+                                              type="button"
+                                              onClick={() => onStart('DETAILED', selectedLanguage, 'REVIEW')}
+                                              className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-black transition-colors flex items-center gap-1.5"
+                                          >
+                                              <BookOpen className="w-4 h-4" /> 케이스 문제로 복습
+                                          </button>
+                                          <button
+                                              type="button"
+                                              onClick={() => onStart('QUICK_OX', selectedLanguage, 'REVIEW')}
+                                              className="px-4 py-2 rounded-xl bg-white border border-amber-300 text-amber-700 text-sm font-bold hover:bg-amber-100 transition-colors flex items-center gap-1.5"
+                                          >
+                                              <Zap className="w-4 h-4" /> OX로 빠르게
+                                          </button>
+                                      </div>
+                                  )}
+                              </div>
+                          </div>
+                      </div>
+
+                      <p className="text-xs font-bold text-slate-400 mb-3 px-1">
+                          무작위 퀴즈 — 복습일이 된 메모와 아직 안 푼 메모가 더 자주 나옵니다
+                      </p>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
                           {/* Detailed Mode Card */}
                           <button 
@@ -213,7 +269,135 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                               You need to add some notes before starting the quiz.
                           </div>
                       )}
+
+                      {/* 오답 노트 */}
+                      <div className="mt-8 bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
+                          <div className="flex flex-wrap items-center gap-3 mb-1">
+                              <div className="w-10 h-10 shrink-0 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center">
+                                  <XCircle className="w-5 h-5" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                  <h3 className="text-lg font-bold text-slate-900">오답 노트 {wrongAnswers.length > 0 && <span className="text-rose-500">{wrongAnswers.length}</span>}</h3>
+                                  <p className="text-xs text-slate-500">틀린 문제는 해설·원본 메모와 함께 자동 저장됩니다. 다시 풀어서 맞히면 빠집니다.</p>
+                              </div>
+                              {wrongAnswers.length > 0 && (
+                                  <button
+                                      type="button"
+                                      onClick={() => onStartWrongReview(wrongAnswers)}
+                                      className="px-4 py-2 rounded-xl bg-rose-500 text-white text-sm font-bold hover:bg-rose-600 transition-colors flex items-center gap-1.5 whitespace-nowrap"
+                                  >
+                                      <RotateCw className="w-4 h-4" /> 틀린 문제 다시 풀기
+                                  </button>
+                              )}
+                          </div>
+                          {wrongAnswers.length === 0 ? (
+                              <p className="text-sm text-slate-400 mt-3">아직 틀린 문제가 없어요.</p>
+                          ) : (
+                              <div className="mt-4 space-y-2">
+                                  {wrongAnswers.slice(0, wrongVisible).map(w => {
+                                      const isOpen = expandedWrongId === w.id;
+                                      const optLabel = (i: number) => w.type === 'OX' ? (i === 0 ? 'O' : 'X') : (i >= 0 ? String.fromCharCode(65 + i) : '—');
+                                      return (
+                                          <div key={w.id} className="border border-slate-200 rounded-xl overflow-hidden">
+                                              <button
+                                                  type="button"
+                                                  onClick={() => setExpandedWrongId(isOpen ? null : w.id)}
+                                                  className="w-full text-left p-3 hover:bg-slate-50 transition-colors flex items-start gap-2"
+                                              >
+                                                  <span className={`shrink-0 mt-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded ${w.type === 'OX' ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                                                      {w.type === 'OX' ? 'OX' : '케이스'}
+                                                  </span>
+                                                  <span className={`flex-1 min-w-0 text-sm text-slate-700 ${isOpen ? '' : 'line-clamp-2'}`}>
+                                                      {w.question.replace(/[#*`>]/g, '')}
+                                                  </span>
+                                                  {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />}
+                                              </button>
+                                              <div className="px-3 pb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
+                                                  <span>내 답 <b className="text-red-500">{optLabel(w.chosenIndex)}</b> · 정답 <b className="text-green-600">{optLabel(w.correctAnswerIndex)}</b></span>
+                                                  {(w.wrongCount || 1) > 1 && <span className="text-rose-500 font-bold">{w.wrongCount}번 틀림</span>}
+                                                  <span>{new Date(w.wrongAt).toLocaleDateString()}</span>
+                                                  <button type="button" onClick={() => onOpenNote(w.noteId)} className="text-blue-500 hover:text-blue-700 font-bold truncate max-w-[180px]" title="원본 메모 열기">
+                                                      📄 {w.noteTitle}
+                                                  </button>
+                                                  <button
+                                                      type="button"
+                                                      onClick={() => { if (confirm('이 문제를 오답 노트에서 뺄까요?')) onDeleteWrongAnswer(w.noteId, w.id); }}
+                                                      className="ml-auto p-1 text-slate-300 hover:text-red-500"
+                                                      title="오답 노트에서 빼기"
+                                                  >
+                                                      <Trash2 className="w-3.5 h-3.5" />
+                                                  </button>
+                                              </div>
+                                              {isOpen && (
+                                                  <div className="px-3 pb-3 border-t border-slate-100 bg-slate-50/60">
+                                                      {w.type !== 'OX' && (
+                                                          <ol className="mt-2 space-y-1 text-sm">
+                                                              {w.options.map((o, i) => (
+                                                                  <li key={i} className={`flex gap-2 ${i === w.correctAnswerIndex ? 'text-green-700 font-bold' : i === w.chosenIndex ? 'text-red-600 line-through' : 'text-slate-500'}`}>
+                                                                      <span className="shrink-0">{String.fromCharCode(65 + i)}.</span>
+                                                                      <span dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(formatMedicalMarkdown(o)) }} />
+                                                                  </li>
+                                                              ))}
+                                                          </ol>
+                                                      )}
+                                                      {w.explanation && (
+                                                          <div className="prose prose-sm prose-slate max-w-none mt-3" dangerouslySetInnerHTML={renderMarkdown(w.explanation)} />
+                                                      )}
+                                                      {w.sources && w.sources.length > 0 && (
+                                                          <div className="flex flex-wrap gap-2 mt-2">
+                                                              {w.sources.map((src, i) => (
+                                                                  <a key={i} href={src.uri} target="_blank" rel="noopener noreferrer" className="text-[11px] text-blue-600 bg-white border border-slate-200 rounded px-2 py-1 truncate max-w-[220px] hover:border-blue-300">
+                                                                      {src.title || src.uri}
+                                                                  </a>
+                                                              ))}
+                                                          </div>
+                                                      )}
+                                                  </div>
+                                              )}
+                                          </div>
+                                      );
+                                  })}
+                                  {wrongAnswers.length > wrongVisible && (
+                                      <button type="button" onClick={() => setWrongVisible(v => v + WRONG_LIST_PAGE)} className="w-full py-2 text-xs font-bold text-slate-500 hover:text-slate-700">
+                                          더 보기 ({wrongAnswers.length - wrongVisible}개 더)
+                                      </button>
+                                  )}
+                              </div>
+                          )}
+                      </div>
                   </div>
+              </div>
+          </div>
+      );
+  }
+
+  // State 2-a: 더 낼 문제가 없음 (오늘 복습 끝 / 오답 다시 풀기 끝)
+  if (!quizState.currentQuestion && quizState.noMoreQuestions && !quizState.isGenerating && !quizState.error) {
+      const { correct, total } = quizState.stats;
+      const title = quizState.source === 'WRONG'
+          ? '오답 다시 풀기 완료'
+          : total === 0 ? '오늘 복습할 메모가 없어요' : '오늘의 복습 완료';
+      return (
+          <div className="flex flex-col items-center justify-center h-full bg-slate-50 p-6 text-center animate-in fade-in">
+              <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center mb-6">
+                  <Trophy className="w-8 h-8 text-amber-500" />
+              </div>
+              <h2 className="text-xl font-bold text-slate-800 mb-2">{title}</h2>
+              {total > 0 && (
+                  <p className="text-slate-500 text-sm mb-2">{total}문제 중 <b className="text-slate-800">{correct}</b>개 정답</p>
+              )}
+              <p className="text-slate-400 text-xs mb-8 max-w-sm leading-relaxed">
+                  {quizState.source === 'WRONG'
+                      ? '맞힌 문제는 오답 노트에서 빠졌고, 또 틀린 문제는 그대로 남아 있습니다.'
+                      : '틀린 문제는 오답 노트에 저장됐고, 해당 메모는 내일 다시 복습 목록에 나옵니다.'}
+              </p>
+              <div className="flex flex-col gap-3 w-full max-w-xs">
+                  <button type="button" onClick={onEndSession} className="w-full bg-slate-900 text-white hover:bg-black py-3 rounded-xl font-bold shadow-sm transition-all">
+                      퀴즈 첫 화면으로
+                  </button>
+                  <button type="button" onClick={onStop} className="w-full text-slate-400 hover:text-slate-600 py-2 text-sm font-medium transition-colors">
+                      메모 목록으로
+                  </button>
               </div>
           </div>
       );
@@ -241,7 +425,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                   {quizState.error ? (
                     <button 
                         type="button"
-                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onStart(quizState.mode!, quizState.language); }} 
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRetry(); }} 
                         className="w-full bg-blue-600 text-white hover:bg-blue-700 py-3 rounded-xl font-bold shadow-sm transition-all flex items-center justify-center gap-2"
                     >
                         <RotateCw className="w-4 h-4" /> 다시 시도하기
@@ -276,7 +460,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                 </div>
                 <div>
                     <h2 className="font-bold text-slate-800 text-base md:text-lg">
-                        {isOX ? 'Quick Review' : 'Case Study'}
+                        {quizState.source === 'REVIEW' ? '오늘의 복습' : quizState.source === 'WRONG' ? '오답 다시 풀기' : (isOX ? 'Quick Review' : 'Case Study')}
                     </h2>
                     <div className="text-[11px] text-slate-400 flex items-center gap-1">
                         <Trophy className="w-3 h-3" /> Score: {quizState.stats.correct}/{quizState.stats.total}
@@ -440,7 +624,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
 
                         <div className="mt-8 flex justify-end">
                             <button type="button" onClick={handleNext} className="bg-slate-900 hover:bg-black text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex items-center gap-2">
-                                Next Question {quizState.questionQueue.length > 0 && <span className="text-xs bg-slate-700 px-1.5 py-0.5 rounded text-slate-300">Ready</span>} <ArrowRight className="w-4 h-4" />
+                                {quizState.questionQueue.length === 0 && quizState.noMoreQuestions ? '결과 보기' : 'Next Question'} {quizState.questionQueue.length > 0 && <span className="text-xs bg-slate-700 px-1.5 py-0.5 rounded text-slate-300">{quizState.source === 'WRONG' ? `${quizState.questionQueue.length}개 남음` : 'Ready'}</span>} <ArrowRight className="w-4 h-4" />
                             </button>
                         </div>
                     </div>

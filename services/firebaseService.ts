@@ -14,7 +14,9 @@ import {
   getDocs,
   where,
   documentId,
-  getDoc
+  getDoc,
+  updateDoc,
+  deleteField
 } from "firebase/firestore";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import { v4 as uuidv4 } from 'uuid';
@@ -290,30 +292,108 @@ export const fetchRandomNotesBatch = async (count: number, excludedIds: string[]
     }
 };
 
+// 같은 메모에 대한 클라우드 쓰기는 순서대로 처리 (전체 저장 → 부분 수정 순서가 뒤바뀌지 않게)
+const writeChains = new Map<string, Promise<unknown>>();
+const enqueueWrite = <T>(id: string, fn: () => Promise<T>): Promise<T> => {
+    const prev = writeChains.get(id) || Promise.resolve();
+    const run = prev.catch(() => undefined).then(fn);
+    writeChains.set(id, run);
+    const cleanup = () => { if (writeChains.get(id) === run) writeChains.delete(id); };
+    run.then(cleanup, cleanup);
+    return run;
+};
+
+// 서버 확인을 아직 못 받은 쓰기 수 (오프라인이면 계속 남아 있음) — 중복 재업로드 방지용
+const pendingAcks = new Map<string, number>();
+const trackAck = (id: string, p: Promise<unknown>) => {
+    pendingAcks.set(id, (pendingAcks.get(id) || 0) + 1);
+    const done = () => {
+        const n = (pendingAcks.get(id) || 1) - 1;
+        if (n <= 0) pendingAcks.delete(id); else pendingAcks.set(id, n);
+    };
+    p.then(done, done);
+    return p;
+};
+export const hasPendingCloudWrite = (id: string): boolean => writeChains.has(id) || pendingAcks.has(id);
+
+// 이 세션에서 삭제한 메모: 늦게 도착한 저장/동기화가 되살리지 않도록 기억
+const deletedIds = new Set<string>();
+export const isDeletedNoteId = (id: string): boolean => deletedIds.has(id);
+
+const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
+    Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))]);
+
+// 복습 일정·오답 노트·가이드라인 점검처럼 "내용 밖" 정보. 다른 기기에서 더 최근에 바뀌었으면
+// 이 기기에서 메모 전체를 저장할 때 클라우드 쪽 값을 유지합니다(오래된 사본으로 덮지 않도록).
+const META_FIELDS: (keyof Note)[] = ['quizMasteryCount', 'reviewDueAt', 'reviewIntervalDays', 'lastReviewedAt', 'wrongAnswers', 'guidelineCheck'];
+
 // Save a note to Firestore (Add/Update)
-export const saveNoteToFirestore = async (note: Note) => {
+export const saveNoteToFirestore = (note: Note): Promise<void> => enqueueWrite(note.id, async () => {
   try {
     await ensureAuth();
-    const noteToSave = {
+    const ref = doc(db, "notes", note.id);
+    const noteToSave: Record<string, any> = {
         ...note,
         updatedAt: note.updatedAt || Date.now()
     };
-    await setDoc(doc(db, "notes", note.id), noteToSave);
+    try {
+        const snap: any = await withTimeout<any>(getDoc(ref), 4000);
+        if (snap.exists()) {
+            const remote = snap.data() as Note;
+            if ((remote.metaUpdatedAt || 0) > (note.metaUpdatedAt || 0)) {
+                META_FIELDS.forEach(k => { noteToSave[k] = (remote as any)[k]; });
+                noteToSave.metaUpdatedAt = remote.metaUpdatedAt;
+            }
+        }
+    } catch {
+        // 오프라인/지연이면 확인 없이 그대로 저장
+    }
+    if (deletedIds.has(note.id)) return;
+    // 쓰기 순서는 Firestore 클라이언트가 보장하므로 서버 확인까지 대기열을 붙잡아 두지 않음
+    trackAck(note.id, setDoc(ref, noteToSave)).catch((error: any) => {
+        if (error?.code === 'unavailable') return;
+        console.error("Error saving note to Firestore:", error);
+    });
   } catch (error: any) {
     if (error.code === 'unavailable') return;
     console.error("Error saving note to Firestore:", error);
   }
-};
+});
 
-// Delete a note from Firestore
-export const deleteNoteFromFirestore = async (id: string) => {
+// 메모의 일부 필드만 클라우드에 반영 (값이 undefined면 필드 삭제).
+// 문서가 없으면(다른 기기에서 삭제됨 등) 되살리지 않고 조용히 넘어갑니다.
+export const updateNoteFieldsInFirestore = (id: string, fields: Partial<Note>): Promise<void> => enqueueWrite(id, async () => {
   try {
     await ensureAuth();
-    await deleteDoc(doc(db, "notes", id));
+    const data: Record<string, any> = {};
+    Object.entries(fields).forEach(([k, v]) => { data[k] = v === undefined ? deleteField() : v; });
+    if (Object.keys(data).length === 0 || deletedIds.has(id)) return;
+    trackAck(id, updateDoc(doc(db, "notes", id), data)).catch((error: any) => {
+        if (error?.code === 'unavailable' || error?.code === 'not-found') return;
+        console.error("Error updating note fields in Firestore:", error);
+    });
   } catch (error: any) {
-    if (error.code === 'unavailable') return;
-    console.error("Error deleting note from Firestore:", error);
+    if (error?.code === 'unavailable' || error?.code === 'not-found') return;
+    console.error("Error updating note fields in Firestore:", error);
   }
+});
+
+// Delete a note from Firestore
+// 삭제도 같은 대기열로 보내, 먼저 요청된 저장이 삭제 뒤에 도착해 메모를 되살리지 않게 함
+export const deleteNoteFromFirestore = (id: string): Promise<void> => {
+  deletedIds.add(id);
+  return enqueueWrite(id, async () => {
+    try {
+      await ensureAuth();
+      trackAck(id, deleteDoc(doc(db, "notes", id))).catch((error: any) => {
+        if (error?.code === 'unavailable') return;
+        console.error("Error deleting note from Firestore:", error);
+      });
+    } catch (error: any) {
+      if (error.code === 'unavailable') return;
+      console.error("Error deleting note from Firestore:", error);
+    }
+  });
 };
 
 // ----------------------------------------------------------------------------

@@ -20,7 +20,7 @@
 //   getFurtherReading, 사용되지 않던 enhanceNoteContent)은 이 파일에 포함하지 않습니다.
 // ============================================================================
 
-import { Note, Source, QuizQuestion, QuizLanguage } from "../types";
+import { Note, Source, QuizQuestion, QuizLanguage, GuidelineCheck } from "../types";
 import { v4 as uuidv4 } from 'uuid';
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -722,6 +722,36 @@ export const extractTextFromImages = async (images: string[]): Promise<string> =
 // ----------------------------------------------------------------------------
 // AI 퀴즈 복습 (핵심 유지 기능): MCQ / OX
 // ----------------------------------------------------------------------------
+// 메모마다 번호를 붙이고 길이를 고르게 나눠 담습니다. (예전엔 여러 메모를 이어 붙인 뒤
+// 앞에서 4,000자만 잘라서, 앞 메모가 길면 뒤 메모는 아예 빠졌습니다.)
+// 모델이 실제로 출제에 쓴 메모 번호를 돌려주게 해서, 복습 일정·오답 노트가 그 메모에만 붙게 합니다.
+const QUIZ_CONTEXT_TOTAL_CHARS = 5400;
+const buildQuizContext = (notes: Note[], withSummary: boolean): string => {
+    const per = Math.floor(QUIZ_CONTEXT_TOTAL_CHARS / Math.max(1, notes.length));
+    return notes.map((n, i) => {
+        const body = [
+            n.content || '',
+            withSummary && n.summary ? `(AI Summary: ${n.summary})` : '',
+            n.transcription ? `(Extracted Text: ${n.transcription})` : ''
+        ].filter(Boolean).join('\n');
+        return `[Note ${i + 1}: ${n.title || 'Untitled'}]\n${body.length > per ? body.slice(0, per) + ' …' : body}`;
+    }).join('\n\n---\n\n');
+};
+
+const SOURCE_NOTE_NUMBERS_SCHEMA = {
+    type: 'array',
+    items: { type: 'integer', minimum: 1 },
+    description: 'Numbers of the notes ([Note N]) this question is actually based on.'
+};
+
+const pickUsedNoteIds = (notes: Note[], numbers: any): string[] => {
+    const all = notes.map(n => n.id);
+    if (!Array.isArray(numbers)) return all;
+    const picked = Array.from(new Set(numbers
+        .filter((x: any) => Number.isInteger(x) && x >= 1 && x <= notes.length)
+        .map((x: number) => notes[x - 1].id)));
+    return picked.length > 0 ? picked : all;
+};
 export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage = 'Korean', signal?: AbortSignal): Promise<QuizQuestion | null> => {
     try {
         if (notes.length === 0) return null;
@@ -741,9 +771,7 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
             }
         });
 
-        const contextText = notes.map(n =>
-            `[Note: ${n.title}]\n${n.content}\n${n.transcription ? '(Extracted Text: ' + n.transcription + ')' : ''}`
-        ).join("\n\n---\n\n");
+        const contextText = buildQuizContext(notes, false);
 
         const prompt = `
             You are an attending physician writing subspecialty board-level questions.
@@ -768,11 +796,12 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
             - If the text context is empty or minimal, rely entirely on the visual information from the images.
             - **Output Language: ${language}** (The question, options, and explanation MUST be written in ${language}).
 
-            Context Text:
-            "${contextText.substring(0, 4000)}"
+            Context Text (notes are numbered [Note 1], [Note 2], ...):
+            """${contextText}"""
 
             Task:
             1. Create a challenging clinical scenario based on the provided context.
+               In source_note_numbers, list only the note numbers the question actually draws on.
             2. Provide exactly 5 options (A-E).
             3. CRITICAL: Provide an explanation that states why the answer is correct (with the guideline
                threshold or trial behind it) and, briefly, why each distractor is wrong.
@@ -791,6 +820,7 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
                     options: { type: 'array', items: { type: 'string' }, minItems: 5, maxItems: 5 },
                     correctAnswerIndex: { type: 'integer', minimum: 0, maximum: 4 },
                     explanation: { type: 'string' },
+                    source_note_numbers: SOURCE_NOTE_NUMBERS_SCHEMA,
                     sources: {
                         type: 'array',
                         items: {
@@ -800,7 +830,7 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
                         }
                     }
                 },
-                required: ['question', 'options', 'correctAnswerIndex', 'explanation']
+                required: ['question', 'options', 'correctAnswerIndex', 'explanation', 'source_note_numbers']
             },
             maxTokens: 1500
         });
@@ -818,7 +848,7 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
             sources: input.sources || [],
             id: uuidv4(),
             type: 'MULTIPLE_CHOICE',
-            relatedNoteIds: notes.map(n => n.id)
+            relatedNoteIds: pickUsedNoteIds(notes, input.source_note_numbers)
         };
 
     } catch (error) {
@@ -847,9 +877,7 @@ export const generateOXQuiz = async (notes: Note[], language: QuizLanguage = 'Ko
             }
         });
 
-        const contextText = notes.map(n =>
-            `[Note: ${n.title}]\nContent: ${n.content}\n${n.summary ? '(AI Summary: ' + n.summary + ')' : ''}\n${n.transcription ? '(Extracted Text: ' + n.transcription + ')' : ''}`
-        ).join("\n\n---\n\n");
+        const contextText = buildQuizContext(notes, true);
 
         const targetAnswerIsTrue = Math.random() < 0.5;
 
@@ -865,11 +893,12 @@ export const generateOXQuiz = async (notes: Note[], language: QuizLanguage = 'Ko
             - **You MUST generate a statement that is ${targetAnswerIsTrue ? "TRUE" : "FALSE"}**. This is a strict requirement for balance.
             - **Output Language: ${language}** (The statement and explanation MUST be written in ${language}).
 
-            Note Content:
-            "${contextText.substring(0, 4000)}"
+            Note Content (notes are numbered [Note 1], [Note 2], ...):
+            """${contextText}"""
 
             Instructions:
             - Create ONE statement related to the medical facts in these notes.
+            - In source_note_numbers, list only the note numbers the statement actually draws on.
             - The statement must be medically ${targetAnswerIsTrue ? "accurate (True)" : "inaccurate/false (False)"}.
 
             ${!targetAnswerIsTrue ? `
@@ -901,9 +930,10 @@ export const generateOXQuiz = async (notes: Note[], language: QuizLanguage = 'Ko
                 properties: {
                     question: { type: 'string' },
                     isTrue: { type: 'boolean' },
-                    explanation: { type: 'string' }
+                    explanation: { type: 'string' },
+                    source_note_numbers: SOURCE_NOTE_NUMBERS_SCHEMA
                 },
-                required: ['question', 'isTrue', 'explanation']
+                required: ['question', 'isTrue', 'explanation', 'source_note_numbers']
             },
             maxTokens: 800
         });
@@ -921,7 +951,7 @@ export const generateOXQuiz = async (notes: Note[], language: QuizLanguage = 'Ko
             correctAnswerIndex: input.isTrue ? 0 : 1,
             explanation: input.explanation,
             sources: [],
-            relatedNoteIds: notes.map(n => n.id)
+            relatedNoteIds: pickUsedNoteIds(notes, input.source_note_numbers)
         };
     } catch (error) {
         if ((error as Error).message === "Aborted by user") throw error;
@@ -967,4 +997,166 @@ export const generateDetailedQuizExplanation = async (question: string, isTrue: 
         console.error("Detailed Explanation Failed", error);
         return null;
     }
+};
+
+// ----------------------------------------------------------------------------
+// 저널클럽 준비: 메모에 붙여넣은 논문 초록/본문 → 비판적 평가 + 예상 질문
+// - 결과는 메모의 요약 칸에 저장됩니다(summaryKind: 'journal'). "내 메모에 물어보기"가
+//   메모 요약도 함께 읽으므로, 나중에 여러 논문을 서로 연결해 물어볼 수 있습니다.
+// ----------------------------------------------------------------------------
+export const JOURNAL_MAX_INPUT_CHARS = 120000;
+
+export const analyzeJournalArticle = async (note: Note): Promise<{ summary: string; sources: Source[] } | null> => {
+    try {
+        const content: any[] = [];
+        (note.images || []).slice(0, 8).forEach(img => content.push(imageBlock(img)));
+
+        const raw = [note.content || '', note.transcription ? `(사진에서 추출한 텍스트)\n${note.transcription}` : '']
+            .filter(Boolean).join('\n\n');
+        const isTruncated = raw.length > JOURNAL_MAX_INPUT_CHARS;
+        const text = raw.substring(0, JOURNAL_MAX_INPUT_CHARS);
+
+        const prompt = `
+            You help the reader prepare a journal club presentation in a cardiology fellowship program.
+            ${READER_PROFILE}
+
+            THE PAPER (pasted by the reader — may be only the abstract, or the full text, or photos of pages):
+            """${text || '(no text — use the attached images)'}"""
+            ${isTruncated ? `(The text was cut after ${JOURNAL_MAX_INPUT_CHARS} characters.)` : ''}
+
+            First decide how much you have: ABSTRACT ONLY vs FULL TEXT. With only an abstract, say so as the last
+            line of the first section and mark any appraisal point that needs the full text as "(본문 확인 필요)".
+            NEVER invent numbers that are not in the text. If the paper cannot be identified from the text,
+            say so instead of guessing.
+
+            Use web search (up to 5 searches) to identify the paper (journal, year) and to place it among prior
+            trials and current guidelines. Cite what you use.
+
+            Write in Korean (standard English terms/abbreviations as usual), with these "###" sections in order:
+            ### 한 줄 결론
+              What the study found and how much it should change practice, in 1~2 sentences.
+            ### 연구 질문 · 설계
+              - PICO (population with key inclusion/exclusion, intervention, comparator, primary outcome)
+              - Design (RCT/observational/meta-analysis, blinding, allocation concealment, superiority vs
+                non-inferiority with the margin), sample size, follow-up, funding/sponsor if stated.
+            ### 핵심 결과
+              - Primary endpoint with effect size and 95% CI (HR/RR/OR) and absolute event rates.
+              - ARR and NNT (or ARI and NNH) — ONLY when absolute rates are given; show the arithmetic
+                in one line (e.g. "ARR = 12.1% − 9.8% = 2.3% → NNT ≈ 44 (중앙 추적 2.1년)").
+              - Key secondary and safety endpoints. Keep it to what matters.
+              - A compact table is fine for endpoints (cells single-line, no backticks).
+            ### 비뚤림 위험 · 한계
+              Walk through the relevant issues as bullets: randomization/concealment, blinding and outcome
+              adjudication, attrition and ITT vs per-protocol, early stopping, composite endpoint driven by a soft
+              component, surrogate endpoints, multiplicity/subgroups, crossover, generalizability of the
+              control arm (e.g. suboptimal GDMT), industry sponsorship. For a meta-analysis: heterogeneity,
+              study quality, publication bias. End with an overall judgment (low / some concerns / high).
+            ### 적용 가능성
+              Who in our practice this applies to and who it doesn't (age, comorbidity, Asian/Korean patients,
+              device/procedure availability, reimbursement if clearly relevant).
+            ### 기존 연구 · 가이드라인과의 관계
+              How it fits with the landmark prior trials (name them with year and one-line result) and what
+              current guidelines (ACC/AHA, ESC, HRS, KSC as relevant; give the year and COR/LOE) say — does
+              this paper support, extend, or contradict them? If it was published after the latest guideline,
+              say what could change.
+            ### 예상 질문 & 답변
+              6~8 questions an attending is likely to ask at journal club (methodology, statistics, clinical
+              application, "would you change practice?", comparison with trial X), each as
+              "- **Q.** question" followed by "  - **A.** concise model answer (2~4 sentences)".
+            ### 발표 포인트
+              3 bullets: what to emphasize on slides.
+
+            FORMAT: bullets "- " with the full sentence on the same line. Use ≥/≤, no LaTeX.
+            OUTPUT: start directly with "### 한 줄 결론" — no narration of your process, no preamble.
+        `;
+        content.push({ type: 'text', text: prompt });
+
+        const data = await callClaude({
+            model: MODEL_SMART,
+            messages: [{ role: 'user', content }],
+            tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
+            max_tokens: 16000
+        });
+        let summary = extractText(data);
+        if (!summary) return null;
+        // 검색 전에 모델이 붙인 머리말("먼저 찾아보겠습니다" 등)은 첫 섹션 제목 앞에서 잘라냄
+        const firstHeading = summary.indexOf('###');
+        if (firstHeading > 0) summary = summary.slice(firstHeading);
+        if (data?.stop_reason === 'max_tokens') {
+            summary += '\n\n> ⚠️ 분량 제한으로 뒷부분이 잘렸을 수 있습니다. "저널클럽 분석 다시 하기"로 다시 만들 수 있어요.';
+        }
+        return { summary, sources: extractCitations(data, 8) };
+    } catch (error) {
+        console.error("Journal club analysis failed", error);
+        return null;
+    }
+};
+
+// ----------------------------------------------------------------------------
+// 오래된 메모 가이드라인 점검: 메모의 수치·권고가 지금도 맞는지 최신 가이드라인과 비교
+// - 결과 첫 줄의 STATUS 표시로 상태(변경/일치/불확실)를 읽고, 나머지는 보고서로 저장합니다.
+// ----------------------------------------------------------------------------
+export const parseGuidelineStatus = (raw: string): { status: GuidelineCheck['status']; report: string } => {
+    const text = (raw || '').trim();
+    // 웹 검색 전에 모델이 한두 문장을 먼저 쓰는 경우가 있어, 맨 앞이 아니어도 STATUS 줄을 찾고
+    // 그 앞의 글은 버립니다.
+    // (검색 결과 블록 사이 텍스트가 줄바꿈 없이 붙어 "…하겠습니다.STATUS: CHANGED"가 될 수 있어 줄 시작을 요구하지 않음)
+    const m = /[*_#]*\bSTATUS[ \t*_]*[:：][ \t*_]*(CHANGED|OK|UNCERTAIN)\b[^\n]*(?:\n|$)/i.exec(text);
+    if (!m) return { status: 'uncertain', report: text };
+    const key = m[1].toUpperCase();
+    const status: GuidelineCheck['status'] = key === 'CHANGED' ? 'changed' : key === 'OK' ? 'ok' : 'uncertain';
+    return { status, report: text.slice(m.index + m[0].length).trim() };
+};
+
+export const checkNoteAgainstGuidelines = async (note: Note): Promise<GuidelineCheck> => {
+    const written = new Date(note.updatedAt || note.createdAt).toLocaleDateString('ko-KR');
+    const today = new Date().toLocaleDateString('ko-KR');
+    const raw = [note.content || '', note.transcription ? `(사진에서 추출한 텍스트)\n${note.transcription}` : '']
+        .filter(Boolean).join('\n\n').substring(0, 30000);
+
+    const prompt = `
+        You check whether an older study note of the reader is still consistent with CURRENT guidelines and evidence.
+        ${READER_PROFILE}
+
+        The note was last edited on ${written}. Today is ${today}.
+        NOTE TITLE: ${note.title || '(untitled)'}
+        NOTE:
+        """${raw}"""
+
+        STEPS:
+        1. Pick out the specific, checkable claims: numeric thresholds and cut-offs, targets, drug doses,
+           durations (e.g. DAPT), indications/contraindications, class of recommendation / level of evidence,
+           and conclusions attributed to trials. Ignore vague or purely descriptive statements.
+        2. Use web search (up to 5 searches) to find the most recent applicable guideline or focused update
+           (ACC/AHA, ESC, HRS/EHRA, ASE, KSC, KDIGO, ADA ... as relevant) and pivotal newer trials.
+        3. Compare each claim with what is current.
+
+        OUTPUT FORMAT (STRICT):
+        - The FIRST line must be exactly one of:
+          "STATUS: CHANGED"   — at least one claim is now outdated or wrong
+          "STATUS: OK"        — the checkable claims are still current
+          "STATUS: UNCERTAIN" — couldn't verify the key claims (not enough checkable content, or no clear source)
+        - Then, in Korean (standard English terms as usual):
+          One line with the bottom line.
+          ### ⚠️ 바뀐 내용
+            One bullet per changed claim: "- ⚠️ **메모**: (what the note says, briefly quoted) → **현재**: (what
+            is recommended now) — (guideline/trial name, year, COR/LOE if applicable)". Omit this section if none.
+          ### ✅ 지금도 맞는 내용
+            Short bullets; group minor items together.
+          ### ❔ 확인하지 못한 것
+            Only if relevant.
+        - Be concise (roughly up to 1,500 Korean characters). Bullets "- " with the sentence on the same line.
+        - Output only the result — no narration of your process.
+    `;
+
+    const data = await callClaude({
+        model: MODEL_SMART,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
+        max_tokens: 4000
+    });
+    const text = extractText(data);
+    if (!text) throw new Error('점검 결과가 비어 있습니다.');
+    const { status, report } = parseGuidelineStatus(text);
+    return { checkedAt: Date.now(), status, report, sources: extractCitations(data, 6) };
 };

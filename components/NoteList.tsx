@@ -23,6 +23,8 @@ interface NoteListProps {
   tagFilter: TagFilter;
   onTagFilterChange: (filter: TagFilter) => void;
   isFetchingAll?: boolean;
+  reviewDueCount?: number;
+  onOpenReview?: () => void;
 }
 
 export type TagFilter = 'all' | NoteTag;
@@ -76,12 +78,15 @@ const NoteCard = React.memo(({ note, onClick, badge }: { note: Note, onClick: ()
                         )}
                     </span>
                     <div className="flex items-center gap-1.5">
+                        {note.guidelineCheck?.status === 'changed' && (
+                            <span className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded" title="최신 가이드라인과 달라진 내용이 있음">⚠️ 가이드라인</span>
+                        )}
                         {badge && (
                             <span className="text-[11px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">{badge}</span>
                         )}
                         {note.summary && (
                             <div className="flex items-center gap-1 text-[11px] text-indigo-400 bg-indigo-50 px-1.5 py-0.5 rounded">
-                                <Sparkles className="w-3 h-3" /> Summary
+                                <Sparkles className="w-3 h-3" /> {note.summaryKind === 'journal' ? 'Journal' : 'Summary'}
                             </div>
                         )}
                     </div>
@@ -104,7 +109,9 @@ const NoteList: React.FC<NoteListProps> = ({
     embeddingBackfillProgress,
     tagFilter,
     onTagFilterChange,
-    isFetchingAll
+    isFetchingAll,
+    reviewDueCount = 0,
+    onOpenReview
 }) => {
   // Pagination / Infinite Scroll State
   const [visibleCount, setVisibleCount] = useState(20);
@@ -349,6 +356,16 @@ const NoteList: React.FC<NoteListProps> = ({
                     </button>
                 );
             })}
+            {reviewDueCount > 0 && onOpenReview && (
+                <button
+                    type="button"
+                    onClick={onOpenReview}
+                    className="ml-auto px-3 py-1 rounded-full text-xs font-bold border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors whitespace-nowrap"
+                    title="복습일이 된 메모로 퀴즈 풀기"
+                >
+                    오늘 복습 {reviewDueCount}개 →
+                </button>
+            )}
         </div>
         {/* 검색 상태: 무엇을, 어디까지 찾았는지 */}
         {isSearching && (

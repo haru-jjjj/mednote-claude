@@ -1,18 +1,20 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList, { TagFilter } from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
 import QuizView from './components/QuizView';
 import StudyGuideView from './components/StudyGuideView';
 import AskNotesView from './components/AskNotesView';
+import GuidelineCheckView from './components/GuidelineCheckView';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
 import PinSettingsModal from './components/PinSettingsModal';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NOTE_TAG_LABELS } from './types';
+import { scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote } from './services/studyUtils';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
-import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages } from './services/claudeService';
-import { syncNotesFromFirestore, saveNoteToFirestore, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
+import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines } from './services/claudeService';
+import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, isDeletedNoteId, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 
 const sanitizeNotes = (rawNotes: any[]): Note[] => {
@@ -40,9 +42,32 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
             isEnhancing: false,
             quizMasteryCount: typeof n.quizMasteryCount === 'number' ? n.quizMasteryCount : 0,
             tag: n.tag === 'memo' || n.tag === 'patient' ? n.tag : undefined,
-            summarizedAt: typeof n.summarizedAt === 'number' ? n.summarizedAt : undefined
+            summarizedAt: typeof n.summarizedAt === 'number' ? n.summarizedAt : undefined,
+            summaryKind: n.summaryKind === 'journal' ? 'journal' : undefined,
+            reviewDueAt: typeof n.reviewDueAt === 'number' ? n.reviewDueAt : undefined,
+            reviewIntervalDays: typeof n.reviewIntervalDays === 'number' ? n.reviewIntervalDays : undefined,
+            lastReviewedAt: typeof n.lastReviewedAt === 'number' ? n.lastReviewedAt : undefined,
+            wrongAnswers: Array.isArray(n.wrongAnswers)
+                ? n.wrongAnswers.filter((w: any) => w && typeof w.id === 'string' && typeof w.question === 'string' && Array.isArray(w.options))
+                : undefined,
+            guidelineCheck: n.guidelineCheck && typeof n.guidelineCheck.report === 'string' && typeof n.guidelineCheck.checkedAt === 'number'
+                ? {
+                    checkedAt: n.guidelineCheck.checkedAt,
+                    status: ['ok', 'changed', 'uncertain'].includes(n.guidelineCheck.status) ? n.guidelineCheck.status : 'uncertain',
+                    report: n.guidelineCheck.report,
+                    sources: Array.isArray(n.guidelineCheck.sources) ? n.guidelineCheck.sources : []
+                }
+                : undefined,
+            metaUpdatedAt: typeof n.metaUpdatedAt === 'number' ? n.metaUpdatedAt : undefined
         };
     });
+};
+
+// 두 사본 중 a가 더 최신인지: 내용 수정 시각(updatedAt)이 우선, 같으면 부가정보 수정 시각(metaUpdatedAt)
+const isNewerCopy = (a: Note, b: Note) => {
+    const au = a.updatedAt || 0, bu = b.updatedAt || 0;
+    if (au !== bu) return au > bu;
+    return (a.metaUpdatedAt || 0) > (b.metaUpdatedAt || 0);
 };
 
 const App: React.FC = () => {
@@ -70,6 +95,8 @@ const App: React.FC = () => {
   const [quizState, setQuizState] = useState<QuizState>({
     isActive: false,
     mode: null,
+    source: 'RANDOM',
+    noMoreQuestions: false,
     language: 'Korean',
     isGenerating: false,
     questionQueue: [],
@@ -103,21 +130,37 @@ const App: React.FC = () => {
 
     // Initialize Firebase Sync
     console.log("App: Initializing Firebase Sync...");
+    // 실시간 동기화: 이 기기(로컬DB)에 더 최신 사본이 있으면(예: 클라우드로 보내기 전에 앱을
+    // 다시 연 경우) 클라우드의 오래된 사본으로 덮지 않고, 오히려 로컬 사본을 다시 올립니다.
+    // 콜백이 겹쳐도 도착 순서대로 반영되도록 순서대로 처리합니다.
+    let syncChain: Promise<void> = Promise.resolve();
     const unsubscribe = syncNotesFromFirestore((remoteNotes) => {
-        setNotes(prevNotes => {
-            const noteMap = new Map<string, Note>();
-            prevNotes.forEach(n => noteMap.set(n.id, n));
-            remoteNotes.forEach(n => noteMap.set(n.id, n));
-            
-            const merged = Array.from(noteMap.values());
-            // Sort merged list
-            merged.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-            return merged;
-        });
+        syncChain = syncChain.then(async () => {
+            const live = remoteNotes.filter(r => !isDeletedNoteId(r.id));
+            const decisions = await Promise.all(live.map(async r => {
+                const local = await getNoteFromDB(r.id).catch(() => undefined);
+                return { r, local, keepLocal: !!local && isNewerCopy(local, r) };
+            }));
+            const accepted = decisions.filter(d => !d.keepLocal).map(d => d.r);
 
-        if (remoteNotes.length > 0) {
-            saveAllNotesToDB(remoteNotes).catch(console.error);
-        }
+            if (accepted.length > 0) {
+                setNotes(prevNotes => {
+                    const noteMap = new Map<string, Note>();
+                    prevNotes.forEach(n => noteMap.set(n.id, n));
+                    accepted.forEach(n => { if (!isDeletedNoteId(n.id)) noteMap.set(n.id, n); });
+                    
+                    const merged = Array.from(noteMap.values());
+                    // Sort merged list
+                    merged.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+                    return merged;
+                });
+                await saveAllNotesToDB(accepted.filter(n => !isDeletedNoteId(n.id))).catch(console.error);
+            }
+            // 이미 보내는 중(서버 확인 대기)인 메모는 다시 올리지 않음
+            decisions
+                .filter(d => d.keepLocal && d.local && !hasPendingCloudWrite(d.r.id))
+                .forEach(d => { saveNoteToFirestore(d.local as Note); });
+        }).catch(e => console.error("Sync merge failed", e));
     });
 
     return () => unsubscribe();
@@ -164,8 +207,9 @@ const App: React.FC = () => {
               const localById = new Map(notesRef.current.map(n => [n.id, n]));
               const newerFromCloud = allNotes.filter(n => {
                   const local = localById.get(n.id);
-                  // 같은 시각이면(변경 없음) 이 기기 것을 유지 — 동기화 전인 태그·퀴즈 기록 등을 덮지 않도록
-                  return !local || (n.updatedAt || 0) > (local.updatedAt || 0);
+                  // 같은 시각이면(내용 변경 없음) 이 기기 것을 유지 — 동기화 전인 태그·퀴즈 기록 등을 덮지 않도록.
+                  // 단, 복습 일정·오답·점검 결과처럼 내용 밖의 정보는 다른 기기에서 더 최근에 바뀌었으면 가져옴.
+                  return !local || isNewerCopy(n, local);
               });
               if (newerFromCloud.length > 0) await saveAllNotesToDB(newerFromCloud);
               const lightweight = newerFromCloud.map(({ images, ...rest }) => rest as Note);
@@ -174,7 +218,7 @@ const App: React.FC = () => {
                   prev.forEach(n => noteMap.set(n.id, n));
                   lightweight.forEach(n => {
                       const cur = noteMap.get(n.id);
-                      if (!cur || (n.updatedAt || 0) > (cur.updatedAt || 0)) {
+                      if (!cur || isNewerCopy(n, cur)) {
                           // 지금 열려 있는 메모처럼 사진까지 들고 있던 항목은 사진을 잃지 않도록 유지
                           noteMap.set(n.id, cur?.images?.length ? { ...n, images: cur.images } : n);
                       }
@@ -218,7 +262,8 @@ const App: React.FC = () => {
       // 로컬에 적게 로드된 상태(예: 최근 30개)로는 관련 메모 풀이 너무 작아 사실상
       // 항상 무작위 폴백만 타게 됩니다. 화면을 열자마자 전체 메모를 불러와 임베딩
       // 백필 대상과 클러스터링 후보 풀을 넓혀줍니다.
-      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES) triggerAutoFetchAllOnce();
+      // 퀴즈(오늘 복습 수·오답 노트)와 오래된 메모 점검도 전체 메모 기준이라 함께 불러옴
+      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES || view === ViewMode.QUIZ || view === ViewMode.GUIDELINE_CHECK) triggerAutoFetchAllOnce();
   }, [view]);
 
   // "내 메모에 물어보기" 화면에서 인용된 메모를 열었다가 뒤로 가면, 목록이 아니라 방금 보던
@@ -234,10 +279,14 @@ const App: React.FC = () => {
   }, [tagFilter]);
   const [askViewMounted, setAskViewMounted] = useState(false);
   const [returnToAsk, setReturnToAsk] = useState(false);
+  // 퀴즈(오답 노트)·오래된 메모 점검 화면에서 메모를 열었으면, 뒤로 가기 시 그 화면으로 돌아감
+  const [detailReturnView, setDetailReturnView] = useState<ViewMode | null>(null);
   useEffect(() => {
       if (view === ViewMode.ASK_NOTES) setAskViewMounted(true);
       // (답변 화면 → 메모 → 편집 → 저장 → 뒤로 에서도 답변 화면으로 돌아오도록 EDIT도 유지)
       if (view !== ViewMode.DETAIL && view !== ViewMode.ASK_NOTES && view !== ViewMode.EDIT) setReturnToAsk(false);
+      if (view !== ViewMode.DETAIL && view !== ViewMode.EDIT && view !== detailReturnView) setDetailReturnView(null);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
   // --- Voyage 임베딩: 의미 기반 검색 지원 ---
@@ -265,23 +314,16 @@ const App: React.FC = () => {
           // 저장하면 Firestore/IndexedDB에 있는 원본 이미지를 통째로 덮어써 지워버리게
           // 되므로, 저장 직전에 항상 이미지를 포함한 완전한 노트를 다시 읽어옵니다.
           // (그 사이 삭제된 노트는 undefined가 반환되므로 건너뛰고, 되살리지 않습니다.)
-          const fullNotes = await Promise.all(targets.map(t => getNoteFromDB(t.id)));
-          const updated = fullNotes
-              .map((full, i): Note | null => full ? { ...full, embedding: vectors[i], embeddingUpdatedAt: Math.max(now, full.updatedAt || 0) } : null)
-              .filter((n): n is Note => n !== null);
-
-          for (const n of updated) {
-              await saveNoteToDB(n);
-              saveNoteToFirestore(n);
+          // 메모별 저장 순서(patchNoteMeta 대기열)를 따라, 최신 메모 위에 임베딩 필드만 얹고
+          // 클라우드에도 그 필드만 보냅니다. 화면에도 임베딩 필드만 반영(사진을 메모리로 다시 올리지 않음).
+          // 계산하는 동안 내용이 또 바뀌었으면 이번 결과는 버립니다(다음 백필 때 새 내용으로 다시 계산).
+          for (let i = 0; i < targets.length; i++) {
+              const t = targets[i];
+              await patchNoteMeta(t.id, latest => {
+                  if ((latest.updatedAt || 0) > (t.updatedAt || 0)) return null;
+                  return { embedding: vectors[i], embeddingUpdatedAt: Math.max(now, latest.updatedAt || 0) };
+              }, { touchMeta: false });
           }
-
-          // 화면(notes state)에는 기존 형태(가벼운 버전이면 그대로) 위에 embedding
-          // 관련 필드만 얹어줍니다 — 이미지를 다시 메모리로 불러오지 않기 위함입니다.
-          const updatedById = new Map(updated.map(n => [n.id, n]));
-          setNotes(prev => prev.map(n => {
-              const match = updatedById.get(n.id);
-              return match ? { ...n, embedding: match.embedding, embeddingUpdatedAt: match.embeddingUpdatedAt } : n;
-          }));
           return true;
       } catch (e) {
           console.error("임베딩 계산/저장 실패 (검색 기능에만 영향, 메모 자체는 안전합니다):", e);
@@ -356,18 +398,9 @@ const App: React.FC = () => {
           candidates = currentNotes;
       }
       
-      // WEIGHTED SELECTION LOGIC based on Mastery Count
-      // The higher the mastery count, the lower the probability of being selected.
-      // Weight = 1 / (masteryCount + 1)
-      // Count 0 -> Weight 1
-      // Count 1 -> Weight 0.5
-      // Count 4 -> Weight 0.2
-      const itemsWithWeights = candidates.map(note => {
-          const mastery = note.quizMasteryCount || 0;
-          // Add a small epsilon or use (mastery + 1) to avoid division by zero
-          const weight = 1 / (mastery + 1);
-          return { note, weight };
-      });
+      // 가중치 선택: 복습일이 된 메모 > 아직 안 푼 메모 > 복습일이 남은 메모 (services/studyUtils.ts)
+      const now = Date.now();
+      const itemsWithWeights = candidates.map(note => ({ note, weight: quizPickWeight(note, now) }));
 
       // Sum of all weights
       const totalWeight = itemsWithWeights.reduce((sum, item) => sum + item.weight, 0);
@@ -384,41 +417,68 @@ const App: React.FC = () => {
       return candidates[Math.floor(Math.random() * candidates.length)];
   };
 
+  // 퀴즈 세션 번호: 이전 세션에서 늦게 도착한 문제/오류가 새 세션에 섞이지 않게 합니다.
+  const quizSessionRef = useRef(0);
+  // "오늘의 복습" 세션에서 이미 문제를 만든 메모 (같은 메모로 두 번 내지 않도록)
+  const reviewUsedIdsRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     // Background Quiz Generation Logic
     if (!quizState.isActive || !quizState.mode) return;
+    // 오답 다시 풀기는 저장된 문제만 쓰고, 복습 대상이 바닥나면 더 만들지 않음
+    if (quizState.source === 'WRONG' || quizState.noMoreQuestions) return;
 
     const BUFFER_SIZE = quizState.mode === 'QUICK_OX' ? 2 : 1;
     if (quizState.questionQueue.length >= BUFFER_SIZE || quizState.isGenerating || quizState.error) return;
 
+    const session = quizSessionRef.current;
+    const setIfCurrent = (fn: (prev: QuizState) => QuizState) =>
+        setQuizState(prev => (quizSessionRef.current === session ? fn(prev) : prev));
+
     const fetchNext = async () => {
         if (quizState.isGenerating) return;
-        setQuizState(prev => ({ ...prev, isGenerating: true, error: null }));
+        setIfCurrent(prev => ({ ...prev, isGenerating: true, error: null }));
         
         try {
             // Small delay to allow UI to settle on mobile and ensure environment is ready
             await new Promise(resolve => setTimeout(resolve, 300));
+            // 그 사이 세션이 끝났거나 새로 시작됐으면 이 요청은 버림(복습 대상 소모·유료 호출 방지)
+            if (quizSessionRef.current !== session) return;
             
             let randomContextNotes: Note[] = [];
 
-            // PRIORITY 1: Pick from LOCAL notes first for better randomness
-            if (notesRef.current.length > 0) {
-                // Try to fill 3 slots with local notes
-                for(let i=0; i<3; i++) {
-                    const currentExclude = [...recentRandomIds, ...randomContextNotes.map(n => n.id)];
-                    const localN = pickLocalRandomNote(notesRef.current, currentExclude);
-                    if (localN) randomContextNotes.push(localN);
+            if (quizState.source === 'REVIEW') {
+                // 오늘의 복습: 복습일이 된 메모를 가장 오래 밀린 것부터 한 개씩 (메모 1개 = 문제 1개)
+                const now = Date.now();
+                const due = notesRef.current
+                    .filter(n => isReviewDue(n, now) && !reviewUsedIdsRef.current.has(n.id))
+                    .sort((a, b) => (a.reviewDueAt || 0) - (b.reviewDueAt || 0));
+                if (due.length === 0) {
+                    setIfCurrent(prev => ({ ...prev, isGenerating: false, noMoreQuestions: true }));
+                    return;
+                }
+                reviewUsedIdsRef.current.add(due[0].id);
+                randomContextNotes = [due[0]];
+            } else {
+                // PRIORITY 1: Pick from LOCAL notes first for better randomness
+                if (notesRef.current.length > 0) {
+                    // Try to fill 3 slots with local notes
+                    for(let i=0; i<3; i++) {
+                        const currentExclude = [...recentRandomIds, ...randomContextNotes.map(n => n.id)];
+                        const localN = pickLocalRandomNote(notesRef.current, currentExclude);
+                        if (localN && !randomContextNotes.some(n => n.id === localN.id)) randomContextNotes.push(localN);
+                    }
+                }
+
+                // PRIORITY 2: If local notes are insufficient (e.g., empty app), try Cloud
+                if (randomContextNotes.length === 0) {
+                     const cloudNotes = await fetchRandomNotesBatch(3, recentRandomIds, notesRef.current);
+                     randomContextNotes = cloudNotes;
                 }
             }
 
-            // PRIORITY 2: If local notes are insufficient (e.g., empty app), try Cloud
             if (randomContextNotes.length === 0) {
-                 const cloudNotes = await fetchRandomNotesBatch(3, recentRandomIds, notesRef.current);
-                 randomContextNotes = cloudNotes;
-            }
-
-            if (randomContextNotes.length === 0) {
-                 setQuizState(prev => ({ 
+                 setIfCurrent(prev => ({ 
                      ...prev, 
                      isGenerating: false, 
                      error: notesRef.current.length === 0 ? "작성된 메모가 없습니다. 먼저 메모를 작성해주세요." : "문제를 생성할 메모를 찾지 못했습니다." 
@@ -449,11 +509,13 @@ const App: React.FC = () => {
             }
 
             // Update history buffer - INCREASED SIZE TO 50
-            setRecentRandomIds(prev => {
-                const newIds = hydratedNotes.map(n => n.id);
-                const updated = [...newIds, ...prev];
-                return updated.slice(0, 50); // Keep history of last 50 items to reduce repetition
-            });
+            if (quizState.source !== 'REVIEW') {
+                setRecentRandomIds(prev => {
+                    const newIds = hydratedNotes.map(n => n.id);
+                    const updated = [...newIds, ...prev];
+                    return updated.slice(0, 50); // Keep history of last 50 items to reduce repetition
+                });
+            }
 
             let question: QuizQuestion | null = null;
             if (quizState.mode === 'DETAILED') {
@@ -463,7 +525,7 @@ const App: React.FC = () => {
             }
 
             if (question) {
-                setQuizState(prev => {
+                setIfCurrent(prev => {
                     if (!prev.isActive || prev.mode !== quizState.mode) return prev;
                     if (!prev.currentQuestion) {
                         return {
@@ -481,7 +543,7 @@ const App: React.FC = () => {
                     };
                 });
             } else {
-                 setQuizState(prev => ({ ...prev, isGenerating: false, error: "AI가 문제를 생성하는 데 실패했습니다. 다시 시도해주세요." })); 
+                 setIfCurrent(prev => ({ ...prev, isGenerating: false, error: "AI가 문제를 생성하는 데 실패했습니다. 다시 시도해주세요." })); 
             }
 
         } catch (e: any) {
@@ -499,19 +561,23 @@ const App: React.FC = () => {
                 }
             }
             
-            setQuizState(prev => ({ ...prev, isGenerating: false, error: errorMsg }));
+            setIfCurrent(prev => ({ ...prev, isGenerating: false, error: errorMsg }));
         }
     };
 
     fetchNext();
 
-  }, [quizState.isActive, quizState.mode, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
+  }, [quizState.isActive, quizState.mode, quizState.source, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
 
 
-  const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage) => {
+  const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' = 'RANDOM') => {
+      quizSessionRef.current += 1;
+      reviewUsedIdsRef.current = new Set();
       setQuizState({
           isActive: true,
           mode: mode,
+          source,
+          noMoreQuestions: false,
           language: language,
           isGenerating: false,
           questionQueue: [],
@@ -521,46 +587,58 @@ const App: React.FC = () => {
       });
   }, []);
 
-  const handleNextQuestion = async (wasCorrect: boolean) => {
-      // Logic: Update mastery count for related notes based on answer correctness
-      if (quizState.currentQuestion?.relatedNoteIds) {
-          const idsToUpdate = quizState.currentQuestion.relatedNoteIds;
-          
-          // Update Local State
-          setNotes(prevNotes => {
-              return prevNotes.map(note => {
-                  if (idsToUpdate.includes(note.id)) {
-                      // If Correct: Increment
-                      // If Wrong: Reset to 0 (Prioritize for review)
-                      const newCount = wasCorrect ? (note.quizMasteryCount || 0) + 1 : 0;
-                      return {
-                          ...note,
-                          quizMasteryCount: newCount
-                      };
-                  }
-                  return note;
-              });
-          });
+  // 오답 노트 다시 풀기: 저장된 문제를 그대로 다시 냄 (AI 호출 없음)
+  const handleStartWrongReview = (entries: WrongAnswerWithNote[]) => {
+      if (entries.length === 0) return;
+      quizSessionRef.current += 1;
+      const questions = entries.map(questionFromWrongAnswer);
+      setQuizState({
+          isActive: true,
+          mode: questions[0].type === 'OX' ? 'QUICK_OX' : 'DETAILED',
+          source: 'WRONG',
+          noMoreQuestions: true,
+          language: entries[0].language || 'Korean',
+          isGenerating: false,
+          questionQueue: questions.slice(1),
+          currentQuestion: questions[0],
+          error: null,
+          stats: { correct: 0, total: 0 }
+      });
+  };
 
-          // Update DB & Firestore in background
-          for (const id of idsToUpdate) {
-              try {
-                  const note = await getNoteFromDB(id);
-                  if (note) {
-                      const newCount = wasCorrect ? (note.quizMasteryCount || 0) + 1 : 0;
-                      const updatedNote = {
-                          ...note,
-                          quizMasteryCount: newCount
-                      };
-                      await saveNoteToDB(updatedNote);
-                      saveNoteToFirestore(updatedNote);
-                  }
-              } catch (e) {
-                  console.error("Failed to update mastery count", e);
-              }
-          }
-      }
+  // 메모의 "내용 밖 정보"(복습 일정·오답·점검 결과)만 바꿀 때 쓰는 저장 함수.
+  // - 저장 직전에 최신 메모(사진 포함)를 다시 읽어 그 위에 바뀐 필드만 얹습니다.
+  // - 같은 메모에 대한 변경은 순서대로 처리해서 서로 덮어쓰지 않게 합니다.
+  // - updatedAt은 건드리지 않아 목록 순서·요약 상태가 바뀌지 않고, 임베딩 재계산도 없습니다.
+  const metaQueueRef = useRef<Map<string, Promise<unknown>>>(new Map());
+  // - 클라우드에는 바뀐 필드만 보냅니다(다른 기기에서 바뀐 나머지 필드를 덮지 않도록).
+  // - opts.touchMeta=false: 임베딩처럼 기기 간 병합 기준(metaUpdatedAt)을 바꾸지 않을 값.
+  const patchNoteMeta = (id: string, makePatch: (latest: Note) => Partial<Note> | null, opts?: { touchMeta?: boolean }): Promise<Note | null> => {
+      const prev = metaQueueRef.current.get(id) || Promise.resolve();
+      const run: Promise<Note | null> = prev.catch(() => undefined).then(async () => {
+          const latest = await getNoteFromDB(id).catch(() => undefined);
+          if (!latest) return null;
+          const basePatch = makePatch(latest);
+          if (!basePatch) return null;
+          const patch: Partial<Note> = opts?.touchMeta === false ? basePatch : { ...basePatch, metaUpdatedAt: Date.now() };
+          const updated: Note = { ...latest, ...patch };
+          await saveNoteToDB(updated);
+          updateNoteFieldsInFirestore(id, patch);
+          setNotes(p => p.map(n => n.id === id ? { ...n, ...patch } : n));
+          return updated;
+      });
+      metaQueueRef.current.set(id, run);
+      const cleanup = () => { if (metaQueueRef.current.get(id) === run) metaQueueRef.current.delete(id); };
+      run.then(cleanup, cleanup);
+      return run;
+  };
 
+  const handleNextQuestion = async (wasCorrect: boolean, chosenIndex: number | null) => {
+      const q = quizState.currentQuestion;
+      const source = quizState.source;
+      const language = quizState.language;
+
+      // 화면은 바로 다음 문제로 (저장은 뒤에서)
       setQuizState(prev => {
           const nextQ = prev.questionQueue.length > 0 ? prev.questionQueue[0] : null;
           const remainingQueue = prev.questionQueue.slice(1);
@@ -575,11 +653,100 @@ const App: React.FC = () => {
               }
           };
       });
+
+      if (!q) return;
+      const now = Date.now();
+      try {
+          if (source === 'WRONG' || q.replayOfNoteId) {
+              // 오답 다시 풀기: 맞히면 오답 노트에서 빼고, 또 틀리면 횟수만 올림 (복습 일정은 그대로)
+              const holderId = q.replayOfNoteId;
+              if (holderId) {
+                  await patchNoteMeta(holderId, latest => ({
+                      wrongAnswers: wasCorrect
+                          ? removeWrongAnswer(latest.wrongAnswers, q.id)
+                          : upsertWrongAnswer(latest.wrongAnswers, wrongAnswerFromQuestion(q, chosenIndex ?? -1, now, language))
+                  }));
+              }
+              return;
+          }
+
+          // 새 문제: 출제에 쓰인 메모의 다음 복습일을 잡고, 틀렸으면 오답 노트에 저장(첫 메모에 보관)
+          const ids = q.relatedNoteIds || [];
+          for (let i = 0; i < ids.length; i++) {
+              await patchNoteMeta(ids[i], latest => {
+                  const patch: Partial<Note> = {
+                      quizMasteryCount: wasCorrect ? (latest.quizMasteryCount || 0) + 1 : 0,
+                      ...scheduleNextReview(latest.reviewIntervalDays, wasCorrect, now)
+                  };
+                  if (!wasCorrect && i === 0) {
+                      patch.wrongAnswers = upsertWrongAnswer(latest.wrongAnswers, wrongAnswerFromQuestion(q, chosenIndex ?? -1, now, language));
+                  }
+                  return patch;
+              });
+          }
+      } catch (e) {
+          console.error("Failed to save review result", e);
+      }
+  };
+
+  // 문제 생성 실패 후 "다시 시도": 세션(점수·복습 진행)은 유지하고 오류만 지워서 다음 문제를 만듦.
+  // 오늘의 복습에서는 실패한 메모를 건너뛰고 다음 메모로 넘어갑니다.
+  const handleRetryQuiz = () => {
+      setQuizState(prev => ({ ...prev, error: null, isGenerating: false }));
+  };
+
+  const handleDeleteWrongAnswer = (noteId: string, questionId: string) => {
+      patchNoteMeta(noteId, latest => ({ wrongAnswers: removeWrongAnswer(latest.wrongAnswers, questionId) }))
+          .catch(e => { console.error(e); alert('오답 삭제에 실패했습니다.'); });
   };
 
   const handleStopQuiz = () => {
-      setQuizState(prev => ({ ...prev, isActive: false, mode: null, currentQuestion: null, questionQueue: [] }));
+      quizSessionRef.current += 1;
+      setQuizState(prev => ({ ...prev, isActive: false, mode: null, currentQuestion: null, questionQueue: [], isGenerating: false, error: null, noMoreQuestions: false }));
       setView(ViewMode.LIST);
+  };
+
+  // 세션만 끝내고 퀴즈 첫 화면(오늘의 복습·오답 노트)에 머무름
+  const handleEndQuizSession = () => {
+      quizSessionRef.current += 1;
+      setQuizState(prev => ({ ...prev, isActive: false, mode: null, currentQuestion: null, questionQueue: [], isGenerating: false, error: null, noMoreQuestions: false }));
+  };
+
+  // 오늘 복습할 메모 수 (자정이 지나면 갱신되도록 몇 분마다 시각을 새로 읽음)
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+      const t = setInterval(() => setNowTick(Date.now()), 5 * 60 * 1000);
+      const onVisible = () => { if (document.visibilityState === 'visible') setNowTick(Date.now()); };
+      document.addEventListener('visibilitychange', onVisible);
+      return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
+  const reviewDueCount = React.useMemo(() => countDueNotes(notes, nowTick), [notes, nowTick]);
+
+  // --- 오래된 메모 가이드라인 점검 (화면을 벗어나도 계속 진행되도록 여기서 관리) ---
+  const [guidelineCheckingIds, setGuidelineCheckingIds] = useState<string[]>([]);
+  // 점검 화면의 필터 (메모를 열었다 돌아와도 유지)
+  const [guidelineFilter, setGuidelineFilter] = useState<'todo' | 'changed' | 'all'>('todo');
+  const guidelineCheckingRef = useRef<Set<string>>(new Set());
+  const handleCheckGuideline = async (id: string) => {
+      if (guidelineCheckingRef.current.has(id)) return;
+      guidelineCheckingRef.current.add(id);
+      setGuidelineCheckingIds(Array.from(guidelineCheckingRef.current));
+      try {
+          const full = (await getNoteFromDB(id).catch(() => undefined)) || notesRef.current.find(n => n.id === id);
+          if (!full) throw new Error('메모를 찾을 수 없습니다.');
+          const result = await checkNoteAgainstGuidelines(full);
+          const saved = await patchNoteMeta(id, () => ({ guidelineCheck: result }));
+          if (!saved) throw new Error('결과를 저장하지 못했습니다(메모가 삭제되었을 수 있음).');
+      } catch (e: any) {
+          console.error("Guideline check failed", e);
+          alert(`가이드라인 점검 중 오류가 발생했습니다: ${e?.message || '알 수 없는 오류'}`);
+      } finally {
+          guidelineCheckingRef.current.delete(id);
+          setGuidelineCheckingIds(Array.from(guidelineCheckingRef.current));
+      }
+  };
+  const handleClearGuidelineCheck = (id: string) => {
+      patchNoteMeta(id, () => ({ guidelineCheck: undefined })).catch(console.error);
   };
 
 
@@ -880,12 +1047,8 @@ const App: React.FC = () => {
   // 분류 태그만 바꿀 때: 저장·동기화만 하고 임베딩/사진 읽기 같은 유료 호출은 하지 않음
   const handleSetNoteTag = async (id: string, tag: Note['tag']) => {
     try {
-        const latest = (await getNoteFromDB(id)) || notes.find(n => n.id === id);
-        if (!latest) return;
-        const updated: Note = { ...latest, tag };
-        await saveNoteToDB(updated);
-        saveNoteToFirestore(updated);
-        setNotes(prev => prev.map(n => n.id === id ? { ...n, tag } : n));
+        const saved = await patchNoteMeta(id, () => ({ tag }));
+        if (!saved) throw new Error('note not found');
     } catch (e) {
         console.error("Tag update failed", e);
         alert("분류 변경 저장에 실패했습니다.");
@@ -977,7 +1140,11 @@ const App: React.FC = () => {
                  </span>
             )}
             AI 퀴즈 복습
-            {quizState.questionQueue.length > 0 && (
+            {reviewDueCount > 0 ? (
+                <span className="ml-auto shrink-0 bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full" title="오늘 복습할 메모">
+                    오늘 {reviewDueCount}
+                </span>
+            ) : quizState.questionQueue.length > 0 && (
                 <span className="ml-auto shrink-0 bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded-full">
                     {quizState.questionQueue.length}
                 </span>
@@ -996,6 +1163,13 @@ const App: React.FC = () => {
                  <MessageSquareText className="w-3.5 h-3.5" />
              </span>
              내 메모에 물어보기
+          </button>
+
+          <button onClick={() => { setView(ViewMode.GUIDELINE_CHECK); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.GUIDELINE_CHECK ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-emerald-50/60 hover:text-emerald-700'}`}>
+             <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-emerald-100 text-emerald-700">
+                 {guidelineCheckingIds.length > 0 ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+             </span>
+             오래된 메모 점검
           </button>
         </nav>
 
@@ -1085,18 +1259,23 @@ const App: React.FC = () => {
                         tagFilter={tagFilter}
                         onTagFilterChange={setTagFilter}
                         isFetchingAll={isFetchingAll}
+                        reviewDueCount={reviewDueCount}
+                        onOpenReview={() => setView(ViewMode.QUIZ)}
                     />
                 </div>
                 {view === ViewMode.DETAIL && activeNote && (
                     <NoteDetail 
                         note={activeNote} 
                         allNotes={notes} 
-                        onBack={() => setView(returnToAsk ? ViewMode.ASK_NOTES : ViewMode.LIST)} 
+                        onBack={() => setView(returnToAsk ? ViewMode.ASK_NOTES : (detailReturnView || ViewMode.LIST))} 
                         onDelete={handleDeleteNote} 
                         onSelectNote={handleFetchAndSelectNote} 
                         onEdit={() => { setView(ViewMode.EDIT); }} 
                         onUpdateNote={handleUpdateNote} 
                         onSetTag={handleSetNoteTag}
+                        onCheckGuideline={handleCheckGuideline}
+                        isCheckingGuideline={guidelineCheckingIds.includes(activeNote.id)}
+                        onClearGuidelineCheck={handleClearGuidelineCheck}
                     />
                 )}
                 {view === ViewMode.QUIZ && (
@@ -1106,13 +1285,32 @@ const App: React.FC = () => {
                         onStart={handleStartQuiz} 
                         onNext={handleNextQuestion}
                         onStop={handleStopQuiz}
+                        onEndSession={handleEndQuizSession}
+                        onRetry={handleRetryQuiz}
                         onBack={() => { setView(ViewMode.LIST); }} 
+                        reviewDueCount={reviewDueCount}
+                        onStartWrongReview={handleStartWrongReview}
+                        onDeleteWrongAnswer={handleDeleteWrongAnswer}
+                        onOpenNote={(id) => { setDetailReturnView(ViewMode.QUIZ); handleFetchAndSelectNote(id); }}
+                        isFetchingAll={isFetchingAll}
                     />
                 )}
                  {view === ViewMode.STUDY_GUIDE && (
                     <StudyGuideView
                         notes={notes}
                         onBack={() => setView(ViewMode.LIST)}
+                    />
+                )}
+                {view === ViewMode.GUIDELINE_CHECK && (
+                    <GuidelineCheckView
+                        notes={notes}
+                        checkingIds={guidelineCheckingIds}
+                        filter={guidelineFilter}
+                        onFilterChange={setGuidelineFilter}
+                        onCheck={handleCheckGuideline}
+                        onOpenNote={(id) => { setDetailReturnView(ViewMode.GUIDELINE_CHECK); handleFetchAndSelectNote(id); }}
+                        onBack={() => setView(ViewMode.LIST)}
+                        isFetchingAll={isFetchingAll}
                     />
                 )}
                 {(askViewMounted || view === ViewMode.ASK_NOTES) && (
