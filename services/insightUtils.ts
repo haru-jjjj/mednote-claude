@@ -188,3 +188,114 @@ export const buildCaseLogMarkdown = (
     lines.push('> 건수는 AI가 각 메모에서 뽑은 시술·진단 이름을 앱이 메모 단위로 센 값입니다(같은 환자 메모가 여러 개면 여러 번 셉니다). 메모에 적지 않은 시술은 빠지고, 같은 시술이 다른 이름으로 적혀 있으면 따로 셀 수 있으니 공식 기록은 원본을 확인하세요.');
     return lines.join('\n');
 };
+
+// ---------------------------------------------------------------------------
+// AI 요약을 메모 내용으로 옮기기: 요약을 위에, 원래 메모는 접을 수 있는 블록으로 아래에 보관
+// - 이미 한 번 옮긴 메모면 원래 메모 블록은 그대로 두고 위쪽 요약만 바꿈(중첩 방지)
+// ---------------------------------------------------------------------------
+export const ORIGINAL_MARKER = '<!-- medinote:original -->';
+
+export const splitMovedContent = (content: string): { top: string; originalBlock: string | null } => {
+    const i = (content || '').indexOf(ORIGINAL_MARKER);
+    if (i < 0) return { top: content || '', originalBlock: null };
+    return { top: content.slice(0, i).trimEnd(), originalBlock: content.slice(i) };
+};
+
+const PREV_START = '<!-- medinote:prev -->';
+const PREV_END = '<!-- /medinote:prev -->';
+
+// 링크 주소 안의 _ $ ^ ~ 공백 괄호가 의학 표기 변환(아래첨자 등)이나 마크다운에 깨지지 않도록 인코딩
+const safeUri = (uri: string) => uri.replace(/[_$^~ ()]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+
+// AI 요약은 원래 "줄바꿈 무시" 방식으로 보여주던 글이라, 메모 본문(줄바꿈 그대로 표시)에 넣기 전에
+// 문단 중간의 단순 줄바꿈만 이어 붙임 (목록·표·제목·인용·코드 블록 줄은 그대로)
+export const joinSoftBreaks = (md: string): string =>
+    (md || '').split(/(```[\s\S]*?```)/g).map((part, i) => i % 2 === 1 ? part :
+        part.replace(/([^\n])\n(?!\n|[ \t]*(?:[-*+][ \t]|\d+[.)][ \t]|#|\||>|<))/g, '$1 ')
+    ).join('');
+
+export const buildContentWithSummary = (
+    content: string,
+    summary: string,
+    sources: { title: string; uri: string }[],
+    label: string
+): string => {
+    const src = (sources || []).filter(s => s && s.uri)
+        .map(s => `- [${(s.title || s.uri).replace(/[[\]]/g, '')}](${safeUri(s.uri)})`).join('\n');
+    const top = [joinSoftBreaks(summary.trim()), src ? `**출처**\n\n${src}` : ''].filter(Boolean).join('\n\n');
+    const { top: prevTop, originalBlock } = splitMovedContent(content);
+    let block: string;
+    if (originalBlock) {
+        // 다시 옮기는 경우:
+        // - 접힌 블록 아래에 새로 적은 기록은 새 요약이 반영하므로 접힌 블록 안으로 합침
+        // - 지금 맨 위에 있던 요약(직접 덧붙인 내용 포함)은 버리지 않고 접힌 블록 안 "이전에 옮긴 요약"으로 보관
+        let kept = originalBlock;
+        const end = kept.lastIndexOf('</details>');
+        const trailing = end >= 0 ? kept.slice(end + '</details>'.length).trim() : '';
+        let inner = end >= 0 ? kept.slice(0, end).trimEnd() : kept.trimEnd();
+        if (trailing) inner += `\n\n${trailing}`;
+        if (prevTop.trim()) inner += `\n\n${PREV_START}\n**이전에 옮긴 요약 (${new Date().toLocaleDateString()}에 새 요약으로 교체)**\n\n${prevTop.trim()}\n${PREV_END}`;
+        inner = inner.replace(/<summary>[^<]*<\/summary>/, `<summary>${label}</summary>`);
+        block = end >= 0 ? `${inner}\n\n</details>` : inner;
+    } else {
+        block = [
+            ORIGINAL_MARKER,
+            '<details>',
+            `<summary>${label}</summary>`,
+            '',
+            (content || '').trim(),
+            '',
+            '</details>'
+        ].join('\n');
+    }
+    return `${top}\n\n${block}\n`;
+};
+
+// AI 분석(요약·저널클럽·가이드라인 점검)에 보낼 내용: 요약을 옮긴 메모면 위쪽 요약과 "이전 요약"은 빼고
+// 원래 기록만 (예전 결론이 다시 근거처럼 쓰이지 않도록)
+export const contentForAnalysis = (content: string): string => {
+    const { originalBlock } = splitMovedContent(content || '');
+    if (!originalBlock) return content || '';
+    return originalBlock
+        .replace(new RegExp(`${PREV_START}[\\s\\S]*?${PREV_END}`, 'g'), '')
+        .replace(ORIGINAL_MARKER, '')
+        .replace(/<summary>[^<]*<\/summary>/g, '')
+        .replace(/<\/?details>/g, '')
+        .trim();
+};
+
+// ---------------------------------------------------------------------------
+// 환자 팔로업
+// ---------------------------------------------------------------------------
+export const FOLLOWUP_INTERVALS = [3, 7, 14, 30];
+export const DEFAULT_FOLLOWUP_DAYS = 7;
+
+export type FollowUpStatus = 'due' | 'updated' | 'ok';
+
+// due: 확인한 적 없음 / 다음 확인일이 됨 · updated: 확인 뒤 기록이 추가·수정됨 · ok: 그 외
+export const followUpStatus = (n: Note, now: number): FollowUpStatus => {
+    if (!n.followUpCheckedAt) return 'due';
+    if (typeof n.followUpDueAt === 'number' && n.followUpDueAt <= now) return 'due';
+    if ((n.updatedAt || 0) > n.followUpCheckedAt) return 'updated';
+    return 'ok';
+};
+
+// 케이스 분석 글: 요약 칸, 없으면 메모 내용으로 옮긴 요약(원래 메모 블록 앞부분)
+export const analysisTextOf = (n: Note): string => {
+    if (n.summary) return n.summary;
+    const { top, originalBlock } = splitMovedContent(n.content || '');
+    return originalBlock ? top : '';
+};
+
+// "### 추가 공부" 같은 섹션 본문만 꺼내기 (다음 ### 전까지)
+export const extractSection = (markdown: string, heading: string): string => {
+    const lines = (markdown || '').split('\n');
+    const start = lines.findIndex(l => /^#{2,4}\s*/.test(l) && l.replace(/^#{2,4}\s*/, '').trim().startsWith(heading));
+    if (start < 0) return '';
+    const out: string[] = [];
+    for (let i = start + 1; i < lines.length; i++) {
+        if (/^#{2,4}\s/.test(lines[i])) break;
+        out.push(lines[i]);
+    }
+    return out.join('\n').trim();
+};

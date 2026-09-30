@@ -54,6 +54,26 @@
         min-width: 7.5rem;
         vertical-align: top;
       }
+      /* AI 요약을 메모 내용으로 옮긴 뒤 아래에 남는 "원래 메모" 접기 블록 */
+      .prose details {
+        margin-top: 1.5em;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.75rem;
+        background: #f8fafc;
+        padding: 0.5rem 1rem;
+      }
+      .prose details > summary {
+        cursor: pointer;
+        font-size: 0.85em;
+        font-weight: 700;
+        color: #64748b;
+        padding: 0.25rem 0;
+      }
+      .prose details[open] > summary {
+        margin-bottom: 0.5rem;
+        border-bottom: 1px solid #e2e8f0;
+        padding-bottom: 0.5rem;
+      }
       /* Custom Scrollbar */
       ::-webkit-scrollbar {
         width: 8px;

@@ -7,6 +7,7 @@ import { marked } from 'marked';
 import { summarizeSingleNote, formatMedicalMarkdown, analyzeJournalArticle } from '../services/claudeService';
 import { looksLikePaper, isGuidelineCheckCandidate, noteAgeDays, formatAge } from '../services/studyUtils';
 import { cosineSimilarity } from '../services/voyageService';
+import { buildContentWithSummary, splitMovedContent, contentForAnalysis } from '../services/insightUtils';
 import { estimateDataRecordCount } from '../services/pasteUtils';
 import { getNoteFromDB } from '../services/storage';
 
@@ -177,7 +178,8 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
       }, 1500);
 
       try {
-          const result = await summarizeSingleNote(note);
+          // 요약을 메모 내용으로 옮긴 메모면, 예전 요약은 빼고 원래 기록만 보냄
+          const result = await summarizeSingleNote({ ...note, content: contentForAnalysis(note.content || '') });
           if (result) {
               // SAVE result to DB via onUpdateNote (Persistence)
               // 요약에는 수십 초가 걸릴 수 있어, 그 사이 바뀐 내용(태그 등)을 덮어쓰지 않도록
@@ -228,7 +230,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
       }, 4000);
       try {
           const full = (await getNoteFromDB(note.id).catch(() => undefined)) || note;
-          const result = await analyzeJournalArticle(full);
+          const result = await analyzeJournalArticle({ ...full, content: contentForAnalysis(full.content || '') });
           if (!result) {
               alert("저널클럽 분석을 만들지 못했습니다. 잠시 후 다시 시도해주세요.");
               return;
@@ -252,6 +254,36 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
       }
   };
   const isBusy = isSummarizing || isAnalyzingJournal;
+
+  // AI 요약을 메모 내용으로 옮기기: 요약이 메모 본문 맨 위로, 원래 메모는 접을 수 있는 블록으로 아래에 남음
+  const handleMoveSummaryToContent = async () => {
+      if (!note.summary || isBusy) return;
+      const already = !!splitMovedContent(note.content || '').originalBlock;
+      const msg = already
+          ? '메모 맨 위를 지금 요약으로 바꿀까요? 지금 맨 위에 있는 요약(직접 덧붙인 내용 포함)은 접힌 블록 안 "이전에 옮긴 요약"으로 보관되고, 원래 기록도 그대로 남습니다.'
+          : 'AI 요약을 메모 내용으로 저장할까요? 요약이 메모 맨 위에 들어가고, 원래 메모는 아래에 접힌 채로 남습니다.';
+      if (!window.confirm(msg)) return;
+      // 사진까지 포함된 전체 메모를 읽지 못하면 사진이 빠진 채 저장될 수 있어 중단
+      const latest = await getNoteFromDB(note.id).catch(() => undefined);
+      if (!latest) {
+          alert('메모를 불러오지 못해 저장하지 않았습니다. 잠시 후 다시 시도해주세요.');
+          return;
+      }
+      const now = Date.now();
+      const label = `원래 메모 보기 (${new Date(now).toLocaleDateString()} ${isJournalSummary ? '저널클럽 분석' : 'AI 요약'}으로 정리)`;
+      // 환자 팔로업에서 이미 확인한 상태였다면, 요약을 옮긴 것만으로 "새 기록"이 뜨지 않게 함
+      const wasUpToDate = !!latest.followUpCheckedAt && (latest.updatedAt || 0) <= latest.followUpCheckedAt;
+      onUpdateNote({
+          ...latest,
+          content: buildContentWithSummary(latest.content || '', latest.summary || note.summary, latest.sources || [], label),
+          summary: '',
+          sources: [],
+          summaryKind: undefined,
+          summarizedAt: now, // 이후 기록을 추가하면 "분석 뒤 기록 추가됨"으로 알 수 있게
+          updatedAt: now,
+          ...(wasUpToDate ? { followUpCheckedAt: now } : {})
+      });
+  };
 
   const handleDeleteSummary = async () => {
       if (window.confirm("AI 요약을 삭제하시겠습니까?")) {
@@ -658,6 +690,15 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                     ))}
                                 </div>
                             )}
+                            <div className="flex justify-end pt-3">
+                                <button
+                                    onClick={handleMoveSummaryToContent}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 text-xs font-bold transition-colors"
+                                    title="요약을 메모 본문 맨 위에 넣고, 원래 메모는 아래에 접어서 보관"
+                                >
+                                    <FileText className="w-3.5 h-3.5" /> 메모 내용으로 저장
+                                </button>
+                            </div>
                         </>
                     )}
                 </div>

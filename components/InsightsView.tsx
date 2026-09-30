@@ -1,20 +1,25 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Layers, Loader2, AlertTriangle, CalendarDays, Search, FileText, ClipboardList, EyeOff, Sparkles, Lightbulb } from 'lucide-react';
+import { ArrowLeft, Layers, Loader2, AlertTriangle, CalendarDays, Search, FileText, ClipboardList, EyeOff, Sparkles, Lightbulb, Users, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import { Note, Source } from '../types';
-import NoteResultCard from './NoteResultCard';
+import NoteResultCard, { renderLinkedMarkdown } from './NoteResultCard';
 import {
     generateWeeklyDigest, findCoverageGaps, buildDocumentationTemplate, extractCaseLogBatch, synthesizeNotes,
-    notesWithinContextBudget, CONTEXT_BUDGETS
+    notesWithinContextBudget, CONTEXT_BUDGETS, summarizeSingleNote
 } from '../services/claudeService';
+import { getNoteFromDB } from '../services/storage';
+import { contentForAnalysis } from '../services/insightUtils';
 import { hasVoyageApiKey } from '../services/voyageService';
 import { findRelatedNotes, hydrateNotes } from '../services/noteSearch';
-import { findSimilarNoteGroups, NoteGroup, notesInLastDays, buildCaseLogMarkdown, CaseExtract, DAY_MS } from '../services/insightUtils';
+import {
+    findSimilarNoteGroups, NoteGroup, notesInLastDays, buildCaseLogMarkdown, CaseExtract, DAY_MS,
+    followUpStatus, FollowUpStatus, analysisTextOf, extractSection, FOLLOWUP_INTERVALS, DEFAULT_FOLLOWUP_DAYS
+} from '../services/insightUtils';
 import { collectWrongAnswers } from '../services/studyUtils';
 import { estimateDataRecordCount } from '../services/pasteUtils';
 
 // ============================================================================
-// 메모 활용: 쌓인 메모를 다시 쓰는 도구 5가지
-//  1) 이번 주 돌아보기  2) 비슷한 메모 묶기  3) 빈 곳 찾기  4) 작성 템플릿  5) 케이스·시술 기록
+// 메모 활용: 쌓인 메모를 다시 쓰는 도구들
+//  이번 주 돌아보기 / 환자 팔로업 / 비슷한 메모 묶기 / 빈 곳 찾기 / 작성 템플릿 / 케이스·시술 기록
 // - 모든 AI 호출은 버튼을 눌렀을 때만 실행. 결과는 원할 때만 "새 메모로 저장".
 // - 탭을 바꾸거나 메모를 열었다 돌아와도 결과가 남아 있도록 탭을 숨기기만 함.
 // ============================================================================
@@ -26,12 +31,16 @@ interface Props {
     onBack: () => void;
     onSelectNote: (id: string) => void;
     onSaveNewNote: (note: Note) => Promise<void>;
+    onUpdateNote: (note: Note) => void; // 케이스 분석 갱신 저장용
+    onFollowUpCheck: (id: string, intervalDays: number) => void; // "확인함"
+    nowTick: number; // 몇 분마다 갱신되는 현재 시각 (자정이 지나면 "확인할 차례"가 바뀌도록)
 }
 
-type Tab = 'weekly' | 'similar' | 'gap' | 'template' | 'cases';
+type Tab = 'weekly' | 'patients' | 'similar' | 'gap' | 'template' | 'cases';
 
 const TABS: { key: Tab; label: string; icon: React.ReactNode }[] = [
     { key: 'weekly', label: '이번 주', icon: <CalendarDays className="w-3.5 h-3.5" /> },
+    { key: 'patients', label: '환자 팔로업', icon: <Users className="w-3.5 h-3.5" /> },
     { key: 'similar', label: '비슷한 메모 묶기', icon: <Layers className="w-3.5 h-3.5" /> },
     { key: 'gap', label: '빈 곳 찾기', icon: <Search className="w-3.5 h-3.5" /> },
     { key: 'template', label: '작성 템플릿', icon: <FileText className="w-3.5 h-3.5" /> },
@@ -178,6 +187,208 @@ const WeeklyTab: React.FC<Props> = ({ notes, reviewDueCount, onSelectNote, onSav
                     onSelectNote={onSelectNote}
                     onSaveNewNote={onSaveNewNote}
                 />
+            )}
+        </div>
+    );
+};
+
+// ---------------------------------------------------------------------------
+// 환자 팔로업: '환자' 메모를 주기적으로 열어 경과 확인 + 공부할 것 챙기기
+// - "확인함"을 누르면 정한 주기(3일~1달) 뒤에 다시 "확인할 차례"로 올라옴
+// - 확인한 뒤 기록이 추가·수정되면 "새 기록"으로 표시
+// - 케이스 분석(✨ 요약)의 "추가로 확인할 것 / 추가 공부"를 여기서 바로 보고, 모아볼 수 있음
+// ---------------------------------------------------------------------------
+type PatientFilter = 'due' | 'updated' | 'all';
+
+const daysAgo = (t: number, now: number) => {
+    const d = Math.floor((now - t) / DAY_MS);
+    return d <= 0 ? '오늘' : `${d}일 전`;
+};
+
+const MiniMarkdown: React.FC<{ markdown: string }> = ({ markdown }) => (
+    <div className="prose prose-sm prose-slate max-w-none text-slate-700 leading-relaxed break-words"
+        dangerouslySetInnerHTML={{ __html: renderLinkedMarkdown(markdown, 0) }} />
+);
+
+const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFollowUpCheck, nowTick }) => {
+    const now = Date.now();
+    const patients = useMemo(() => notes.filter(n => n.tag === 'patient'), [notes]);
+    const withStatus = useMemo(() => {
+        const t = Date.now();
+        return patients.map(n => ({ n, status: followUpStatus(n, t) as FollowUpStatus, analysis: analysisTextOf(n) }));
+        // nowTick: 화면이 숨겨진 채 자정을 넘겨도 상태가 갱신되도록
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [patients, nowTick]);
+    const counts = {
+        due: withStatus.filter(x => x.status === 'due').length,
+        updated: withStatus.filter(x => x.status === 'updated').length,
+        all: withStatus.length
+    };
+
+    const [filter, setFilter] = useState<PatientFilter>('due');
+    const [openId, setOpenId] = useState<string | null>(null);
+    const [showStudy, setShowStudy] = useState(false);
+    const [intervals, setIntervals] = useState<Record<string, number>>({});
+    const [analyzingIds, setAnalyzingIds] = useState<Set<string>>(new Set());
+    const [error, setError] = useState<string | null>(null);
+
+    const list = useMemo(() => {
+        const rank: Record<FollowUpStatus, number> = { due: 0, updated: 1, ok: 2 };
+        const base = filter === 'all' ? withStatus : withStatus.filter(x => x.status === filter);
+        return [...base].sort((a, b) => {
+            if (rank[a.status] !== rank[b.status]) return rank[a.status] - rank[b.status];
+            // 오래 확인 안 한 환자부터 (확인한 적 없으면 가장 먼저)
+            return (a.n.followUpCheckedAt || 0) - (b.n.followUpCheckedAt || 0) || (b.n.updatedAt || 0) - (a.n.updatedAt || 0);
+        });
+    }, [withStatus, filter]);
+
+    // 모든 환자 메모의 "추가 공부"를 한곳에 (무료, 이미 만든 케이스 분석에서 꺼냄)
+    const studyItems = useMemo(() => withStatus
+        .map(x => ({ n: x.n, text: extractSection(x.analysis, '추가 공부') }))
+        .filter(x => x.text), [withStatus]);
+
+    const handleAnalyze = async (n: Note) => {
+        if (analyzingIds.has(n.id)) return;
+        setAnalyzingIds(prev => new Set(prev).add(n.id));
+        setError(null);
+        try {
+            const full = (await getNoteFromDB(n.id).catch(() => undefined)) || n;
+            const result = await summarizeSingleNote({ ...full, content: contentForAnalysis(full.content || '') });
+            if (!result) throw new Error('케이스 분석을 만들지 못했습니다.');
+            const latest = (await getNoteFromDB(n.id).catch(() => undefined)) || full;
+            onUpdateNote({ ...latest, summary: result.summary, sources: result.sources, summarizedAt: Date.now(), summaryKind: undefined, isProcessed: true });
+            setOpenId(n.id);
+        } catch (e: any) {
+            setError(e?.message || '케이스 분석 중 오류가 발생했습니다.');
+        } finally {
+            setAnalyzingIds(prev => { const next = new Set(prev); next.delete(n.id); return next; });
+        }
+    };
+
+    const chip = (f: PatientFilter, label: string, count: number, active: string) => (
+        <button key={f} onClick={() => setFilter(f)}
+            className={`px-3 py-1 rounded-full text-xs font-bold border whitespace-nowrap ${filter === f ? active : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'}`}>
+            {label} {count}
+        </button>
+    );
+
+    if (patients.length === 0) {
+        return (
+            <Intro>
+                아직 '환자'로 분류한 메모가 없어요. 메모 화면 날짜 옆의 분류에서 <b>환자</b>를 누르면 여기에 모여, 주기적으로 경과를 확인하고 공부할 것을 챙길 수 있습니다.
+            </Intro>
+        );
+    }
+
+    return (
+        <div className="space-y-4">
+            <Intro cost="목록·확인 기록·공부 목록은 무료. 케이스 분석(갱신)은 누를 때만, 1회 약 50~150원.">
+                '환자' 메모를 주기적으로 열어 경과를 확인하는 곳입니다. 확인한 뒤 <b>확인함</b>을 누르면 정한 주기(3일~1달) 뒤에 다시 <b>확인할 차례</b>로 올라오고, 그 사이 기록을 추가하면 <b>새 기록</b>으로 표시됩니다.
+            </Intro>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+                {chip('due', '확인할 차례', counts.due, 'bg-amber-50 border-amber-200 text-amber-700')}
+                {chip('updated', '새 기록', counts.updated, 'bg-rose-50 border-rose-200 text-rose-600')}
+                {chip('all', '전체', counts.all, 'bg-slate-100 border-slate-300 text-slate-700')}
+                {studyItems.length > 0 && (
+                    <button onClick={() => setShowStudy(v => !v)}
+                        className={`ml-auto flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold border whitespace-nowrap ${showStudy ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-700'}`}>
+                        <Lightbulb className="w-3.5 h-3.5" /> 공부할 것 모아보기 {studyItems.length}
+                    </button>
+                )}
+            </div>
+
+            {showStudy && (
+                <div className="bg-white border border-indigo-100 rounded-xl p-4 space-y-4">
+                    <p className="text-xs text-slate-400">각 환자 메모의 케이스 분석 중 "추가 공부" 부분을 모았습니다.</p>
+                    {studyItems.map(({ n, text }) => (
+                        <div key={n.id}>
+                            <button onClick={() => onSelectNote(n.id)} className="text-sm font-bold text-slate-800 hover:text-indigo-600 mb-1 text-left">{n.title || '(제목 없음)'}</button>
+                            <MiniMarkdown markdown={text} />
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {error && <ErrorBox message={error} />}
+
+            {list.length === 0 ? (
+                <p className="text-sm text-slate-400 text-center py-8">
+                    {filter === 'due' ? '지금 확인할 환자가 없어요.' : filter === 'updated' ? '확인 뒤 새로 추가된 기록이 없어요.' : '환자 메모가 없어요.'}
+                </p>
+            ) : (
+                <div className="space-y-2">
+                    {list.map(({ n, status, analysis }) => {
+                        const isOpen = openId === n.id;
+                        const analyzing = analyzingIds.has(n.id);
+                        const interval = intervals[n.id] ?? n.followUpIntervalDays ?? DEFAULT_FOLLOWUP_DAYS;
+                        const outdated = !!analysis && !!n.summarizedAt && (n.updatedAt || 0) > n.summarizedAt;
+                        const toCheck = extractSection(analysis, '추가로 확인할 것');
+                        const toStudy = extractSection(analysis, '추가 공부');
+                        const dx = extractSection(analysis, '추정 진단');
+                        return (
+                            <div key={n.id} className="bg-white border border-slate-200 rounded-xl p-3">
+                                <div className="flex items-start gap-2">
+                                    <button onClick={() => onSelectNote(n.id)} className="flex-1 min-w-0 text-left">
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="text-sm font-bold text-slate-800 truncate hover:text-indigo-600">{n.title || '(제목 없음)'}</span>
+                                            {status === 'due' && <span className="shrink-0 text-[10px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">확인할 차례</span>}
+                                            {status === 'updated' && <span className="shrink-0 text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded">새 기록</span>}
+                                        </div>
+                                        <div className="text-[11px] text-slate-400 mt-0.5">
+                                            마지막 기록 {daysAgo(n.updatedAt || n.createdAt, now)}
+                                            {' · '}{n.followUpCheckedAt ? `마지막 확인 ${daysAgo(n.followUpCheckedAt, now)}` : '아직 확인 안 함'}
+                                            {n.followUpDueAt && n.followUpCheckedAt ? ` · 다음 확인 ${new Date(n.followUpDueAt).toLocaleDateString()}` : ''}
+                                        </div>
+                                    </button>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2 mt-2">
+                                    <div className="inline-flex items-center gap-1">
+                                        <select
+                                            value={interval}
+                                            onChange={e => setIntervals(prev => ({ ...prev, [n.id]: Number(e.target.value) }))}
+                                            className="text-xs border border-slate-200 rounded-lg px-1.5 py-1 bg-white text-slate-600"
+                                            title="다음 확인까지"
+                                        >
+                                            {FOLLOWUP_INTERVALS.map(d => <option key={d} value={d}>{d === 30 ? '1달 뒤' : d === 14 ? '2주 뒤' : d === 7 ? '1주 뒤' : `${d}일 뒤`}</option>)}
+                                        </select>
+                                        <button
+                                            onClick={() => onFollowUpCheck(n.id, interval)}
+                                            className="flex items-center gap-1 px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+                                        >
+                                            <Check className="w-3.5 h-3.5" /> 확인함
+                                        </button>
+                                    </div>
+                                    <button
+                                        onClick={() => handleAnalyze(n)}
+                                        disabled={analyzing}
+                                        className="flex items-center gap-1 px-3 py-1 rounded-lg bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-bold disabled:opacity-50"
+                                        title="✨ 케이스 분석(추정·감별 진단, 추가로 확인할 것, 추가 공부)을 지금 기록 기준으로 새로 만들기"
+                                    >
+                                        {analyzing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                                        {analyzing ? '분석 중…' : !analysis ? '케이스 분석' : outdated ? '분석 갱신 (기록 추가됨)' : '분석 다시 하기'}
+                                    </button>
+                                    {analysis && (
+                                        <button onClick={() => setOpenId(isOpen ? null : n.id)} className="ml-auto flex items-center gap-1 text-xs font-bold text-slate-500 hover:text-slate-700">
+                                            확인·공부할 것 {isOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                        </button>
+                                    )}
+                                </div>
+
+                                {isOpen && analysis && (
+                                    <div className="mt-3 pt-3 border-t border-slate-100 space-y-3">
+                                        {dx && <div><div className="text-xs font-bold text-slate-500 mb-1">추정 진단</div><MiniMarkdown markdown={dx} /></div>}
+                                        {toCheck && <div><div className="text-xs font-bold text-amber-600 mb-1">추가로 확인할 것</div><MiniMarkdown markdown={toCheck} /></div>}
+                                        {toStudy && <div><div className="text-xs font-bold text-indigo-600 mb-1">추가 공부</div><MiniMarkdown markdown={toStudy} /></div>}
+                                        {!dx && !toCheck && !toStudy && <MiniMarkdown markdown={analysis} />}
+                                        {outdated && <p className="text-[11px] text-amber-600">분석한 뒤 기록이 추가됐어요. "분석 갱신"으로 최신 기록 기준으로 다시 정리할 수 있습니다.</p>}
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
             )}
         </div>
     );
@@ -690,6 +901,7 @@ const InsightsView: React.FC<Props> = (rawProps) => {
                 <div className="max-w-3xl mx-auto p-4 md:p-6 pb-24">
                     {/* 탭은 숨기기만 해서 결과가 유지되게 함 */}
                     <div className={tab === 'weekly' ? '' : 'hidden'}><WeeklyTab {...props} /></div>
+                    <div className={tab === 'patients' ? '' : 'hidden'}><PatientsTab {...props} /></div>
                     <div className={tab === 'similar' ? '' : 'hidden'}><SimilarTab {...props} /></div>
                     <div className={tab === 'gap' ? '' : 'hidden'}><GapTab {...props} /></div>
                     <div className={tab === 'template' ? '' : 'hidden'}><TemplateTab {...props} active={tab === 'template'} /></div>

@@ -9,10 +9,11 @@ import StudyGuideView from './components/StudyGuideView';
 import AskNotesView from './components/AskNotesView';
 import GuidelineCheckView from './components/GuidelineCheckView';
 import InsightsView from './components/InsightsView';
+import { followUpStatus, contentForAnalysis } from './services/insightUtils';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
 import PinSettingsModal from './components/PinSettingsModal';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NOTE_TAG_LABELS } from './types';
-import { scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote } from './services/studyUtils';
+import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote } from './services/studyUtils';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines } from './services/claudeService';
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, isDeletedNoteId, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
@@ -60,7 +61,10 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
                 }
                 : undefined,
             metaUpdatedAt: typeof n.metaUpdatedAt === 'number' ? n.metaUpdatedAt : undefined,
-            origin: n.origin === 'ai' ? 'ai' : undefined
+            origin: n.origin === 'ai' ? 'ai' : undefined,
+            followUpCheckedAt: typeof n.followUpCheckedAt === 'number' ? n.followUpCheckedAt : undefined,
+            followUpIntervalDays: typeof n.followUpIntervalDays === 'number' ? n.followUpIntervalDays : undefined,
+            followUpDueAt: typeof n.followUpDueAt === 'number' ? n.followUpDueAt : undefined
         };
     });
 };
@@ -739,7 +743,7 @@ const App: React.FC = () => {
       try {
           const full = (await getNoteFromDB(id).catch(() => undefined)) || notesRef.current.find(n => n.id === id);
           if (!full) throw new Error('메모를 찾을 수 없습니다.');
-          const result = await checkNoteAgainstGuidelines(full);
+          const result = await checkNoteAgainstGuidelines({ ...full, content: contentForAnalysis(full.content || '') });
           const saved = await patchNoteMeta(id, () => ({ guidelineCheck: result }));
           if (!saved) throw new Error('결과를 저장하지 못했습니다(메모가 삭제되었을 수 있음).');
       } catch (e: any) {
@@ -750,6 +754,21 @@ const App: React.FC = () => {
           setGuidelineCheckingIds(Array.from(guidelineCheckingRef.current));
       }
   };
+  // 환자 팔로업 "확인함": 지금 확인했고, intervalDays일 뒤에 다시 확인할 차례로
+  const handleFollowUpCheck = (id: string, intervalDays: number) => {
+      const now = Date.now();
+      patchNoteMeta(id, () => ({
+          followUpCheckedAt: now,
+          followUpIntervalDays: intervalDays,
+          followUpDueAt: localMidnightAfter(now, intervalDays)
+      })).catch(e => { console.error(e); alert('확인 기록 저장에 실패했습니다.'); });
+  };
+  // 사이드바 "메모 활용" 옆에 표시할, 지금 확인할 차례인 환자 메모 수
+  const patientFollowUpDue = React.useMemo(
+      () => notes.filter(n => n.tag === 'patient' && n.origin !== 'ai' && followUpStatus(n, nowTick) === 'due').length,
+      [notes, nowTick]
+  );
+
   const handleClearGuidelineCheck = (id: string) => {
       patchNoteMeta(id, () => ({ guidelineCheck: undefined })).catch(console.error);
   };
@@ -1022,9 +1041,34 @@ const App: React.FC = () => {
     }
   };
 
-  const handleUpdateNote = async (updatedNote: Note) => {
+  const handleUpdateNote = async (incoming: Note) => {
     try {
-        await saveNoteToDB(updatedNote);
+        // 복습·확인 기록 같은 부가정보 저장(patchNoteMeta)과 순서를 맞추고, 그 사이 더 최신 부가정보가
+        // 저장돼 있으면 그것을 유지 (요약 저장이 "확인함" 기록 등을 덮지 않도록)
+        const updatedNote: Note = await new Promise<Note>((resolve, reject) => {
+            const prev = metaQueueRef.current.get(incoming.id) || Promise.resolve();
+            const run = prev.catch(() => undefined).then(async () => {
+                const latest = await getNoteFromDB(incoming.id).catch(() => undefined);
+                let merged = incoming;
+                if (latest && (latest.metaUpdatedAt || 0) > (incoming.metaUpdatedAt || 0)) {
+                    merged = {
+                        ...incoming,
+                        quizMasteryCount: latest.quizMasteryCount, reviewDueAt: latest.reviewDueAt,
+                        reviewIntervalDays: latest.reviewIntervalDays, lastReviewedAt: latest.lastReviewedAt,
+                        wrongAnswers: latest.wrongAnswers, guidelineCheck: latest.guidelineCheck, tag: latest.tag,
+                        followUpIntervalDays: latest.followUpIntervalDays, followUpDueAt: latest.followUpDueAt,
+                        followUpCheckedAt: Math.max(latest.followUpCheckedAt || 0, incoming.followUpCheckedAt || 0) || undefined,
+                        metaUpdatedAt: latest.metaUpdatedAt
+                    };
+                }
+                await saveNoteToDB(merged);
+                return merged;
+            });
+            metaQueueRef.current.set(incoming.id, run);
+            const cleanup = () => { if (metaQueueRef.current.get(incoming.id) === run) metaQueueRef.current.delete(incoming.id); };
+            run.then(cleanup, cleanup);
+            run.then(resolve, reject);
+        });
         saveNoteToFirestore(updatedNote);
         setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
         if (updatedNote.images && updatedNote.images.length > 0 && !updatedNote.isProcessed) {
@@ -1182,6 +1226,11 @@ const App: React.FC = () => {
                  <Layers className="w-3.5 h-3.5" />
              </span>
              메모 활용
+             {patientFollowUpDue > 0 && (
+                 <span className="ml-auto shrink-0 bg-rose-50 text-rose-600 text-[10px] px-1.5 py-0.5 rounded-full" title="확인할 차례인 환자 메모">
+                     환자 {patientFollowUpDue}
+                 </span>
+             )}
           </button>
         </nav>
 
@@ -1339,6 +1388,9 @@ const App: React.FC = () => {
                                 // 새 메모 저장은 기본적으로 목록으로 가므로, 저장 후에도 이 화면에 머무름
                                 setView(ViewMode.INSIGHTS);
                             }}
+                            onUpdateNote={handleUpdateNote}
+                            onFollowUpCheck={handleFollowUpCheck}
+                            nowTick={nowTick}
                         />
                     </div>
                 )}
