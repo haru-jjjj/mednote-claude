@@ -92,9 +92,38 @@ interface CallParams {
     tool_choice?: any;
     max_tokens?: number;
     temperature?: number;
+    // 생각(thinking) 깊이. Sonnet 5 이상에서만 보냄(Haiku 4.5는 지원 안 함). 미지정 시 모델 기본값(high).
+    effort?: 'low' | 'medium' | 'high';
 }
 
+// Claude Sonnet 5는 "적응형 생각(adaptive thinking)"이 기본으로 켜져 있고, 생각에 쓴 토큰도 max_tokens에
+// 포함됩니다. 그래서 max_tokens가 작으면 생각하다가 한도에 걸려 본문(text)이 하나도 없는 응답이 올 수
+// 있습니다(실제로 "인계장 결과가 비어 있습니다" 오류의 원인). 이를 막기 위해:
+//  1) SMART 모델은 max_tokens를 최소 SMART_MIN_MAX_TOKENS로 올려 보냄 (실제 쓴 만큼만 과금되므로 비용 차이 없음)
+//  2) 그래도 본문 없이 한도에 걸리면, 한도를 늘리고 생각 깊이를 낮춰(effort: low) 한 번 더 요청
+// 참고: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+const SMART_MIN_MAX_TOKENS = 16000;
+const RETRY_MAX_TOKENS = 32000;
+
+const hasTextOrTool = (data: any) =>
+    (data?.content || []).some((b: any) => (b.type === 'text' && (b.text || '').trim()) || b.type === 'tool_use');
+
 const callClaude = async (params: CallParams): Promise<any> => {
+    const isSmart = params.model === MODEL_SMART;
+    const first = await callClaudeOnce({
+        ...params,
+        max_tokens: isSmart ? Math.max(params.max_tokens ?? 2048, SMART_MIN_MAX_TOKENS) : params.max_tokens
+    });
+    if (hasTextOrTool(first) || first?.stop_reason !== 'max_tokens') return first;
+    console.warn('생각 단계에서 max_tokens에 걸려 본문이 비어 있어, 한도를 늘리고 effort를 낮춰 다시 요청합니다.');
+    return callClaudeOnce({
+        ...params,
+        max_tokens: RETRY_MAX_TOKENS,
+        effort: isSmart ? 'low' : params.effort
+    });
+};
+
+const callClaudeOnce = async (params: CallParams): Promise<any> => {
     const apiKey = getApiKey();
 
     const body: Record<string, any> = {
@@ -102,6 +131,7 @@ const callClaude = async (params: CallParams): Promise<any> => {
         max_tokens: params.max_tokens ?? 2048,
         messages: params.messages,
     };
+    if (params.effort && params.model !== MODEL_FAST) body.output_config = { effort: params.effort };
     if (params.system) body.system = params.system;
     if (params.tools) body.tools = params.tools;
     if (params.tool_choice) body.tool_choice = params.tool_choice;
@@ -113,6 +143,8 @@ const callClaude = async (params: CallParams): Promise<any> => {
     const usesServerTool = Array.isArray(params.tools) && params.tools.some((t: any) => t?.type === 'web_search_20250305');
     if (typeof params.temperature === 'number' && usesServerTool) {
         console.warn("web_search 툴과 temperature를 함께 요청해 temperature를 무시합니다 (API가 400으로 거부함).");
+    } else if (typeof params.temperature === 'number' && params.model === MODEL_SMART) {
+        // Sonnet 5는 temperature를 기본값이 아닌 값으로 보내면 400 → 보내지 않음
     } else if (typeof params.temperature === 'number') {
         body.temperature = Math.min(params.temperature, 1);
     }
@@ -1122,7 +1154,7 @@ export const analyzeJournalArticle = async (note: Note): Promise<{ summary: stri
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
             tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
-            max_tokens: 16000
+            max_tokens: 24000
         });
         let summary = extractText(data);
         if (!summary) return null;
@@ -1456,10 +1488,12 @@ export const buildHandoverDocument = async (notes: Note[], purpose: string): Pro
     const data = await callClaude({
         model: MODEL_SMART,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-        max_tokens: 10000
+        max_tokens: 24000,
+        // 정리·재배열 작업이라 깊은 생각보다 긴 본문이 중요 → 생각 깊이를 중간으로
+        effort: 'medium'
     });
     let text = extractText(data);
-    if (!text) throw new Error('인계장 결과가 비어 있습니다.');
+    if (!text) throw new Error(`인계장 결과가 비어 있습니다 (중단 사유: ${data?.stop_reason || '알 수 없음'}). 포함할 메모 수를 줄여 다시 시도해보세요.`);
     const first = text.indexOf('## ');
     if (first > 0 && first < 300) text = text.slice(first);
     return withTruncationNotice(text, data);
