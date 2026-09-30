@@ -33,6 +33,8 @@ export interface Note {
   // updatedAt(=내용 수정 시각)은 건드리지 않아 목록 순서·요약 상태가 바뀌지 않게 하고,
   // 기기 간 병합 때 updatedAt이 같으면 이 값이 더 최신인 쪽을 씁니다.
   metaUpdatedAt?: number;
+  // AI 결과를 저장한 메모('ai')는 메모 활용 도구의 분석 대상에서 빠짐 (결과가 다시 입력으로 섞이지 않게)
+  origin?: 'ai';
 }
 
 export interface WrongAnswer {
@@ -69,7 +71,8 @@ export enum ViewMode {
   QUIZ = 'QUIZ',
   STUDY_GUIDE = 'STUDY_GUIDE',
   ASK_NOTES = 'ASK_NOTES',
-  GUIDELINE_CHECK = 'GUIDELINE_CHECK'
+  GUIDELINE_CHECK = 'GUIDELINE_CHECK',
+  INSIGHTS = 'INSIGHTS'
 }
 
 export type QuizType = 'MULTIPLE_CHOICE' | 'OX';

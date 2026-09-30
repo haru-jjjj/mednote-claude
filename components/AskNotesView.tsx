@@ -5,8 +5,7 @@ import DOMPurify from 'dompurify';
 import { v4 as uuidv4 } from 'uuid';
 import { Note } from '../types';
 import { answerFromNotes, synthesizeNotes, formatMedicalMarkdown } from '../services/claudeService';
-import { getNoteFromDB } from '../services/storage';
-import { cosineSimilarity, embedTexts, hasVoyageApiKey } from '../services/voyageService';
+import { findRelatedNotes as searchRelatedNotes } from '../services/noteSearch';
 
 interface AskNotesViewProps {
     notes: Note[];
@@ -20,28 +19,6 @@ type Mode = 'ask' | 'synthesize';
 // 관련 메모 찾기 설정
 const SIM_THRESHOLD = 0.3;
 const MAX_NOTES: Record<Mode, number> = { ask: 8, synthesize: 12 };
-
-// 임베딩이 없거나 Voyage 키가 없을 때의 대체 검색: 단어가 제목/본문에 몇 번 등장하는지로 순위
-const keywordRank = (query: string, notes: Note[], limit: number): Note[] => {
-    // 한국어 조사(에서, 으로, 는 ...)가 붙은 채로는 본문과 잘 안 맞아서 끝의 조사를 떼고 비교
-    const stripParticle = (t: string) => {
-        const stripped = t.replace(/(에서|에게|으로|이랑|하고|까지|부터|로|은|는|이|가|을|를|의|와|과|도|에|랑)$/, '');
-        return stripped.length >= 2 ? stripped : t;
-    };
-    const terms = query.toLowerCase().split(/[\s,./()?!]+/).map(stripParticle).filter(t => t.length >= 2);
-    if (terms.length === 0) return [];
-    return notes
-        .map(n => {
-            const title = (n.title || '').toLowerCase();
-            const body = `${n.content || ''} ${n.summary || ''} ${n.transcription || ''}`.toLowerCase();
-            const score = terms.reduce((s, t) => s + (title.includes(t) ? 3 : 0) + (body.includes(t) ? 1 : 0), 0);
-            return { n, score };
-        })
-        .filter(r => r.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit)
-        .map(r => r.n);
-};
 
 const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote, onSaveNewNote }) => {
     const [query, setQuery] = useState('');
@@ -67,44 +44,8 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
         usedNotes.length > 0 &&
         (usedNotes.length !== checkedIds.size || usedNotes.some(n => !checkedIds.has(n.id)));
 
-    const findRelatedNotes = async (q: string, m: Mode): Promise<{ list: Note[]; how: string }> => {
-        const limit = MAX_NOTES[m];
-        const withEmb = notes.filter(n => n.embedding && n.embedding.length > 0);
-
-        let ranked: Note[] = [];
-        let how = '';
-        if (hasVoyageApiKey() && withEmb.length > 0) {
-            try {
-                const [qv] = await embedTexts([q], 'query');
-                if (qv) {
-                    ranked = withEmb
-                        .map(n => ({ n, sim: cosineSimilarity(qv, n.embedding) }))
-                        .filter(r => r.sim >= SIM_THRESHOLD)
-                        .sort((a, b) => b.sim - a.sim)
-                        .slice(0, limit)
-                        .map(r => r.n);
-                    how = '의미 기반 검색';
-                }
-            } catch (e) {
-                console.warn('임베딩 검색 실패, 키워드 검색으로 대체:', e);
-            }
-        }
-        if (ranked.length === 0) {
-            ranked = keywordRank(q, notes, limit);
-            how = '키워드 검색';
-        }
-
-        // 목록용 데이터는 사진 등이 빠진 가벼운 버전일 수 있어, 전체 내용으로 다시 불러옴
-        const hydrated: Note[] = [];
-        for (const n of ranked) {
-            try {
-                hydrated.push((await getNoteFromDB(n.id)) || n);
-            } catch {
-                hydrated.push(n);
-            }
-        }
-        return { list: hydrated, how };
-    };
+    const findRelatedNotes = (q: string, m: Mode): Promise<{ list: Note[]; how: string }> =>
+        searchRelatedNotes(q, notes, MAX_NOTES[m], SIM_THRESHOLD);
 
     const generate = async (targetNotes: Note[], m: Mode, q: string) => {
         setIsGenerating(true);
@@ -168,10 +109,11 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
         setIsSaving(true);
         const refs = usedNotes.map((n, i) => `- [메모${i + 1}] ${n.title || '제목 없음'}`).join('\n');
         const now = Date.now();
+        const isAsk = resultMode === 'ask';
         const newNote: Note = {
             id: uuidv4(),
-            title: `정리: ${resultQuery}`.slice(0, 60),
-            content: `${resultMarkdown}\n\n---\n\n**참고한 메모**\n\n${refs}`,
+            title: `${isAsk ? 'Q' : '정리'}: ${resultQuery}`.slice(0, 60),
+            content: `${isAsk ? `**질문**: ${resultQuery}\n\n` : ''}${resultMarkdown}\n\n---\n\n**참고한 메모**\n\n${refs}`,
             summary: '',
             createdAt: now,
             updatedAt: now,
@@ -179,6 +121,7 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
             images: [],
             isEnhancing: false,
             isProcessed: false,
+            origin: 'ai',
         };
         try {
             await onSaveNewNote(newNote);
@@ -358,7 +301,8 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                                 <span className="text-xs font-bold text-indigo-600">
                                     {resultMode === 'ask' ? '답변' : '정리본'} · [메모N]을 누르면 해당 메모가 열려요
                                 </span>
-                                {resultMode === 'synthesize' && (
+                                {/* 답변·정리본 모두 원할 때만 메모로 저장 (자동 저장 없음) */}
+                                {(
                                     savedNoteId ? (
                                         <button
                                             onClick={() => onSelectNote(savedNoteId)}

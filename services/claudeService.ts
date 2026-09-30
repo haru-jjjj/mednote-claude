@@ -231,6 +231,17 @@ const callForJson = async (params: {
 // ----------------------------------------------------------------------------
 export const formatMedicalMarkdown = (text: string): string => {
     if (!text) return "";
+    // 코드 블록(\`\`\` ... \`\`\`, 예: 작성 템플릿) 안은 원문 그대로 두고 바깥만 변환
+    if (text.includes('```')) {
+        return text.split(/(```[\s\S]*?```)/g)
+            .map((part, i) => (i % 2 === 1 ? part : formatMedicalMarkdownPlain(part)))
+            .join('');
+    }
+    return formatMedicalMarkdownPlain(text);
+};
+
+const formatMedicalMarkdownPlain = (text: string): string => {
+    if (!text) return "";
     let processed = text;
 
     // AI가 가끔 "- \n문장" 처럼 글머리표(-)만 있는 줄과 실제 내용이 다음 줄로
@@ -607,6 +618,35 @@ const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: numb
     return parts.join('\n\n=====\n\n');
 };
 
+// buildNotesContext가 글자 수 한도 안에 실제로 담는 메모만 남김 (화면의 "참고한 메모"와 AI가 본 메모를 일치시키기 위함)
+export const notesWithinContextBudget = (notes: Note[], perNoteChars: number, totalChars: number): Note[] => {
+    let used = 0;
+    const out: Note[] = [];
+    for (const n of notes) {
+        if (used >= totalChars) break;
+        const len = [n.content || '', n.transcription ? `(사진에서 추출한 텍스트: ${n.transcription})` : '', n.summary ? `(이전에 만든 AI 요약: ${n.summary})` : '']
+            .filter(Boolean).join('\n').length;
+        const budget = Math.min(perNoteChars, totalChars - used);
+        used += len > budget ? budget + '\n…(이하 생략)'.length : len;
+        out.push(n);
+    }
+    return out;
+};
+
+// 메모 활용 도구별 글자 수 한도 [메모당, 전체]
+export const CONTEXT_BUDGETS = {
+    weekly: [2500, 50000],
+    gap: [5000, 60000],
+    template: [30000, 90000],
+    synthesize: [8000, 70000]
+} as const;
+
+// 답이 분량 한도에서 잘렸으면 안내 문구를 붙임
+const withTruncationNotice = (text: string, data: any): string =>
+    data?.stop_reason === 'max_tokens'
+        ? `${text}\n\n> ⚠️ 분량 한도에 걸려 뒷부분이 잘렸을 수 있습니다. 참고할 메모를 줄여서 다시 만들어보세요.`
+        : text;
+
 const NOTE_CITATION_RULES = `
 CITATIONS (STRICT):
 - The notes are labelled [메모1], [메모2], ... Cite the label right after every statement that comes
@@ -667,7 +707,7 @@ export const synthesizeNotes = async (topic: string, notes: Note[]): Promise<str
 
         SOURCE NOTES:
         """
-        ${buildNotesContext(notes, 8000, 70000)}
+        ${buildNotesContext(notes, CONTEXT_BUDGETS.synthesize[0], CONTEXT_BUDGETS.synthesize[1])}
         """
 
         WRITE THE CONSOLIDATED NOTE:
@@ -691,7 +731,7 @@ export const synthesizeNotes = async (topic: string, notes: Note[]): Promise<str
     });
     const text = extractText(data);
     if (!text) throw new Error('정리본이 비어 있습니다.');
-    return text;
+    return withTruncationNotice(text, data);
 };
 
 // ----------------------------------------------------------------------------
@@ -1159,4 +1199,213 @@ export const checkNoteAgainstGuidelines = async (note: Note): Promise<GuidelineC
     if (!text) throw new Error('점검 결과가 비어 있습니다.');
     const { status, report } = parseGuidelineStatus(text);
     return { checkedAt: Date.now(), status, report, sources: extractCitations(data, 6) };
+};
+
+// ============================================================================
+// 메모 활용 화면 (쌓인 메모를 다시 쓰는 도구들)
+// ============================================================================
+
+// ---- 이번 주 돌아보기 (빠른 모델) ----
+export const generateWeeklyDigest = async (
+    notes: Note[],
+    extra: { days: number; dueCount: number; wrongQuestions: { question: string; explanation?: string }[] }
+): Promise<string> => {
+    const wrongText = extra.wrongQuestions.slice(0, 10).map((w, i) =>
+        `${i + 1}. ${w.question.slice(0, 300)}${w.explanation ? `\n   해설: ${w.explanation.slice(0, 300)}` : ''}`
+    ).join('\n');
+    const prompt = `
+        You write a short weekly review of the reader's own study/work notes.
+        ${READER_PROFILE}
+
+        NOTES WRITTEN OR EDITED IN THE LAST ${extra.days} DAYS (labelled [메모1], [메모2], ...):
+        """
+        ${buildNotesContext(notes, CONTEXT_BUDGETS.weekly[0], CONTEXT_BUDGETS.weekly[1])}
+        """
+        QUIZ QUESTIONS THE READER GOT WRONG THIS WEEK:
+        """
+        ${wrongText || '(none)'}
+        """
+        Notes due for spaced review today: ${extra.dueCount}
+
+        Write in Korean (standard English terms as usual) with these "###" sections:
+        ### 이번 주 한눈에
+          1~2 sentences: how many notes, what themes.
+        ### 핵심 정리
+          Group by theme; per theme 1~3 bullets with the most important concrete points (numbers, thresholds,
+          decisions) and their citations.
+        ### 서로 이어지는 점
+          1~3 bullets connecting notes to each other (e.g. a case note that illustrates a guideline note). Skip if none.
+        ### 다시 볼 것
+          Weak spots from the wrong answers, and anything in the notes that looks uncertain or guideline-discordant (⚠️).
+        ### 다음 주 제안
+          2~3 concrete things to study or check next, each with one line on why.
+        Keep it under ~1,500 Korean characters. Bullets "- " with the sentence on the same line.
+        ${NOTE_CITATION_RULES}
+        OUTPUT: only the review itself.
+    `;
+    const data = await callClaude({
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        max_tokens: 3000
+    });
+    const text = extractText(data);
+    if (!text) throw new Error('돌아보기 결과가 비어 있습니다.');
+    return withTruncationNotice(text, data);
+};
+
+// ---- 빈 곳 찾기: 주제의 표준 목차와 내 메모 비교 ----
+export const findCoverageGaps = async (topic: string, notes: Note[]): Promise<{ text: string; sources: Source[] }> => {
+    const prompt = `
+        You compare what the reader's notes cover against the standard structure of a topic, to find gaps.
+        ${READER_PROFILE}
+
+        TOPIC: """${topic}"""
+
+        THE READER'S NOTES THAT SEEM RELATED (labelled [메모1], [메모2], ...; some may be unrelated — ignore those):
+        """
+        ${notes.length > 0 ? buildNotesContext(notes, CONTEXT_BUDGETS.gap[0], CONTEXT_BUDGETS.gap[1]) : '(no related notes found)'}
+        """
+
+        STEPS:
+        1. Build the reference outline of the topic: if the topic names a guideline, use that guideline's actual
+           section structure (search to confirm the current version and year). Otherwise use the structure of the
+           most relevant current major guideline or a standard review. Use web search (up to 4 searches).
+           8~15 items, at the level of clinically meaningful subsections (e.g. "Stroke risk assessment",
+           "OAC choice & dosing", "Rhythm control — ablation indications").
+        2. For each item, judge how well the notes cover it: ✅ 충분 / 🟡 일부 / ❌ 없음.
+
+        OUTPUT (Korean, standard English terms as usual):
+        - First line: "기준: (guideline/source name, year)".
+        - ### 항목별 현황
+          A markdown table: | 항목 | 상태 | 내 메모 | 비고 |  — "내 메모" lists the citations; "비고" says briefly
+          what is covered or what is missing (one line, plain text, no backticks).
+        - ### 먼저 채울 곳
+          3~5 bullets, most important first: what to add, the key numbers/recommendations (with COR/LOE) worth
+          writing down, and why it matters clinically.
+        ${NOTE_CITATION_RULES}
+        Output only the result — no narration of your process.
+    `;
+    const data = await callClaude({
+        model: MODEL_SMART,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }],
+        max_tokens: 6000
+    });
+    let text = extractText(data);
+    if (!text) throw new Error('빈 곳 찾기 결과가 비어 있습니다.');
+    const start = text.indexOf('기준:');
+    if (start > 0 && start < 400) text = text.slice(start);
+    return { text: withTruncationNotice(text, data), sources: extractCitations(data, 6) };
+};
+
+// ---- 작성 템플릿: 붙여넣은 판독문·시술기록에서 실제로 쓸 수 있는 틀 만들기 ----
+export const buildDocumentationTemplate = async (target: string, notes: Note[]): Promise<string> => {
+    const prompt = `
+        The reader has pasted real clinical documentation written by experienced physicians (reading reports,
+        procedure records, progress notes...). Build a reusable WRITING TEMPLATE from them.
+        ${READER_PROFILE}
+
+        WHAT THE TEMPLATE IS FOR: """${target || '(not specified — infer the most common document type in the notes)'}"""
+
+        SOURCE NOTES (labelled [메모1], [메모2], ...):
+        """
+        ${buildNotesContext(notes, CONTEXT_BUDGETS.template[0], CONTEXT_BUDGETS.template[1])}
+        """
+
+        OUTPUT (Korean prose; keep the documents' own language mix inside the template):
+        ### 언제 쓰는 틀인지
+          One or two lines.
+        ### 템플릿
+          ONE fenced code block (\`\`\`text ... \`\`\`) containing the template exactly as it would be written,
+          in the usual order of items, with the wording the records actually use. Put blanks as [ ] with a short hint,
+          e.g. "LVEF [  ]%", "AV Vmax [  ] m/s, mean PG [  ] mmHg". Include typical optional lines as
+          "(해당 시) ...". No patient identifiers.
+        ### 항목별 작성 요령
+          Bullets per item: which values are always reported, typical phrasing variants QUOTED VERBATIM from the
+          records (with citations), and how severity/conclusion sentences are usually formed.
+        ### 자주 빠뜨리는 것
+          2~5 bullets (items present in some records but missing in others, or guideline-relevant items worth adding).
+        If the notes contain several different document types, build the template for the one that matches the
+        target best and mention the others in one line at the end.
+        ${NOTE_CITATION_RULES}
+        Output only the result.
+    `;
+    const data = await callClaude({
+        model: MODEL_SMART,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        max_tokens: 9000
+    });
+    const text = extractText(data);
+    if (!text) throw new Error('템플릿 결과가 비어 있습니다.');
+    return withTruncationNotice(text, data);
+};
+
+// ---- 케이스·시술 기록: 환자 메모에서 시술·진단·배운 점을 구조화해서 뽑기 (빠른 모델, 10개씩) ----
+export const extractCaseLogBatch = async (
+    notes: Note[]
+): Promise<{ index: number; procedures: string[]; diagnoses: string[]; memorable: boolean; learningPoint: string }[]> => {
+    const context = notes.map((n, i) => {
+        const body = [n.content || '', n.transcription ? `(사진 텍스트: ${n.transcription})` : '', n.summary ? `(AI 요약: ${n.summary})` : '']
+            .filter(Boolean).join('\n');
+        return `[Note ${i + 1}] ${n.title || ''} (${new Date(n.createdAt).toLocaleDateString('ko-KR')})\n${body.slice(0, 2500)}`;
+    }).join('\n\n=====\n\n');
+
+    const prompt = `
+        These are a cardiology fellow's own notes about individual patients. For EACH note, extract:
+        - procedures: procedures actually PERFORMED on this patient that are mentioned in the note (not ones only
+          considered or planned). Use short canonical English names, consistently, e.g. "CAG", "PCI",
+          "CTO PCI", "TAVR", "AF ablation (PVI)", "AFL ablation (CTI)", "PSVT ablation", "VT ablation",
+          "EPS", "PPM implantation", "ICD implantation", "CRT-D implantation", "Leadless PPM", "LAAO",
+          "TEE", "TTE", "Pericardiocentesis", "IABP", "ECMO", "Temporary pacing", "Cardioversion", "RHC".
+          Add the specific type in parentheses only when stated (e.g. "PPM implantation (LBBAP)").
+        - diagnoses: main diagnoses of this patient, short canonical English (e.g. "STEMI", "NSTEMI",
+          "Severe AS", "HFrEF", "Persistent AF", "Complete AV block", "VT storm").
+        - memorable: true only if the case has a clear learning point (complication, unusual presentation,
+          rare diagnosis, difficult decision, instructive pitfall).
+        - learningPoint: if memorable, ONE Korean sentence (English terms as usual) stating the learning point;
+          otherwise "".
+        Return one entry per note, using its number. If a note has nothing, return empty lists.
+
+        NOTES:
+        """
+        ${context}
+        """
+    `;
+    const input = await callForJson({
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        toolName: 'submit_case_log',
+        toolDescription: 'Submit the extracted procedures, diagnoses and learning points for each note.',
+        schema: {
+            type: 'object',
+            properties: {
+                items: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            note_number: { type: 'integer', minimum: 1 },
+                            procedures: { type: 'array', items: { type: 'string' } },
+                            diagnoses: { type: 'array', items: { type: 'string' } },
+                            memorable: { type: 'boolean' },
+                            learningPoint: { type: 'string' }
+                        },
+                        required: ['note_number', 'procedures', 'diagnoses', 'memorable', 'learningPoint']
+                    }
+                }
+            },
+            required: ['items']
+        },
+        maxTokens: 4000
+    });
+    const items = Array.isArray(input?.items) ? input.items : [];
+    return items
+        .filter((it: any) => Number.isInteger(it?.note_number) && it.note_number >= 1 && it.note_number <= notes.length)
+        .map((it: any) => ({
+            index: it.note_number - 1,
+            procedures: Array.isArray(it.procedures) ? it.procedures.filter((x: any) => typeof x === 'string') : [],
+            diagnoses: Array.isArray(it.diagnoses) ? it.diagnoses.filter((x: any) => typeof x === 'string') : [],
+            memorable: !!it.memorable,
+            learningPoint: typeof it.learningPoint === 'string' ? it.learningPoint : ''
+        }));
 };

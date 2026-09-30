@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList, { TagFilter } from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
@@ -8,6 +8,7 @@ import QuizView from './components/QuizView';
 import StudyGuideView from './components/StudyGuideView';
 import AskNotesView from './components/AskNotesView';
 import GuidelineCheckView from './components/GuidelineCheckView';
+import InsightsView from './components/InsightsView';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
 import PinSettingsModal from './components/PinSettingsModal';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NOTE_TAG_LABELS } from './types';
@@ -58,7 +59,8 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
                     sources: Array.isArray(n.guidelineCheck.sources) ? n.guidelineCheck.sources : []
                 }
                 : undefined,
-            metaUpdatedAt: typeof n.metaUpdatedAt === 'number' ? n.metaUpdatedAt : undefined
+            metaUpdatedAt: typeof n.metaUpdatedAt === 'number' ? n.metaUpdatedAt : undefined,
+            origin: n.origin === 'ai' ? 'ai' : undefined
         };
     });
 };
@@ -263,7 +265,7 @@ const App: React.FC = () => {
       // 항상 무작위 폴백만 타게 됩니다. 화면을 열자마자 전체 메모를 불러와 임베딩
       // 백필 대상과 클러스터링 후보 풀을 넓혀줍니다.
       // 퀴즈(오늘 복습 수·오답 노트)와 오래된 메모 점검도 전체 메모 기준이라 함께 불러옴
-      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES || view === ViewMode.QUIZ || view === ViewMode.GUIDELINE_CHECK) triggerAutoFetchAllOnce();
+      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES || view === ViewMode.QUIZ || view === ViewMode.GUIDELINE_CHECK || view === ViewMode.INSIGHTS) triggerAutoFetchAllOnce();
   }, [view]);
 
   // "내 메모에 물어보기" 화면에서 인용된 메모를 열었다가 뒤로 가면, 목록이 아니라 방금 보던
@@ -278,11 +280,14 @@ const App: React.FC = () => {
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tagFilter]);
   const [askViewMounted, setAskViewMounted] = useState(false);
+  // 메모 활용 화면도 한 번 열면 숨긴 채 유지 (결과가 사라지지 않게)
+  const [insightsMounted, setInsightsMounted] = useState(false);
   const [returnToAsk, setReturnToAsk] = useState(false);
   // 퀴즈(오답 노트)·오래된 메모 점검 화면에서 메모를 열었으면, 뒤로 가기 시 그 화면으로 돌아감
   const [detailReturnView, setDetailReturnView] = useState<ViewMode | null>(null);
   useEffect(() => {
       if (view === ViewMode.ASK_NOTES) setAskViewMounted(true);
+      if (view === ViewMode.INSIGHTS) setInsightsMounted(true);
       // (답변 화면 → 메모 → 편집 → 저장 → 뒤로 에서도 답변 화면으로 돌아오도록 EDIT도 유지)
       if (view !== ViewMode.DETAIL && view !== ViewMode.ASK_NOTES && view !== ViewMode.EDIT) setReturnToAsk(false);
       if (view !== ViewMode.DETAIL && view !== ViewMode.EDIT && view !== detailReturnView) setDetailReturnView(null);
@@ -1171,6 +1176,13 @@ const App: React.FC = () => {
              </span>
              오래된 메모 점검
           </button>
+
+          <button onClick={() => { setView(ViewMode.INSIGHTS); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.INSIGHTS ? 'bg-teal-50 text-teal-700' : 'text-slate-600 hover:bg-teal-50/60 hover:text-teal-700'}`}>
+             <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-teal-100 text-teal-700">
+                 <Layers className="w-3.5 h-3.5" />
+             </span>
+             메모 활용
+          </button>
         </nav>
 
         <div className="p-5 border-t border-slate-50 space-y-3">
@@ -1312,6 +1324,23 @@ const App: React.FC = () => {
                         onBack={() => setView(ViewMode.LIST)}
                         isFetchingAll={isFetchingAll}
                     />
+                )}
+                {(insightsMounted || view === ViewMode.INSIGHTS) && (
+                    <div className={view === ViewMode.INSIGHTS ? 'h-full flex flex-col' : 'hidden'}>
+                        <InsightsView
+                            notes={notes}
+                            reviewDueCount={reviewDueCount}
+                            isFetchingAll={isFetchingAll}
+                            onBack={() => setView(ViewMode.LIST)}
+                            onSelectNote={(id) => { setDetailReturnView(ViewMode.INSIGHTS); handleFetchAndSelectNote(id); }}
+                            onSaveNewNote={async (note) => {
+                                const ok = await handleSaveNote(note);
+                                if (!ok) throw new Error('메모 저장에 실패했습니다.');
+                                // 새 메모 저장은 기본적으로 목록으로 가므로, 저장 후에도 이 화면에 머무름
+                                setView(ViewMode.INSIGHTS);
+                            }}
+                        />
+                    </div>
                 )}
                 {(askViewMounted || view === ViewMode.ASK_NOTES) && (
                     <div className={view === ViewMode.ASK_NOTES ? 'h-full flex flex-col' : 'hidden'}>
