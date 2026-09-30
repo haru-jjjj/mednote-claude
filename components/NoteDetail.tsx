@@ -137,6 +137,9 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
   );
   const ageDays = noteAgeDays(note, Date.now());
   const isOldCheckable = isGuidelineCheckCandidate(note, Date.now());
+  const suggestGuidelineCheck = isOldCheckable && !note.guidelineCheck && !isCheckingGuideline;
+  const [showAiMenu, setShowAiMenu] = useState(false);
+  useEffect(() => { setShowAiMenu(false); }, [note.id]);
 
   const getSnippet = (n: Note) => {
       const text = (n.summary || n.content || '').replace(/[#*`>_-]/g, '').trim();
@@ -372,14 +375,70 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             <ArrowLeft className="w-5 h-5 mr-1" /> <span className="text-base font-medium">Back</span>
         </button>
         <div className="flex items-center gap-1 sm:gap-2">
-             <button
-                onClick={handleSummarize} 
-                disabled={isBusy}
-                className={`text-slate-400 p-2 transition-colors ${isBusy ? 'cursor-not-allowed' : 'hover:text-indigo-500'}`} 
-                title="AI 요약"
-             >
-                {isSummarizing ? <Loader2 className="w-5 h-5 animate-spin text-indigo-500" /> : <Sparkles className="w-5 h-5" />}
-             </button>
+             {/* AI 도구는 한 버튼(메뉴)으로 모음: 요약 / 저널클럽 준비 / 가이드라인 점검 */}
+             <div className="relative">
+                <button
+                    onClick={() => setShowAiMenu(v => !v)}
+                    className={`relative flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-sm font-bold transition-colors ${showAiMenu ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:bg-indigo-50/60'}`}
+                    title="AI 도구"
+                >
+                    {(isBusy || isCheckingGuideline) ? <Loader2 className="w-4 h-4 animate-spin text-indigo-500" /> : <Sparkles className="w-4 h-4" />}
+                    AI
+                    {suggestGuidelineCheck && (
+                        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-500" />
+                    )}
+                </button>
+                {showAiMenu && (
+                    <>
+                        <div className="fixed inset-0 z-40" onClick={() => setShowAiMenu(false)} />
+                        <div className="absolute right-0 top-full mt-1.5 z-50 w-72 bg-white border border-slate-200 rounded-xl shadow-xl p-1.5 animate-in fade-in slide-in-from-top-1 duration-150">
+                            {[
+                                {
+                                    key: 'summary',
+                                    icon: isSummarizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />,
+                                    color: 'text-indigo-600 bg-indigo-50',
+                                    label: note.summary && !isJournalSummary ? 'AI 요약 새로 만들기' : 'AI 요약',
+                                    desc: isPatientNote ? '케이스 요약·추정/감별 진단·추가 공부' : '메모 종류에 맞춰 요약·정리',
+                                    disabled: isBusy,
+                                    onClick: handleSummarize,
+                                },
+                                {
+                                    key: 'journal',
+                                    icon: isAnalyzingJournal ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />,
+                                    color: 'text-violet-600 bg-violet-50',
+                                    label: isJournalSummary ? '저널클럽 분석 다시 하기' : '저널클럽 준비',
+                                    desc: '설계·결과(NNT)·비뚤림·예상 질문 정리',
+                                    disabled: isBusy,
+                                    onClick: handleJournalClub,
+                                },
+                                {
+                                    key: 'guideline',
+                                    icon: isCheckingGuideline ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />,
+                                    color: 'text-emerald-700 bg-emerald-50',
+                                    label: isCheckingGuideline ? '가이드라인 점검 중…' : note.guidelineCheck ? '가이드라인 다시 점검' : '최신 가이드라인 점검',
+                                    desc: suggestGuidelineCheck ? `${formatAge(ageDays)} 수정한 메모 — 점검 권장` : '수치·권고가 지금도 맞는지 확인',
+                                    descClass: suggestGuidelineCheck ? 'text-amber-600' : undefined,
+                                    disabled: isCheckingGuideline,
+                                    onClick: () => onCheckGuideline(note.id),
+                                },
+                            ].map(item => (
+                                <button
+                                    key={item.key}
+                                    onClick={() => { setShowAiMenu(false); item.onClick(); }}
+                                    disabled={item.disabled}
+                                    className="w-full flex items-center gap-3 px-2.5 py-2 rounded-lg text-left hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    <span className={`w-8 h-8 shrink-0 rounded-lg flex items-center justify-center ${item.color}`}>{item.icon}</span>
+                                    <span className="min-w-0">
+                                        <span className="block text-sm font-bold text-slate-800">{item.label}</span>
+                                        <span className={`block text-[11px] ${item.descClass || 'text-slate-400'}`}>{item.desc}</span>
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
+                    </>
+                )}
+             </div>
              <div className="w-px h-4 bg-slate-200 mx-1"></div>
              <button onClick={() => onEdit(note)} className="text-slate-400 hover:text-blue-500 p-2" title="Edit"><Edit className="w-5 h-5" /></button>
              <button onClick={() => onDelete(note.id)} className="text-slate-400 hover:text-red-500 p-2" title="Delete"><Trash2 className="w-5 h-5" /></button>
@@ -390,55 +449,28 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
       <div className="flex-1 overflow-y-auto bg-slate-50/30">
         <div className="max-w-3xl mx-auto p-4 md:p-6 pb-32">
             
-            <div className="mb-6">
-                <div className="flex items-center mb-3">
-                    <span className="text-sm text-slate-400 flex items-center font-medium"><Calendar className="w-4 h-4 mr-1.5" /> {new Date(note.createdAt).toLocaleString()}</span>
-                </div>
-                {/* 분류 태그: 보기 화면에서 바로 지정·변경 (다시 누르면 해제). 편집 화면과 같은 모양. */}
-                <div className="flex flex-wrap items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-xl">
-                    <span className="text-xs font-bold text-slate-500">분류</span>
-                    {(['memo', 'patient'] as NoteTag[]).map(t => (
-                        <button
-                            key={t}
-                            onClick={() => onSetTag(note.id, note.tag === t ? undefined : t)}
-                            disabled={isBusy}
-                            className={`px-3 py-1 rounded-full text-xs font-bold border transition-colors whitespace-nowrap disabled:opacity-50 ${
-                                note.tag === t
-                                    ? (t === 'patient' ? 'bg-rose-50 border-rose-300 text-rose-600' : 'bg-blue-50 border-blue-300 text-blue-600')
-                                    : 'bg-white border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700'
-                            }`}
-                            title={note.tag === t ? '분류 해제' : `'${NOTE_TAG_LABELS[t]}'로 분류`}
-                        >
-                            {NOTE_TAG_LABELS[t]}
-                        </button>
-                    ))}
-                    <span className="text-[11px] text-slate-400">
-                        {note.tag ? '다시 누르면 해제' : '미선택 — 눌러서 분류'}
-                    </span>
-                </div>
-                {/* AI 도구: 저널클럽 준비 / 최신 가이드라인 점검 (누를 때만 실행) */}
-                <div className="flex flex-wrap items-center gap-2 mt-2 px-1">
-                    <button
-                        onClick={handleJournalClub}
-                        disabled={isBusy}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-violet-200 bg-white text-violet-600 hover:bg-violet-50 transition-colors disabled:opacity-50"
-                        title="붙여넣은 논문 초록/본문으로 설계·결과(NNT)·비뚤림·적용·기존 연구와의 관계·예상 질문 정리"
-                    >
-                        {isAnalyzingJournal ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
-                        저널클럽 준비
-                    </button>
-                    <button
-                        onClick={() => onCheckGuideline(note.id)}
-                        disabled={isCheckingGuideline}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50 transition-colors disabled:opacity-50"
-                        title="메모의 수치·권고가 지금도 최신 가이드라인과 맞는지 웹 검색으로 확인"
-                    >
-                        {isCheckingGuideline ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-                        {isCheckingGuideline ? '가이드라인 점검 중…' : '최신 가이드라인 점검'}
-                    </button>
-                    {isOldCheckable && !note.guidelineCheck && !isCheckingGuideline && (
-                        <span className="text-[11px] text-amber-600">{formatAge(ageDays)} 수정한 메모 — 점검 권장</span>
-                    )}
+            {/* 날짜 + 분류 태그 한 줄 (다시 누르면 해제) */}
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
+                <span className="text-sm text-slate-400 flex items-center font-medium"><Calendar className="w-4 h-4 mr-1.5" /> {new Date(note.createdAt).toLocaleString()}</span>
+                <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-400">분류</span>
+                    <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">
+                        {(['memo', 'patient'] as NoteTag[]).map(t => (
+                            <button
+                                key={t}
+                                onClick={() => onSetTag(note.id, note.tag === t ? undefined : t)}
+                                disabled={isBusy}
+                                className={`px-3 py-1 rounded-md text-xs font-bold transition-colors whitespace-nowrap disabled:opacity-50 ${
+                                    note.tag === t
+                                        ? (t === 'patient' ? 'bg-white text-rose-600 shadow-sm' : 'bg-white text-blue-600 shadow-sm')
+                                        : 'text-slate-500 hover:text-slate-700'
+                                }`}
+                                title={note.tag === t ? '다시 누르면 분류 해제' : `'${NOTE_TAG_LABELS[t]}'로 분류`}
+                            >
+                                {NOTE_TAG_LABELS[t]}
+                            </button>
+                        ))}
+                    </div>
                 </div>
             </div>
 
