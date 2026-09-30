@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Search, BookOpen, Sparkles, Loader2, ArrowUp, CloudDownload, Lightbulb, X } from 'lucide-react';
 import { Note, NoteTag, NOTE_TAG_LABELS } from '../types';
-import { embedTexts, cosineSimilarity } from '../services/voyageService';
+import { embedTexts, cosineSimilarity, hasVoyageApiKey } from '../services/voyageService';
 
 interface NoteListProps {
   notes: Note[];
@@ -22,6 +22,7 @@ interface NoteListProps {
   embeddingBackfillProgress?: { done: number; total: number } | null;
   tagFilter: TagFilter;
   onTagFilterChange: (filter: TagFilter) => void;
+  isFetchingAll?: boolean;
 }
 
 export type TagFilter = 'all' | NoteTag;
@@ -29,10 +30,18 @@ export type TagFilter = 'all' | NoteTag;
 // 의미 검색 결과로 인정할 최소 코사인 유사도. Voyage 임베딩 실측치를 보고
 // 너무 많이/적게 걸리면 이 값을 조절하세요(낮출수록 더 널널하게 잡힘).
 const SEMANTIC_SIMILARITY_THRESHOLD = 0.4;
-const SEMANTIC_MAX_RESULTS = 5;
+const SEMANTIC_MAX_RESULTS = 8;
+// 키워드 검색(150ms)보다 조금 더 기다렸다가 연관 검색 요청 — 타이핑 중 불필요한 요청 방지
+const SEMANTIC_DEBOUNCE_MS = 250;
+
+// 검색어 → 임베딩 벡터 캐시 (앱을 켜둔 동안 유지). 같은 검색어로 다시 검색하거나,
+// 메모를 열었다 돌아오거나, 메모 목록이 갱신돼도 서버에 다시 묻지 않고 바로 계산합니다.
+const queryVectorCache = new Map<string, number[]>();
+
+type SemanticStatus = 'idle' | 'waiting' | 'loading' | 'ready' | 'error' | 'unavailable';
 
 // Optimization: Memoized NoteCard component with content truncation to prevent rendering freezes
-const NoteCard = React.memo(({ note, onClick }: { note: Note, onClick: () => void }) => {
+const NoteCard = React.memo(({ note, onClick, badge }: { note: Note, onClick: () => void, badge?: string }) => {
 
     const previewContent = useMemo(() => {
         // Prefer summary if available and note has no main content
@@ -66,11 +75,16 @@ const NoteCard = React.memo(({ note, onClick }: { note: Note, onClick: () => voi
                             </span>
                         )}
                     </span>
-                    {note.summary && (
-                        <div className="flex items-center gap-1 text-[11px] text-indigo-400 bg-indigo-50 px-1.5 py-0.5 rounded">
-                            <Sparkles className="w-3 h-3" /> Summary
-                        </div>
-                    )}
+                    <div className="flex items-center gap-1.5">
+                        {badge && (
+                            <span className="text-[11px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">{badge}</span>
+                        )}
+                        {note.summary && (
+                            <div className="flex items-center gap-1 text-[11px] text-indigo-400 bg-indigo-50 px-1.5 py-0.5 rounded">
+                                <Sparkles className="w-3 h-3" /> Summary
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
         </div>
@@ -89,7 +103,8 @@ const NoteList: React.FC<NoteListProps> = ({
     onSearchChange,
     embeddingBackfillProgress,
     tagFilter,
-    onTagFilterChange
+    onTagFilterChange,
+    isFetchingAll
 }) => {
   // Pagination / Infinite Scroll State
   const [visibleCount, setVisibleCount] = useState(20);
@@ -199,47 +214,62 @@ const NoteList: React.FC<NoteListProps> = ({
 
   const otherNotes = textFilteredNotes;
 
-  // --- 의미 기반(임베딩) 검색: 정확히 일치하진 않지만 관련 있을 수 있는 메모 ---
-  // 검색어(디바운스된 searchTerm)가 바뀔 때만 실행되며, 실패해도(키 미설정 등)
-  // 조용히 무시하고 기존 텍스트 검색 결과만 보여줍니다.
-  const [semanticMatches, setSemanticMatches] = useState<Note[]>([]);
-  const [isSemanticSearching, setIsSemanticSearching] = useState(false);
+  // --- 연관(의미 기반, 임베딩) 검색: 키워드는 없지만 내용이 비슷한 메모 ---
+  // 1) 검색어의 임베딩만 서버(Voyage)에 한 번 요청하고 캐시합니다 — 검색어가 바뀔 때만.
+  // 2) 각 메모와의 유사도 계산은 이 기기에서 바로 합니다 — 메모 목록이 바뀌어도 네트워크 없이 즉시 갱신.
+  const [queryVector, setQueryVector] = useState<number[] | null>(null);
+  const [semanticStatus, setSemanticStatus] = useState<SemanticStatus>('idle');
   const semanticRequestIdRef = useRef(0);
 
   useEffect(() => {
       const term = searchTerm.trim();
-      if (!term) {
-          setSemanticMatches([]);
-          setIsSemanticSearching(false);
-          return;
-      }
-
       const requestId = ++semanticRequestIdRef.current;
-      setIsSemanticSearching(true);
+      if (!term) { setQueryVector(null); setSemanticStatus('idle'); return; }
+      if (!hasVoyageApiKey()) { setQueryVector(null); setSemanticStatus('unavailable'); return; }
 
-      (async () => {
+      const cached = queryVectorCache.get(term);
+      if (cached) { setQueryVector(cached); setSemanticStatus('ready'); return; }
+
+      setQueryVector(null);
+      setSemanticStatus('waiting');
+      const handle = setTimeout(async () => {
+          if (semanticRequestIdRef.current !== requestId) return;
+          setSemanticStatus('loading');
           try {
-              const [queryVector] = await embedTexts([term], 'query');
-              if (semanticRequestIdRef.current !== requestId) return; // 이미 새 검색어가 들어옴
-
-              const exactMatchIds = new Set(textFilteredNotes.map(n => n.id));
-              const scored = tagFilteredNotes
-                  .filter(n => n.embedding && !exactMatchIds.has(n.id))
-                  .map(n => ({ note: n, score: cosineSimilarity(queryVector, n.embedding) }))
-                  .filter(s => s.score >= SEMANTIC_SIMILARITY_THRESHOLD)
-                  .sort((a, b) => b.score - a.score)
-                  .slice(0, SEMANTIC_MAX_RESULTS)
-                  .map(s => s.note);
-
-              if (semanticRequestIdRef.current === requestId) setSemanticMatches(scored);
+              const [vector] = await embedTexts([term], 'query');
+              if (!vector || vector.length === 0) throw new Error('빈 임베딩 응답');
+              if (queryVectorCache.size >= 100) queryVectorCache.clear();
+              queryVectorCache.set(term, vector);
+              if (semanticRequestIdRef.current === requestId) {
+                  setQueryVector(vector);
+                  setSemanticStatus('ready');
+              }
           } catch (e) {
-              console.error("의미 기반 검색 실패(키워드 검색 결과는 정상 동작):", e);
-              if (semanticRequestIdRef.current === requestId) setSemanticMatches([]);
-          } finally {
-              if (semanticRequestIdRef.current === requestId) setIsSemanticSearching(false);
+              console.error("연관 검색 실패(키워드 검색 결과는 정상 동작):", e);
+              if (semanticRequestIdRef.current === requestId) setSemanticStatus('error');
           }
-      })();
-  }, [searchTerm, tagFilteredNotes]);
+      }, SEMANTIC_DEBOUNCE_MS);
+      return () => clearTimeout(handle);
+  }, [searchTerm]);
+
+  const semanticMatches = useMemo(() => {
+      if (!queryVector || !searchTerm.trim()) return [] as { note: Note; score: number }[];
+      const exactMatchIds = new Set(textFilteredNotes.map(n => n.id));
+      return tagFilteredNotes
+          .filter(n => n.embedding && n.embedding.length > 0 && !exactMatchIds.has(n.id))
+          .map(n => ({ note: n, score: cosineSimilarity(queryVector, n.embedding) }))
+          .filter(r => r.score >= SEMANTIC_SIMILARITY_THRESHOLD)
+          .sort((a, b) => b.score - a.score)
+          .slice(0, SEMANTIC_MAX_RESULTS);
+  }, [queryVector, searchTerm, tagFilteredNotes, textFilteredNotes]);
+
+  const isSemanticSearching = semanticStatus === 'waiting' || semanticStatus === 'loading';
+  // 연관 검색에 쓸 수 있는(임베딩이 준비된) 메모 수
+  const embeddedCount = useMemo(
+      () => tagFilteredNotes.filter(n => n.embedding && n.embedding.length > 0).length,
+      [tagFilteredNotes]
+  );
+  const isSearching = searchTerm.trim().length > 0;
 
   // Infinite Scroll Observer
   useEffect(() => {
@@ -320,11 +350,42 @@ const NoteList: React.FC<NoteListProps> = ({
                 );
             })}
         </div>
+        {/* 검색 상태: 무엇을, 어디까지 찾았는지 */}
+        {isSearching && (
+            <div className="px-1 space-y-0.5 text-[11px] leading-relaxed">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-slate-600">
+                    <span>키워드 일치 <b>{otherNotes.length}</b>개</span>
+                    <span className="flex items-center gap-1">
+                        연관 메모
+                        {isSemanticSearching && (<><Loader2 className="w-3 h-3 animate-spin text-amber-500" /> <span className="text-amber-600">찾는 중…</span></>)}
+                        {semanticStatus === 'ready' && <b className="text-amber-600">{semanticMatches.length}개</b>}
+                        {semanticStatus === 'error' && <span className="text-red-500">연결 실패 — 키워드 결과만 표시</span>}
+                        {semanticStatus === 'unavailable' && <span className="text-slate-400">사용 안 함 (Voyage 키 없음)</span>}
+                    </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-x-2 text-slate-400">
+                    {isFetchingAll ? (
+                        <span className="flex items-center gap-1">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            예전 메모까지 불러오는 중 · 지금은 {tagFilteredNotes.length}개에서 검색
+                        </span>
+                    ) : (
+                        <span>메모 {tagFilteredNotes.length}개에서 검색{tagFilter !== 'all' ? ` (${NOTE_TAG_LABELS[tagFilter]} 분류만)` : ''}</span>
+                    )}
+                    {semanticStatus !== 'unavailable' && embeddedCount < tagFilteredNotes.length && (
+                        <span className="flex items-center gap-1">
+                            · 연관 검색 준비 {embeddedCount}/{tagFilteredNotes.length}
+                            {embeddingBackfillProgress && <Loader2 className="w-3 h-3 animate-spin" />}
+                        </span>
+                    )}
+                </div>
+            </div>
+        )}
         {/* 예전 메모에 의미 기반 검색을 적용하는 중이라는 조용한 안내 (막지 않음) */}
-        {embeddingBackfillProgress && (
+        {!isSearching && embeddingBackfillProgress && (
             <p className="text-[11px] text-slate-400 px-1 flex items-center gap-1">
                 <Loader2 className="w-3 h-3 animate-spin" />
-                검색 기능 업데이트 중... ({embeddingBackfillProgress.done}/{embeddingBackfillProgress.total})
+                연관 검색 준비 중... ({embeddingBackfillProgress.done}/{embeddingBackfillProgress.total})
             </p>
         )}
       </div>
@@ -334,7 +395,11 @@ const NoteList: React.FC<NoteListProps> = ({
         {otherNotes.length === 0 && semanticMatches.length === 0 && !isSemanticSearching ? (
           <div className="flex flex-col items-center justify-center h-64 text-slate-300">
             <BookOpen className="w-12 h-12 mb-3 opacity-10" />
-            <p className="font-bold text-sm">{tagFilter === 'all' ? '메모가 없습니다.' : `'${NOTE_TAG_LABELS[tagFilter]}'로 분류된 메모가 없습니다.`}</p>
+            <p className="font-bold text-sm">
+                {isSearching
+                    ? (isFetchingAll ? '아직 결과가 없습니다 — 예전 메모를 불러오는 중이에요.' : '검색 결과가 없습니다.')
+                    : (tagFilter === 'all' ? '메모가 없습니다.' : `'${NOTE_TAG_LABELS[tagFilter]}'로 분류된 메모가 없습니다.`)}
+            </p>
           </div>
         ) : (
           <>
@@ -386,19 +451,20 @@ const NoteList: React.FC<NoteListProps> = ({
                 </>
             )}
 
-            {/* 의미 기반 검색 결과: 정확히 일치하진 않지만 관련 있을 수 있는 메모 */}
-            {searchTerm.trim() && (semanticMatches.length > 0 || isSemanticSearching) && (
+            {/* 연관 검색 결과: 키워드는 없지만 내용이 비슷한 메모 */}
+            {isSearching && (semanticMatches.length > 0 || isSemanticSearching) && (
                 <div className={otherNotes.length > 0 ? "pt-5 mt-2 border-t border-slate-100" : ""}>
                     <div className="flex items-center gap-1.5 text-xs font-bold text-amber-600 mb-3 px-1">
                         <Lightbulb className="w-3.5 h-3.5" />
-                        의미상 관련 있을 수 있는 메모
+                        연관 메모 <span className="font-normal text-amber-500">— 키워드는 없지만 내용이 비슷한 메모</span>
                         {isSemanticSearching && <Loader2 className="w-3 h-3 animate-spin text-amber-400" />}
                     </div>
                     <div className="space-y-3">
-                         {semanticMatches.map(note => (
+                         {semanticMatches.map(({ note, score }) => (
                              <NoteCard
                                 key={note.id}
                                 note={note}
+                                badge={`관련도 ${Math.round(score * 100)}%`}
                                 onClick={() => onSelectNote(note.id)}
                              />
                          ))}

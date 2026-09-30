@@ -151,21 +151,41 @@ const App: React.FC = () => {
   };
 
   // opts.silent: 검색 시 자동으로 전체 메모를 불러올 때는 alert 팝업을 띄우지 않습니다.
+  // - 이 기기에 있는 메모가 클라우드 것보다 최신이면 그대로 둡니다(덮어쓰지 않음).
+  // - 화면(메모리)에는 사진을 뺀 가벼운 버전만 올려서, 첫 검색이 무거워지지 않게 합니다.
+  //   (사진은 메모를 열 때 로컬DB에서 다시 읽음)
+  const [isFetchingAll, setIsFetchingAll] = useState(false);
   const handleFetchAllNotes = async (opts?: { silent?: boolean }) => {
       setIsCloudLoading(true);
+      setIsFetchingAll(true);
       try {
           const allNotes = await fetchAllNotesFromFirestore();
           if (allNotes.length > 0) {
+              const localById = new Map(notesRef.current.map(n => [n.id, n]));
+              const newerFromCloud = allNotes.filter(n => {
+                  const local = localById.get(n.id);
+                  // 같은 시각이면(변경 없음) 이 기기 것을 유지 — 동기화 전인 태그·퀴즈 기록 등을 덮지 않도록
+                  return !local || (n.updatedAt || 0) > (local.updatedAt || 0);
+              });
+              if (newerFromCloud.length > 0) await saveAllNotesToDB(newerFromCloud);
+              const lightweight = newerFromCloud.map(({ images, ...rest }) => rest as Note);
               setNotes(prev => {
                   const noteMap = new Map<string, Note>();
                   prev.forEach(n => noteMap.set(n.id, n));
-                  allNotes.forEach(n => noteMap.set(n.id, n));
+                  lightweight.forEach(n => {
+                      const cur = noteMap.get(n.id);
+                      if (!cur || (n.updatedAt || 0) > (cur.updatedAt || 0)) {
+                          // 지금 열려 있는 메모처럼 사진까지 들고 있던 항목은 사진을 잃지 않도록 유지
+                          noteMap.set(n.id, cur?.images?.length ? { ...n, images: cur.images } : n);
+                      }
+                  });
                   const merged = Array.from(noteMap.values());
                   merged.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
                   return merged;
               });
-              await saveAllNotesToDB(allNotes);
               if (!opts?.silent) alert(`${allNotes.length}개의 메모를 모두 불러왔습니다.`);
+              // 새로 들어온 예전 메모들도 연관(의미) 검색에 바로 쓰이도록 임베딩 준비
+              setTimeout(() => runEmbeddingBackfill(), 500);
           } else if (!opts?.silent) {
               alert("불러올 메모가 없습니다.");
           }
@@ -174,6 +194,7 @@ const App: React.FC = () => {
           if (!opts?.silent) alert("메모를 불러오는 중 오류가 발생했습니다.");
       } finally {
           setIsCloudLoading(false);
+          setIsFetchingAll(false);
       }
   };
 
@@ -246,7 +267,7 @@ const App: React.FC = () => {
           // (그 사이 삭제된 노트는 undefined가 반환되므로 건너뛰고, 되살리지 않습니다.)
           const fullNotes = await Promise.all(targets.map(t => getNoteFromDB(t.id)));
           const updated = fullNotes
-              .map((full, i): Note | null => full ? { ...full, embedding: vectors[i], embeddingUpdatedAt: now } : null)
+              .map((full, i): Note | null => full ? { ...full, embedding: vectors[i], embeddingUpdatedAt: Math.max(now, full.updatedAt || 0) } : null)
               .filter((n): n is Note => n !== null);
 
           for (const n of updated) {
@@ -269,44 +290,60 @@ const App: React.FC = () => {
       }
   };
 
-  // 앱을 켤 때마다, 아직 임베딩이 없거나(예전 메모) 내용이 바뀐 뒤 갱신되지 않은
-  // 메모들을 백그라운드에서 조용히 배치로 훑어서 채워줍니다. 세션당 한 번만 시작.
-  useEffect(() => {
-      if (isBackfillingEmbeddingsRef.current) return;
+  // 아직 임베딩이 없거나(예전 메모) 내용이 바뀐 뒤 갱신되지 않은 메모들을 백그라운드에서
+  // 조용히 배치로 채워줍니다. 앱 시작 시 + 전체 메모를 새로 불러온 뒤에 실행됩니다.
+  // 이미 돌고 있을 때 다시 요청되면, 지금 루프가 끝난 뒤 한 번 더 훑습니다.
+  const backfillRerunRef = useRef(false);
+  const runEmbeddingBackfill = async () => {
+      if (isBackfillingEmbeddingsRef.current) {
+          backfillRerunRef.current = true;
+          return;
+      }
       isBackfillingEmbeddingsRef.current = true;
-
       const BATCH_SIZE = 32;
-      const timer = setTimeout(async () => {
-          try {
+      try {
+          do {
+              backfillRerunRef.current = false;
               let pending = notesRef.current.filter(noteNeedsEmbedding);
               const total = pending.length;
-              if (total === 0) return;
+              if (total === 0) continue;
 
               setEmbeddingBackfillProgress({ done: 0, total });
               let done = 0;
-              // 안전장치: 무한 루프 방지용 최대 반복 횟수
+              // 안전장치: 무한 루프 방지용 최대 반복 횟수 + 한 번 시도한 메모는 이번 회차에 다시 보내지 않음
+              // (다른 기기 시계가 앞서 있거나, 로컬DB에 없는 메모라 저장이 건너뛰어진 경우 등)
               let iterations = 0;
+              let failed = false;
+              const attempted = new Set<string>();
               while (pending.length > 0 && iterations < 500) {
                   iterations++;
                   const batch = pending.slice(0, BATCH_SIZE);
+                  batch.forEach(n => attempted.add(n.id));
                   const ok = await embedAndPersistNotes(batch, { silent: true });
                   if (!ok) {
                       // 키 미설정 등 지속적인 실패로 보이면, 실패한 배치를 계속
                       // 재시도하며 API를 두드리지 않고 이번 세션에서는 중단합니다.
                       console.warn("임베딩 백필 중단: 배치 처리 실패 (Voyage API 키를 확인해주세요)");
+                      failed = true;
                       break;
                   }
                   done += batch.length;
                   setEmbeddingBackfillProgress({ done: Math.min(done, total), total });
                   // 연속 호출 부담을 줄이기 위해 배치 사이에 짧게 대기
                   await new Promise(r => setTimeout(r, 300));
-                  pending = notesRef.current.filter(noteNeedsEmbedding);
+                  pending = notesRef.current.filter(n => noteNeedsEmbedding(n) && !attempted.has(n.id));
               }
-          } finally {
-              setEmbeddingBackfillProgress(null);
-          }
-      }, 2000); // 초기 로딩/동기화가 어느 정도 자리잡을 시간을 줌
+              if (failed) break;
+          } while (backfillRerunRef.current);
+      } finally {
+          isBackfillingEmbeddingsRef.current = false;
+          setEmbeddingBackfillProgress(null);
+      }
+  };
 
+  useEffect(() => {
+      // 초기 로딩/동기화가 어느 정도 자리잡을 시간을 준 뒤 시작
+      const timer = setTimeout(() => { runEmbeddingBackfill(); }, 2000);
       return () => clearTimeout(timer);
       // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1026,7 +1063,9 @@ const App: React.FC = () => {
             <div className="flex-1 w-full bg-white overflow-hidden flex flex-col relative">
                 {view === ViewMode.CREATE && <NoteEditor onSave={handleSaveNote} onCancel={() => setView(ViewMode.LIST)} />}
                 {view === ViewMode.EDIT && activeNote && <NoteEditor initialNote={activeNote} onSave={handleSaveNote} onCancel={() => setView(ViewMode.DETAIL)} />}
-                {view === ViewMode.LIST && (
+                {/* 목록 화면은 메모를 열었다 돌아와도 검색어·검색 결과·스크롤 위치가 그대로 남도록
+                    다른 화면으로 가도 없애지 않고 숨겨만 둡니다. */}
+                <div className={view === ViewMode.LIST ? 'h-full flex flex-col' : 'hidden'}>
                     <NoteList 
                         notes={notes} 
                         onDelete={handleDeleteNote} 
@@ -1034,19 +1073,20 @@ const App: React.FC = () => {
                         onImportBackup={handleOpenFilePicker}
                         onExportBackup={handleExportBackup}
                         onSelectNote={handleFetchAndSelectNote}
-                        activeNoteId={activeNoteId}
+                        activeNoteId={view === ViewMode.LIST ? activeNoteId : null}
                         onClearActiveNote={() => setActiveNoteId(null)}
                         onRandomNote={handleRandomNote}
                         onLoadMore={handleLoadMoreNotes}
-                        onFetchAll={handleFetchAllNotes}
+                        onFetchAll={() => handleFetchAllNotes()}
                         isLoadingMore={isCloudLoading}
                         searchTerm={searchTerm}
                         onSearchChange={setSearchTerm}
                         embeddingBackfillProgress={embeddingBackfillProgress}
                         tagFilter={tagFilter}
                         onTagFilterChange={setTagFilter}
+                        isFetchingAll={isFetchingAll}
                     />
-                )}
+                </div>
                 {view === ViewMode.DETAIL && activeNote && (
                     <NoteDetail 
                         note={activeNote} 

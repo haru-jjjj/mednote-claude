@@ -169,10 +169,12 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
       }
   };
 
-  const handleDeleteSummary = () => {
+  const handleDeleteSummary = async () => {
       if (window.confirm("AI 요약을 삭제하시겠습니까?")) {
+          // 화면에 있는 메모가 사진이 빠진 가벼운 버전일 수도 있어, 저장 전에 전체 메모를 다시 읽음
+          const latest = (await getNoteFromDB(note.id).catch(() => undefined)) || note;
           const updatedNote = {
-              ...note,
+              ...latest,
               summary: '',
               sources: []
           };
