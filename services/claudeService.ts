@@ -650,7 +650,8 @@ const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: numb
             n.summary ? `(이전에 만든 AI 요약: ${n.summary})` : ''
         ].filter(Boolean).join('\n');
         const budget = Math.min(perNoteChars, totalChars - used);
-        const clipped = body.length > budget ? body.slice(0, budget) + '\n…(이하 생략)' : body;
+        // 앱이 분량 때문에 자른 것임을 분명히 해서, AI가 "메모가 중간에 끊겼다"고 지적하지 않게 함
+        const clipped = body.length > budget ? body.slice(0, budget) + '\n…(앱이 분량 제한으로 여기까지만 보냄 — 원래 메모에는 내용이 더 있음. 메모가 끊겼다고 지적하지 말 것)' : body;
         used += clipped.length;
         parts.push(`[메모${labelNumbers?.[i] ?? i + 1}] ${n.title || '제목 없음'} (${date})\n${clipped}`);
     });
@@ -666,7 +667,7 @@ export const notesWithinContextBudget = (notes: Note[], perNoteChars: number, to
         const len = [n.content || '', n.transcription ? `(사진에서 추출한 텍스트: ${n.transcription})` : '', n.summary ? `(이전에 만든 AI 요약: ${n.summary})` : '']
             .filter(Boolean).join('\n').length;
         const budget = Math.min(perNoteChars, totalChars - used);
-        used += len > budget ? budget + '\n…(이하 생략)'.length : len;
+        used += len > budget ? budget + 80 : len;
         out.push(n);
     }
     return out;
@@ -1453,16 +1454,25 @@ export const extractCaseLogBatch = async (
 // ---- 인계장: '업무' 메모로 만든 인계장 문서를 새로 만들거나, 바뀐 메모만 반영해 갱신 ----
 // - [메모N] 번호는 인계장마다 고정(한 번 붙은 번호는 계속 같은 메모)이라, 갱신할 때 새/수정 메모만 보내도
 //   기존 항목의 인용이 그대로 맞습니다.
+// 인계장에 보낼 메모 조각. 메모는 자르지 않고 통째로 보내되, 아주 긴 메모만 여러 조각(part)으로 나눔
+export interface HandoverItem {
+    label: number;   // 고정 번호 [메모N]
+    title: string;
+    date: number;    // 마지막 수정 시각
+    text: string;    // 메모 본문(해당 조각)
+    part: number;    // 1부터
+    parts: number;   // 전체 조각 수
+}
+
 export const updateHandoverDocument = async (params: {
     current: string;            // 지금 인계장 (처음이면 '')
-    notes: Note[];              // 이번에 반영할 새/수정 업무 메모
-    labels: number[];           // notes와 같은 순서의 고정 번호
+    items: HandoverItem[];      // 이번에 반영할 새/수정 업무 메모(또는 그 조각)
     modifiedLabels: number[];   // 그중 "수정된" 메모의 번호 (예전 항목을 새 내용으로 바꿔야 함)
     removedLabels: number[];    // 삭제됐거나 업무 분류가 풀린 메모의 번호 (그 메모만 근거인 항목은 삭제)
     purpose: string;
     purposeChanged?: boolean;   // 용도·받는 사람이 바뀜 → 분류 순서·"한눈에"를 새 용도에 맞게
 }): Promise<string> => {
-    const { current, notes, labels, modifiedLabels, removedLabels, purpose, purposeChanged } = params;
+    const { current, items, modifiedLabels, removedLabels, purpose, purposeChanged } = params;
     const today = new Date().toLocaleDateString('ko-KR');
     const lbl = (ns: number[]) => ns.map(n => `[메모${n}]`).join(' ');
     const isFirst = !current.trim();
@@ -1480,10 +1490,15 @@ export const updateHandoverDocument = async (params: {
         ${current}
         """`}
 
-        ${notes.length > 0 ? `NOTES TO ${isFirst ? 'USE' : 'INTEGRATE (new or modified since the last update)'} (each with its permanent label and last-modified date, oldest first):
+        ${items.length > 0 ? `NOTES TO ${isFirst ? 'USE' : 'INTEGRATE (new or modified since the last update)'} (each with its permanent label and last-modified date, oldest first; the COMPLETE text of each note is given):
         """
-        ${buildNotesContext(notes, CONTEXT_BUDGETS.handover[0], CONTEXT_BUDGETS.handover[1], 'updated', labels)}
+        ${items.map(it => `[메모${it.label}] ${it.title || '제목 없음'} (마지막 수정 ${new Date(it.date).toLocaleDateString('ko-KR')})${it.parts > 1 ? ` — part ${it.part}/${it.parts}` : ''}\n${it.text}`).join('\n\n=====\n\n')}
         """` : ''}
+        ${items.some(it => it.parts > 1) ? `LONG NOTES SPLIT INTO PARTS: a label marked "part k/n" is one piece of a long note. For k > 1 it CONTINUES the same note — add its content and do NOT remove items that came from earlier parts of that note.` : ''}
+        NOTE ABOUT OLD TRUNCATION: earlier versions of this app sent only the first part of long notes, cut with
+        "(이하 생략)". If the current document has items (usually under "## 확인 필요") saying a note ends with
+        "(이하 생략)", is cut off, or that later steps are missing because of that, those were caused by the app —
+        remove them, and use the complete note text provided now. Never write that a note "ends with (이하 생략)".
         ${modifiedLabels.length > 0 ? `MODIFIED NOTES: ${lbl(modifiedLabels)} — these notes were edited. Re-derive every item that cites them from the new content above: update changed details, remove items that are no longer in the note, keep the rest.` : ''}
         ${purposeChanged && !isFirst ? `THE PURPOSE / AUDIENCE CHANGED: reorder the categories and rewrite "## 한눈에" for the new purpose, but keep each item's wording and citations.` : ''}
         ${removedLabels.length > 0 ? `REMOVED NOTES: ${lbl(removedLabels)} — deleted or no longer marked as work. Delete items that cite only these labels; for items that also cite other notes, just drop these labels.` : ''}

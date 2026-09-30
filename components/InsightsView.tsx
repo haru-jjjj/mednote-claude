@@ -199,9 +199,38 @@ const WeeklyTab: React.FC<Props> = ({ notes, reviewDueCount, onSelectNote, onSav
 // ---------------------------------------------------------------------------
 // 인계장 정리: '업무' 메모를 모아 분류별 제목·소제목이 있는 하나의 인계장으로
 // ---------------------------------------------------------------------------
-type HandoverStatus = 'done' | 'new' | 'changed';
+type HandoverStatus = 'done' | 'new' | 'changed' | 'truncated';
 const handoverVersion = (n: Note) => n.updatedAt || n.createdAt || 0;
-const HANDOVER_MAX_BATCHES = 6;
+const HANDOVER_MAX_BATCHES = 10;
+const HANDOVER_META_VERSION = 2;
+const HANDOVER_BATCH_CHARS = 70000;  // 한 번에 보낼 메모 분량(기존 인계장 분량만큼 줄어듦)
+const HANDOVER_CHUNK_CHARS = 30000;  // 이보다 긴 메모만 여러 조각으로 나눔 (자르지 않음)
+const LEGACY_CLIP_CHARS = 4500;      // 이전 버전은 메모당 약 5천 자까지만 보냈음 → 이보다 긴 메모는 다시 반영
+
+// 인계장에 보낼 메모 본문: 요약 칸은 빼고, "메모 내용으로 저장"한 요약도 빼고 원래 기록 + 사진 글자
+const handoverTextOf = (n: Note) =>
+    [contentForAnalysis(n.content || ''), n.transcription ? `(사진에서 추출한 텍스트)\n${n.transcription}` : '']
+        .filter(Boolean).join('\n\n');
+// 이전 버전이 보낸 분량 계산과 같은 방식 (잘렸는지 판단용)
+const legacyLength = (n: Note) =>
+    [n.content || '', n.transcription ? `(사진에서 추출한 텍스트: ${n.transcription})` : '', n.summary ? `(이전에 만든 AI 요약: ${n.summary})` : '']
+        .filter(Boolean).join('\n').length;
+
+// 긴 글을 줄 단위로 max 글자 이하 조각들로 (줄 하나가 너무 길면 그 줄만 잘라서)
+export const splitForHandover = (text: string, max: number): string[] => {
+    if (text.length <= max) return [text];
+    const parts: string[] = [];
+    let cur = '';
+    for (const line of text.split('\n')) {
+        const pieces = line.length > max ? line.match(new RegExp(`[\\s\\S]{1,${max}}`, 'g')) || [line] : [line];
+        for (const piece of pieces) {
+            if (cur && cur.length + 1 + piece.length > max) { parts.push(cur); cur = ''; }
+            cur = cur ? `${cur}\n${piece}` : piece;
+        }
+    }
+    if (cur) parts.push(cur);
+    return parts;
+};
 
 const HANDOVER_MAX_DOC_CHARS = 30000; // 인계장 전체를 매번 다시 쓰므로, 이보다 길면 한도에 걸리기 쉬움
 
@@ -213,6 +242,9 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
     const statusOf = (n: Note): HandoverStatus => {
         const v = meta.sources[n.id];
         if (v === undefined) return 'new';
+        // 이전 버전에서 긴 메모가 잘린 채 반영된 경우 → 통째로 다시 반영 필요
+        if ((meta.v || 1) < HANDOVER_META_VERSION && legacyLength(n) > LEGACY_CLIP_CHARS) return 'truncated';
+        if (v === 0) return 'truncated'; // 다시 반영하기로 표시했지만 아직 못 한 메모
         return handoverVersion(n) > v ? 'changed' : 'done';
     };
     const withStatus = workNotes
@@ -289,9 +321,18 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
         let current = mode === 'rebuild' ? '' : (handoverDoc?.content || '');
         const sources: Record<string, number> = mode === 'rebuild' ? {} : { ...meta.sources };
         const refs: string[] = mode === 'rebuild' ? [] : [...meta.refs];
+        // 이전 버전에서 잘린 채 반영된 메모는 "다시 반영할 것"(0)으로 표시 → 이번에 못 끝내도 다음에 이어서 반영
+        pending.filter(x => x.status === 'truncated').forEach(x => { sources[x.n.id] = 0; });
         // 오래된 메모부터 반영 (같은 항목이 다르면 나중 메모가 이기도록)
-        let queue = (mode === 'rebuild' ? workNotes : pending.map(x => x.n))
+        const queue = (mode === 'rebuild' ? workNotes : pending.map(x => x.n))
             .slice().sort((a, b) => handoverVersion(a) - handoverVersion(b));
+        // 메모는 자르지 않고 보냄. 아주 긴 메모만 여러 조각으로 나눠 여러 번에 걸쳐 반영
+        type Piece = { note: Note; part: number; parts: number; text: string };
+        let pieces: Piece[] = [];
+        queue.forEach(n => {
+            const parts = splitForHandover(handoverTextOf(n), HANDOVER_CHUNK_CHARS);
+            parts.forEach((text, i) => pieces.push({ note: n, part: i + 1, parts: parts.length, text }));
+        });
         const cleanPurpose = purpose.trim();
         try {
             // 목록에 없는 메모는 정말 지워진 것인지 기기 저장소에서 확인 (아직 안 불러온 메모를 지우지 않도록)
@@ -304,38 +345,51 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
                     if (!stored || !stored.work) removed.push(id);
                 }
             }
-            for (let batch = 1; batch <= HANDOVER_MAX_BATCHES && (queue.length > 0 || removed.length > 0 || batch === 1); batch++) {
-                if (queue.length === 0 && removed.length === 0 && current.trim() && cleanPurpose === (meta.purpose || '')) break;
-                const hydrated = await hydrateNotes(queue);
-                // 기존 인계장 분량만큼 메모 몫을 줄여서 한 번에 보낼 양을 맞춤 (최소 1개는 포함)
-                const budget = Math.max(20000, CONTEXT_BUDGETS.handover[1] - current.length);
-                let fit = notesWithinContextBudget(hydrated, CONTEXT_BUDGETS.handover[0], budget);
-                if (fit.length === 0 && hydrated.length > 0) fit = [hydrated[0]];
-                setBusy(queue.length > fit.length || batch > 1
-                    ? `정리 중… (${batch}번째 묶음, 메모 ${fit.length}개)`
-                    : `정리 중… (메모 ${fit.length}개)`);
-                const labels = fit.map(n => {
-                    let idx = refs.indexOf(n.id);
-                    if (idx < 0) { refs.push(n.id); idx = refs.length - 1; }
+            for (let batch = 1; batch <= HANDOVER_MAX_BATCHES && (pieces.length > 0 || removed.length > 0 || batch === 1); batch++) {
+                if (pieces.length === 0 && removed.length === 0 && current.trim() && cleanPurpose === (meta.purpose || '')) break;
+                // 기존 인계장 분량만큼 메모 몫을 줄여서 한 번에 보낼 양을 맞춤 (최소 1조각은 포함)
+                const budget = Math.max(15000, HANDOVER_BATCH_CHARS - current.length);
+                const take: Piece[] = [];
+                let used = 0;
+                for (const p of pieces) {
+                    if (take.length > 0 && used + p.text.length > budget) break;
+                    take.push(p);
+                    used += p.text.length;
+                }
+                const noteCount = new Set(take.map(p => p.note.id)).size;
+                setBusy(pieces.length > take.length || batch > 1
+                    ? `정리 중… (${batch}번째 묶음, 메모 ${noteCount}개)`
+                    : `정리 중… (메모 ${noteCount}개)`);
+                const labelOf = (id: string) => {
+                    let idx = refs.indexOf(id);
+                    if (idx < 0) { refs.push(id); idx = refs.length - 1; }
                     return idx + 1;
-                });
-                const modifiedLabels = fit.filter(n => sources[n.id] !== undefined).map(n => refs.indexOf(n.id) + 1);
+                };
+                const items = take.map(p => ({
+                    label: labelOf(p.note.id), title: p.note.title || '', date: handoverVersion(p.note),
+                    text: p.text, part: p.part, parts: p.parts
+                }));
+                // 수정된 메모(또는 잘린 채 반영됐던 메모)는 첫 조각에서만 "예전 항목을 새 내용으로" 지시
+                const modifiedLabels = Array.from(new Set(take
+                    .filter(p => p.part === 1 && sources[p.note.id] !== undefined)
+                    .map(p => refs.indexOf(p.note.id) + 1)));
                 const removedLabels = removed.map(id => refs.indexOf(id) + 1).filter(x => x > 0);
                 current = await updateHandoverDocument({
-                    current, notes: fit, labels, modifiedLabels, removedLabels, purpose: cleanPurpose,
+                    current, items, modifiedLabels, removedLabels, purpose: cleanPurpose,
                     purposeChanged: batch === 1 && mode === 'update' && cleanPurpose !== (meta.purpose || '')
                 });
-                fit.forEach(n => { sources[n.id] = handoverVersion(n); });
+                // 마지막 조각까지 반영한 메모만 "반영됨"으로 기록
+                take.filter(p => p.part === p.parts).forEach(p => { sources[p.note.id] = handoverVersion(p.note); });
                 removed.forEach(id => { delete sources[id]; });
                 removed = [];
-                const fitIds = new Set(fit.map(n => n.id));
-                queue = queue.filter(n => !fitIds.has(n.id));
+                pieces = pieces.slice(take.length);
                 // 묶음마다 저장 → 중간에 끊겨도 반영한 만큼은 남음
-                const saved = await persist(docId, current, { sources, refs, updatedAt: Date.now(), purpose: cleanPurpose || undefined }, expected);
+                const saved = await persist(docId, current, { sources, refs, updatedAt: Date.now(), purpose: cleanPurpose || undefined, v: HANDOVER_META_VERSION }, expected);
                 docId = saved.id;
                 expected = saved.savedAt;
             }
-            if (queue.length > 0) setError(`업무 메모가 많아 ${queue.length}개는 아직 반영하지 못했어요. "새 업무 메모 반영"을 한 번 더 눌러주세요.`);
+            const left = new Set(pieces.map(p => p.note.id)).size;
+            if (left > 0) setError(`업무 메모가 많아 ${left}개는 아직 반영하지 못했어요. "새 업무 메모 반영"을 한 번 더 눌러주세요.`);
         } catch (e: any) {
             setError(e?.message || '인계장을 정리하지 못했습니다.');
         } finally {
@@ -371,10 +425,12 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
 
     const newCount = pending.filter(x => x.status === 'new').length;
     const changedCount = pending.filter(x => x.status === 'changed').length;
+    const truncatedCount = pending.filter(x => x.status === 'truncated').length;
     const hasWork = pending.length > 0 || removedIds.length > 0;
     const statusBadge = (st: HandoverStatus) =>
         st === 'done' ? <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded shrink-0">반영됨</span>
         : st === 'new' ? <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded shrink-0">새 메모</span>
+        : st === 'truncated' ? <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded shrink-0">잘려서 반영됨</span>
         : <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded shrink-0">수정됨</span>;
 
     return (
@@ -395,6 +451,7 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
                             <span className="text-slate-400">반영됨 {withStatus.length - pending.length}</span>
                             {newCount > 0 && <span className="font-bold text-emerald-700">새 메모 {newCount}</span>}
                             {changedCount > 0 && <span className="font-bold text-amber-700">수정됨 {changedCount}</span>}
+                            {truncatedCount > 0 && <span className="font-bold text-rose-600">잘려서 반영됨 {truncatedCount}</span>}
                             {removedIds.length > 0 && <span className="font-bold text-rose-600">삭제·분류 해제 {removedIds.length}</span>}
                             <button onClick={() => setShowList(v => !v)} className="ml-auto flex items-center gap-1 font-bold text-slate-500 hover:text-slate-700">
                                 목록 {showList ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
@@ -427,6 +484,7 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
                                 {busy ? busy
                                     : isFetchingAll ? '예전 메모 불러오는 중…'
                                     : !handoverDoc ? '인계장 만들기'
+                                    : truncatedCount > 0 && truncatedCount === pending.length && removedIds.length === 0 ? `잘린 메모 다시 반영 (${truncatedCount})`
                                     : hasWork ? `새 업무 메모 반영 (${pending.length + removedIds.length})`
                                     : purpose.trim() !== (meta.purpose || '') ? '용도 바꿔서 다시 정리'
                                     : '새로 반영할 메모 없음'}

@@ -49,6 +49,7 @@ export interface HandoverMeta {
   refs: string[]; // [메모N]의 고정 번호 순서 (N = 인덱스+1)
   updatedAt: number; // 마지막으로 정리한 시각
   purpose?: string; // 용도·받는 사람
+  v?: number; // 2 = 메모를 자르지 않고 통째로 반영하는 방식 (그 이전 버전은 긴 메모가 5천 자에서 잘렸음)
 }
 
 export interface WrongAnswer {
