@@ -1,10 +1,12 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw, Link2, FileText, ShieldCheck, ChevronDown, ChevronUp } from 'lucide-react';
+import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw, Link2, FileText, ShieldCheck, ChevronDown, ChevronUp, Clock, ArrowUp } from 'lucide-react';
 import DOMPurify from 'dompurify';
-import { Note, Source, NoteCategory, CATEGORIES, CATEGORY_LABELS, hasCategory } from '../types';
+import { Note, Source, NoteCategory, CATEGORIES, CATEGORY_LABELS, hasCategory, SummaryVersion } from '../types';
 import { marked } from 'marked';
-import { summarizeSingleNote, formatMedicalMarkdown, analyzeJournalArticle } from '../services/claudeService';
+import { summarizeSingleNote, formatMedicalMarkdown, analyzeJournalArticle, refineNoteSummary } from '../services/claudeService';
+import { summaryFieldsFor, archiveCurrentSummary, requestChainFor, historyOf } from '../services/summaryHistory';
+import SummaryHistoryPanel from './SummaryHistoryPanel';
 import { looksLikePaper, isGuidelineCheckCandidate, noteAgeDays, formatAge } from '../services/studyUtils';
 import { cosineSimilarity } from '../services/voyageService';
 import { buildContentWithSummary, splitMovedContent, contentForAnalysis } from '../services/insightUtils';
@@ -170,7 +172,8 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
   }, []);
 
   const handleSummarize = async () => {
-      if (note.summaryKind === 'journal' && note.summary && !window.confirm('저널클럽 분석을 일반 AI 요약으로 바꿀까요?')) return;
+      if (isBusy) return;
+      // 이전 요약·분석은 이력에 남으므로 따로 묻지 않음
       setIsSummarizing(true);
       setProgressStatus("노트 분석 시작...");
       
@@ -200,10 +203,8 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
               const latest = (await getNoteFromDB(note.id).catch(() => undefined)) || note;
               const updatedNote = {
                   ...latest,
-                  summary: result.summary,
-                  sources: result.sources,
-                  summarizedAt: Date.now(),
-                  summaryKind: undefined, // 일반 요약 (저널클럽 분석을 덮어쓴 경우 표시도 원래대로)
+                  // 일반 요약 (저널클럽 분석을 덮어쓴 경우 표시도 원래대로). 이전 요약은 이력으로
+                  ...summaryFieldsFor(latest, result, { mode: 'new' }),
                   isProcessed: true // Mark as AI processed
               };
               onUpdateNote(updatedNote);
@@ -224,7 +225,6 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
   const [isAnalyzingJournal, setIsAnalyzingJournal] = useState(false);
   const handleJournalClub = async () => {
       if (isSummarizing || isAnalyzingJournal) return;
-      if (note.summary && !isJournalSummary && !window.confirm('지금 있는 AI 요약을 저널클럽 분석으로 바꿀까요?')) return;
       setIsAnalyzingJournal(true);
       setProgressStatus("논문 확인 중...");
       const statuses = [
@@ -252,10 +252,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
           const latest = (await getNoteFromDB(note.id).catch(() => undefined)) || full;
           onUpdateNote({
               ...latest,
-              summary: result.summary,
-              sources: result.sources,
-              summarizedAt: Date.now(),
-              summaryKind: 'journal'
+              ...summaryFieldsFor(latest, result, { kind: 'journal', mode: 'journal' })
           });
       } catch (e: any) {
           console.error(e);
@@ -266,7 +263,74 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
           setProgressStatus("");
       }
   };
-  const isBusy = isSummarizing || isAnalyzingJournal;
+  // 요약에 질문·추가 사항을 넣어 다시 정리
+  const [isRefining, setIsRefining] = useState(false);
+  const [refineText, setRefineText] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
+  useEffect(() => { setRefineText(''); setShowHistory(false); }, [note.id]);
+  const historyCount = historyOf(note).length;
+
+  const handleRefine = async () => {
+      const request = refineText.trim();
+      if (!request || isBusy || !note.summary) return;
+      const noteId = note.id;
+      setIsRefining(true);
+      setProgressStatus("요청을 반영해 다시 정리하는 중...");
+      try {
+          const full = (await getNoteFromDB(noteId).catch(() => undefined)) || note;
+          const base = full.summary ? full : note;
+          const kind = base.summaryKind === 'journal' ? 'journal' as const : undefined;
+          const result = await refineNoteSummary(
+              { ...full, content: contentForAnalysis(full.content || '') },
+              {
+                  currentSummary: base.summary,
+                  currentSources: base.sources || [],
+                  request,
+                  kind,
+                  earlierRequests: requestChainFor(base)
+              }
+          );
+          // 정리 중에 바뀐 내용(분류 등)을 덮지 않도록 최신 메모 위에 얹음
+          const latest = (await getNoteFromDB(noteId).catch(() => undefined)) || full;
+          await onUpdateNote({
+              ...latest,
+              ...summaryFieldsFor(latest, result, { kind, mode: 'refine', request })
+          });
+          setRefineText(prev => (prev.trim() === request ? '' : prev));
+      } catch (e: any) {
+          console.error(e);
+          alert(`요청 반영 중 오류가 발생했습니다: ${e?.message || '알 수 없는 오류'}\n입력한 내용은 그대로 남아 있어요.`);
+      } finally {
+          setIsRefining(false);
+          setProgressStatus("");
+      }
+  };
+
+  // 이력의 한 버전을 지금 요약으로 (지금 요약은 이력에 남아 있으므로 잃지 않음)
+  const handleRestoreVersion = async (v: SummaryVersion) => {
+      if (isBusy) return;
+      if (!window.confirm(`${new Date(v.createdAt).toLocaleString()} 버전을 지금 요약으로 되돌릴까요? 지금 요약도 이력에 남아요.`)) return;
+      const latest = (await getNoteFromDB(note.id).catch(() => undefined)) || note;
+      const history = archiveCurrentSummary(latest);
+      onUpdateNote({
+          ...latest,
+          summary: v.summary,
+          sources: v.sources || [],
+          summaryKind: v.kind,
+          summarizedAt: v.createdAt, // 그 버전 이후 메모를 고쳤으면 "수정 전 요약"으로 표시되게
+          summaryHistory: history
+      });
+  };
+
+  const handleDeleteVersion = async (v: SummaryVersion) => {
+      if (isBusy) return;
+      if (!window.confirm('이 버전을 이력에서 지울까요?')) return;
+      const latest = (await getNoteFromDB(note.id).catch(() => undefined)) || note;
+      const rest = historyOf(latest).filter(x => x.id !== v.id);
+      onUpdateNote({ ...latest, summaryHistory: rest.length ? rest : undefined });
+  };
+
+  const isBusy = isSummarizing || isAnalyzingJournal || isRefining;
 
   // AI 요약을 메모 내용으로 옮기기: 요약이 메모 본문 맨 위로, 원래 메모는 접을 수 있는 블록으로 아래에 남음
   const handleMoveSummaryToContent = async () => {
@@ -292,6 +356,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
           summary: '',
           sources: [],
           summaryKind: undefined,
+          summaryHistory: archiveCurrentSummary(latest), // 옮긴 요약도 이력에는 남김
           summarizedAt: now, // 이후 기록을 추가하면 "분석 뒤 기록 추가됨"으로 알 수 있게
           updatedAt: now,
           ...(wasUpToDate ? { followUpCheckedAt: now } : {})
@@ -299,14 +364,15 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
   };
 
   const handleDeleteSummary = async () => {
-      if (window.confirm("AI 요약을 삭제하시겠습니까?")) {
+      if (window.confirm("AI 요약을 지울까요? (요약 이력에는 남아 있어 나중에 되돌릴 수 있어요)")) {
           // 화면에 있는 메모가 사진이 빠진 가벼운 버전일 수도 있어, 저장 전에 전체 메모를 다시 읽음
           const latest = (await getNoteFromDB(note.id).catch(() => undefined)) || note;
           const updatedNote = {
               ...latest,
               summary: '',
               sources: [],
-              summaryKind: undefined
+              summaryKind: undefined,
+              summaryHistory: archiveCurrentSummary(latest)
           };
           onUpdateNote(updatedNote);
       }
@@ -689,6 +755,15 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                 케이스 분석 다시 하기
                             </button>
                         )}
+                        {note.summary && historyCount > 0 && (
+                            <button
+                                onClick={() => setShowHistory(v => !v)}
+                                className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold whitespace-nowrap transition-colors ${showHistory ? 'bg-white text-indigo-700' : 'text-indigo-400 hover:text-indigo-700 hover:bg-white'}`}
+                                title="AI 요약 이력 보기"
+                            >
+                                <Clock className="w-3.5 h-3.5" /> 이력 {historyCount}
+                            </button>
+                        )}
                         {!isBusy && note.summary && (
                             <button 
                                 onClick={handleDeleteSummary}
@@ -700,7 +775,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         )}
                     </div>
                     
-                    {isBusy ? (
+                    {isBusy && !isRefining ? (
                         <div className="space-y-2 animate-pulse">
                             <div className="h-5 bg-indigo-200/50 rounded w-3/4"></div>
                             <div className="h-5 bg-indigo-200/50 rounded w-full"></div>
@@ -710,7 +785,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         <>
                             {/* CSS Fix: enforce breaking on code blocks within prose */}
                             <div 
-                                className="prose prose-sm prose-indigo max-w-none text-slate-700 leading-relaxed mb-4 break-words [&_code]:break-all [&_code]:whitespace-pre-wrap" 
+                                className={`prose prose-sm prose-indigo max-w-none text-slate-700 leading-relaxed mb-4 break-words [&_code]:break-all [&_code]:whitespace-pre-wrap transition-opacity ${isRefining ? 'opacity-50' : ''}`}
                                 dangerouslySetInnerHTML={{ __html: summaryHtml }} 
                             />
                             
@@ -730,9 +805,39 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                     ))}
                                 </div>
                             )}
+                            {/* 질문·추가 사항 → 요약 전체를 다시 정리 (이전 버전은 이력에) */}
+                            <div className="mt-3 pt-3 border-t border-indigo-100/70">
+                                <div className="flex items-end gap-2 bg-white border border-indigo-100 rounded-xl px-3 py-2 focus-within:border-indigo-300 transition-colors">
+                                    <textarea
+                                        value={refineText}
+                                        onChange={e => setRefineText(e.target.value)}
+                                        onKeyDown={e => {
+                                            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { e.preventDefault(); handleRefine(); }
+                                        }}
+                                        rows={Math.min(5, Math.max(1, refineText.split('\n').length))}
+                                        disabled={isRefining}
+                                        placeholder={isJournalSummary
+                                            ? '분석에 질문하거나 추가할 내용 (예: 통계 관련 예상 질문 더 / 이전 trial과 비교표)'
+                                            : '요약에 질문하거나 추가할 내용 (예: 감별 진단에 amyloidosis도 / 이 기준의 근거 가이드라인은?)'}
+                                        className="flex-1 resize-none bg-transparent text-sm text-slate-700 placeholder:text-slate-400 outline-none py-1 disabled:opacity-60"
+                                    />
+                                    <button
+                                        onClick={handleRefine}
+                                        disabled={!refineText.trim() || isBusy}
+                                        className="shrink-0 w-8 h-8 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                                        title="요청을 반영해 요약 전체를 다시 정리 (Ctrl/⌘+Enter)"
+                                    >
+                                        {isRefining ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-4 h-4" />}
+                                    </button>
+                                </div>
+                                <p className="text-[11px] text-indigo-400 mt-1.5 px-1">
+                                    {isRefining ? '반영하는 중… (30초~1분)' : '질문·요청을 반영해 요약 전체를 다시 정리해요. 이전 버전은 이력에 남아요.'}
+                                </p>
+                            </div>
                             <div className="flex justify-end pt-3">
                                 <button
                                     onClick={handleMoveSummaryToContent}
+                                    disabled={isBusy}
                                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 text-xs font-bold transition-colors"
                                     title="요약을 메모 본문 맨 위에 넣고, 원래 메모는 아래에 접어서 보관"
                                 >
@@ -742,6 +847,25 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         </>
                     )}
                 </div>
+            )}
+
+            {/* 요약이 없어도(지웠거나 메모 내용으로 옮김) 이력은 볼 수 있게 */}
+            {!note.summary && !isBusy && historyCount > 0 && !showHistory && (
+                <button
+                    onClick={() => setShowHistory(true)}
+                    className="mb-6 flex items-center gap-1.5 text-xs font-bold text-slate-400 hover:text-indigo-600"
+                >
+                    <Clock className="w-3.5 h-3.5" /> AI 요약 이력 {historyCount}개 보기
+                </button>
+            )}
+            {showHistory && (
+                <SummaryHistoryPanel
+                    note={note}
+                    disabled={isBusy}
+                    onRestore={handleRestoreVersion}
+                    onDelete={handleDeleteVersion}
+                    onClose={() => setShowHistory(false)}
+                />
             )}
 
             {note.images && note.images.length > 0 && (

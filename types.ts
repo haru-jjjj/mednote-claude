@@ -23,6 +23,8 @@ export interface Note {
   work?: boolean; // "업무" 분류 (인계 사항·시술 팁 등). '메모'와 함께 붙일 수 있음
   summarizedAt?: number; // AI 요약을 만든 시각 — 이후 메모가 수정됐으면 "수정 전 요약" 표시
   summaryKind?: 'journal'; // 요약 칸에 들어 있는 것이 저널클럽 분석이면 'journal' (일반 요약이면 없음)
+  // AI 요약을 만들거나 추가 요청으로 고칠 때마다 남기는 이력 (오래된 것 → 최신 순, 개수·분량 제한)
+  summaryHistory?: SummaryVersion[];
   // --- 복습 일정 (간격 반복) ---
   reviewDueAt?: number; // 다음 복습일(그날 0시). 이 시각이 지나면 "오늘 복습" 대상
   reviewIntervalDays?: number; // 직전에 잡힌 복습 간격(일)
@@ -43,6 +45,17 @@ export interface Note {
   followUpDueAt?: number; // 다음 확인일(그날 0시)
   // 이 메모가 "인계장" 문서일 때: 어떤 업무 메모를 어느 버전까지 반영했는지
   handover?: HandoverMeta;
+}
+
+export interface SummaryVersion {
+  id: string;
+  createdAt: number; // 이 버전을 만든 시각
+  summary: string;
+  sources: Source[];
+  kind?: 'journal'; // 저널클럽 분석이면 'journal'
+  // new = AI 요약 새로 만들기, journal = 저널클럽 분석, refine = 질문·추가 요청 반영, legacy = 이력 기능 전에 만든 요약
+  mode: 'new' | 'journal' | 'refine' | 'legacy';
+  request?: string; // refine일 때 내가 입력한 질문·추가 사항
 }
 
 export interface HandoverMeta {

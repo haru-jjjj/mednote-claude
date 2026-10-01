@@ -479,6 +479,95 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
 };
 
 // ----------------------------------------------------------------------------
+// AI 요약에 질문·추가 사항을 넣어 다시 정리 (요약 전체를 갱신한 버전을 돌려줌)
+// - 메모 원문(최신) + 지금 요약 + 이미 반영된 이전 요청 + 새 요청을 함께 보냄
+// - 일반 요약과 저널클럽 분석 모두 사용
+// ----------------------------------------------------------------------------
+export const REFINE_MAX_NOTE_CHARS = 120000;
+
+const mergeSources = (a: Source[], b: Source[], max = 8): Source[] => {
+    const map = new Map<string, Source>();
+    [...a, ...b].forEach(s => { if (s?.uri && !map.has(s.uri)) map.set(s.uri, s); });
+    return Array.from(map.values()).slice(0, max);
+};
+
+export const refineNoteSummary = async (
+    note: Note,
+    params: { currentSummary: string; currentSources: Source[]; request: string; kind?: 'journal'; earlierRequests?: string[] }
+): Promise<{ summary: string; sources: Source[] }> => {
+    const content: any[] = [];
+    (note.images || []).slice(0, 8).forEach(img => content.push(imageBlock(img)));
+
+    const raw = [note.content || '', note.transcription ? `(사진에서 추출한 텍스트)\n${note.transcription}` : '']
+        .filter(Boolean).join('\n\n');
+    const isTruncated = raw.length > REFINE_MAX_NOTE_CHARS;
+    const noteText = raw.substring(0, REFINE_MAX_NOTE_CHARS);
+    const isJournal = params.kind === 'journal';
+    const label = isJournal ? 'journal club analysis of the paper in the note' : 'AI summary of the note';
+    const earlier = (params.earlierRequests || []).filter(Boolean).slice(-8);
+    const tag = note.tag === 'patient' ? '"환자" (patient case note)'
+        : [note.tag === 'memo' ? '"메모" (study memo)' : '', note.work ? '"업무" (work note: handover items, procedure tips)' : ''].filter(Boolean).join(' + ') || 'none';
+
+    const prompt = `
+        You maintain the ${label}. The reader has read the current version and wants it updated with a
+        question or an addition of their own.
+        ${READER_PROFILE}
+
+        READER'S TAG FOR THIS NOTE: ${tag}
+
+        THE NOTE (latest version — it may have been edited after the current summary was written):
+        """${noteText || '(no text — use the attached images)'}"""
+        ${isTruncated ? `(The note was cut after ${REFINE_MAX_NOTE_CHARS} characters.)` : ''}
+
+        CURRENT ${isJournal ? 'ANALYSIS' : 'SUMMARY'}:
+        """${params.currentSummary}"""
+        ${earlier.length ? `\n        EARLIER REQUESTS already reflected in the current version (keep honoring them):\n${earlier.map(r => `        - ${r.replace(/\n+/g, ' ')}`).join('\n')}\n` : ''}
+        THE READER'S NEW REQUEST:
+        """${params.request}"""
+
+        TASK — return the UPDATED, COMPLETE ${isJournal ? 'analysis' : 'summary'} with the request integrated:
+        - If the request is a QUESTION: answer it inside the document. Put the answer where it naturally belongs
+          (expand the relevant section or bullet). If it doesn't fit any existing part, add or extend a final
+          section "### 추가 질문 정리" with "- **Q.** question" and "  - **A.** answer" (keep earlier Q/As there).
+        - If it is an ADDITION or INSTRUCTION (add a point, emphasize, shorten, reorganize, make a table, correct
+          something): apply it across the whole document.
+        - Keep everything from the current version that the request does not change — never drop content
+          silently. Remove or shorten only when the request asks for it.
+        - Keep the existing structure, headings and style. Keep the length about the same unless the request
+          needs more (then grow only as much as needed).
+        - If the note now contains information the current version doesn't cover, integrate it too.
+        - If the request conflicts with the note or with current evidence, say so briefly with ⚠️ and the
+          reason/source instead of complying blindly. Never invent numbers that are not in the note or a source.
+        - Web search: only when the request needs evidence (guideline thresholds/COR·LOE, trials, recent data),
+          up to 3 searches; cite what you use.
+
+        FORMAT:
+        - Bullets start with "- " with the full sentence on the SAME line.
+        - Use ≥ and ≤; no LaTeX. Inside table cells: plain text, single line, no backticks.
+
+        OUTPUT: only the full updated document, in Korean (standard English terms/abbreviations as usual).
+        No preamble, no narration of your process, no remarks like "요청을 반영했습니다".
+    `;
+    content.push({ type: 'text', text: prompt });
+
+    const data = await callClaude({
+        model: MODEL_SMART,
+        messages: [{ role: 'user', content }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+        max_tokens: 24000
+    });
+    let summary = extractText(data);
+    if (!summary) throw new Error('AI가 정리 결과를 돌려주지 않았습니다. 잠시 후 다시 시도해주세요.');
+    // 지금 요약이 "###" 제목으로 시작하는데 결과 앞에 머리말이 붙었으면 첫 제목 앞을 잘라냄
+    const firstHeading = summary.indexOf('###');
+    if (params.currentSummary.trim().startsWith('###') && firstHeading > 0) summary = summary.slice(firstHeading);
+    if (data?.stop_reason === 'max_tokens') {
+        summary += '\n\n> ⚠️ 분량 제한으로 뒷부분이 잘렸을 수 있습니다. 요약 이력에서 이전 버전으로 되돌릴 수 있어요.';
+    }
+    return { summary, sources: mergeSources(extractCitations(data, 8), params.currentSources || []) };
+};
+
+// ----------------------------------------------------------------------------
 // AI 주제 탐구 (Study Guide) — 유지 결정된 부가 기능
 // ----------------------------------------------------------------------------
 export const generateStudySuggestions = async (notes: Note[], language: string = 'Korean'): Promise<string[]> => {

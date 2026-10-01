@@ -11,6 +11,7 @@ import {
 import { getNoteFromDB } from '../services/storage';
 import { buildPatientIndex, duplicatePatientGroups } from '../services/patientId';
 import { contentForAnalysis } from '../services/insightUtils';
+import { summaryFieldsFor } from '../services/summaryHistory';
 import { hasVoyageApiKey } from '../services/voyageService';
 import { findRelatedNotes, hydrateNotes } from '../services/noteSearch';
 import {
@@ -623,7 +624,7 @@ const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFol
             const result = await summarizeSingleNote({ ...full, content: contentForAnalysis(full.content || '') });
             if (!result) throw new Error('케이스 분석을 만들지 못했습니다.');
             const latest = (await getNoteFromDB(n.id).catch(() => undefined)) || full;
-            onUpdateNote({ ...latest, summary: result.summary, sources: result.sources, summarizedAt: Date.now(), summaryKind: undefined, isProcessed: true });
+            onUpdateNote({ ...latest, ...summaryFieldsFor(latest, result, { mode: 'new' }), isProcessed: true });
             setOpenId(n.id);
         } catch (e: any) {
             setError(e?.message || '케이스 분석 중 오류가 발생했습니다.');

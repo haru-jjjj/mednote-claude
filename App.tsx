@@ -19,6 +19,7 @@ import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, ge
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines } from './services/claudeService';
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
+import { sanitizeHistory, historyKey, archiveCurrentSummary, trimHistory } from './services/summaryHistory';
 
 const sanitizeNotes = (rawNotes: any[]): Note[] => {
     if (!Array.isArray(rawNotes)) return [];
@@ -48,6 +49,7 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
             work: n.work === true ? true : undefined,
             summarizedAt: typeof n.summarizedAt === 'number' ? n.summarizedAt : undefined,
             summaryKind: n.summaryKind === 'journal' ? 'journal' : undefined,
+            summaryHistory: sanitizeHistory(n.summaryHistory),
             reviewDueAt: typeof n.reviewDueAt === 'number' ? n.reviewDueAt : undefined,
             reviewIntervalDays: typeof n.reviewIntervalDays === 'number' ? n.reviewIntervalDays : undefined,
             lastReviewedAt: typeof n.lastReviewedAt === 'number' ? n.lastReviewedAt : undefined,
@@ -1139,7 +1141,8 @@ const App: React.FC = () => {
                 // AI 요약이 바뀐 저장(요약·저널클럽·요약 삭제 등)은 내용 수정 시각이 그대로라 다른 기기로
                 // 실시간 전달이 안 됐음 → 부가정보 수정 시각을 올려서 전달되게 함
                 const summaryChanged = !latest || (latest.summary || '') !== (merged.summary || '')
-                    || (latest.summarizedAt || 0) !== (merged.summarizedAt || 0);
+                    || (latest.summarizedAt || 0) !== (merged.summarizedAt || 0)
+                    || historyKey(latest) !== historyKey(merged); // 요약 이력만 바뀐 경우(이력 삭제 등)도
                 if (summaryChanged) {
                     merged = { ...merged, metaUpdatedAt: Date.now() };
                 }
@@ -1225,6 +1228,11 @@ const App: React.FC = () => {
               // 사진 글자 읽기가 모두 끝난 메모들만이면 다시 읽지 않음
               isProcessed: full.every(n => !(n.images && n.images.length) || n.isProcessed),
               summary: '', sources: [], summarizedAt: undefined, summaryKind: undefined,
+              // 각 메모의 AI 요약(지금 요약 포함)은 합친 메모의 요약 이력으로 모아 둠
+              summaryHistory: (() => {
+                  const all = full.flatMap(n => archiveCurrentSummary(n)).sort((a, b) => a.createdAt - b.createdAt);
+                  return all.length ? trimHistory(all) : undefined;
+              })(),
               guidelineCheck: undefined,
               embedding: undefined, embeddingUpdatedAt: undefined,
               followUpCheckedAt: latestCheck.followUpCheckedAt,
