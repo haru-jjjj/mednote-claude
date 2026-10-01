@@ -19,7 +19,7 @@
 // 보안이 아니라 "잠금 화면이 없는 것보다 나은" 수준입니다.
 // ============================================================================
 
-import { fetchPinSetting, savePinSetting, PinSetting } from './firebaseService';
+import { fetchPinSetting, savePinSetting, PinSetting, fetchAppPrefs, saveAppPrefs } from './firebaseService';
 
 const TRUSTED_DEVICE_KEY = 'medinote_trusted_device';
 const PIN_CACHE_KEY = 'medinote_pin_setting_cache';
@@ -305,4 +305,49 @@ export const changePin = async (currentPin: string | null, newPin: string): Prom
     }
     applyLocally();
     return config;
+};
+
+// ----------------------------------------------------------------------------
+// 자동 잠금 ("이 기기 기억하기"를 안 한 기기에서, 일정 시간 사용하지 않으면 다시 PIN)
+// - 설정은 클라우드(appSettings/prefs)에 저장돼 모든 기기에 적용되고, 기기에는 사본을 둠
+// ----------------------------------------------------------------------------
+export const IDLE_LOCK_OPTIONS = [5, 10, 15, 30, 60, 0]; // 0 = 끔
+export const DEFAULT_IDLE_LOCK_MINUTES = 15;
+const IDLE_LOCK_CACHE_KEY = 'medinote_idle_lock_minutes';
+export const IDLE_LOCK_CHANGED_EVENT = 'medinote-idle-lock-changed';
+
+const validMinutes = (m: any): m is number => typeof m === 'number' && IDLE_LOCK_OPTIONS.includes(m);
+
+export const getCachedIdleLockMinutes = (): number => {
+    try {
+        const raw = localStorage.getItem(IDLE_LOCK_CACHE_KEY);
+        const v = Number(raw);
+        return raw !== null && validMinutes(v) ? v : DEFAULT_IDLE_LOCK_MINUTES;
+    } catch {
+        return DEFAULT_IDLE_LOCK_MINUTES;
+    }
+};
+
+const cacheIdleLockMinutes = (m: number) => {
+    try { localStorage.setItem(IDLE_LOCK_CACHE_KEY, String(m)); } catch { /* 무시 */ }
+};
+
+// 클라우드 설정 확인 (실패하면 null → 기기 사본/기본값 사용)
+export const loadCloudIdleLockMinutes = async (): Promise<number | null> => {
+    try {
+        const prefs = await fetchAppPrefs();
+        const m = prefs?.idleLockMinutes;
+        if (validMinutes(m)) { cacheIdleLockMinutes(m); return m; }
+        return null;
+    } catch (e) {
+        console.warn('자동 잠금 설정 확인 실패 (기기에 저장된 값 사용):', e);
+        return null;
+    }
+};
+
+export const saveIdleLockMinutes = async (m: number): Promise<void> => {
+    if (!validMinutes(m)) throw new Error('잘못된 값');
+    cacheIdleLockMinutes(m);
+    window.dispatchEvent(new CustomEvent(IDLE_LOCK_CHANGED_EVENT, { detail: m }));
+    await saveAppPrefs({ idleLockMinutes: m });
 };

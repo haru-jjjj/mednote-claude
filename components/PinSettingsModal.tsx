@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { KeyRound, X, Loader2, CheckCircle2 } from 'lucide-react';
-import { changePin, getInitialPinConfig, PinChangeError } from '../services/authService';
+import { changePin, getInitialPinConfig, PinChangeError, IDLE_LOCK_OPTIONS, getCachedIdleLockMinutes, saveIdleLockMinutes } from '../services/authService';
 
 interface PinSettingsModalProps {
     onClose: () => void;
@@ -18,6 +18,20 @@ const PinSettingsModal: React.FC<PinSettingsModalProps> = ({ onClose }) => {
     const [pending, setPending] = useState('');
     const [saving, setSaving] = useState(false);
     const [done, setDone] = useState(false);
+    // 자동 잠금 시간 (모든 기기 공통)
+    const [idleMinutes, setIdleMinutesState] = useState(() => getCachedIdleLockMinutes());
+    const [idleStatus, setIdleStatus] = useState<'' | 'saving' | 'saved' | 'local'>('');
+    const handleIdleChange = async (m: number) => {
+        setIdleMinutesState(m);
+        setIdleStatus('saving');
+        try {
+            await saveIdleLockMinutes(m);
+            setIdleStatus('saved');
+        } catch (e) {
+            console.warn('자동 잠금 설정 클라우드 저장 실패', e);
+            setIdleStatus('local'); // 이 기기에는 적용됨
+        }
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -121,6 +135,26 @@ const PinSettingsModal: React.FC<PinSettingsModalProps> = ({ onClose }) => {
                         </p>
                     </form>
                 )}
+
+                {/* 자동 잠금: "이 기기 기억하기"를 안 한 기기에서만 적용 */}
+                <div className="mt-5 pt-4 border-t border-slate-100">
+                    <label className="block text-[11px] font-bold text-slate-500 mb-1">자동 잠금 (기억하지 않은 기기)</label>
+                    <select
+                        value={idleMinutes}
+                        onChange={e => handleIdleChange(Number(e.target.value))}
+                        className="w-full text-sm px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    >
+                        {IDLE_LOCK_OPTIONS.map(m => (
+                            <option key={m} value={m}>{m === 0 ? '자동 잠금 안 함' : `${m}분 동안 사용하지 않으면 잠금`}</option>
+                        ))}
+                    </select>
+                    <p className="text-[10px] text-slate-400 leading-relaxed mt-1.5">
+                        "이 기기 기억하기"를 체크하지 않고 연 기기(공용 컴퓨터 등)에서, 화면을 누르거나 입력하지 않은 채
+                        이 시간이 지나면 PIN을 다시 물어요. 작성 중이던 내용은 사라지지 않아요. 모든 기기에 같은 설정이 적용됩니다.
+                    </p>
+                    {idleStatus === 'saved' && <p className="text-[10px] text-emerald-600 mt-1">저장됨 (모든 기기에 적용)</p>}
+                    {idleStatus === 'local' && <p className="text-[10px] text-amber-600 mt-1">이 기기에만 적용됨 — 클라우드 저장 실패(연결 또는 보안 규칙 확인)</p>}
+                </div>
             </div>
         </div>
     );

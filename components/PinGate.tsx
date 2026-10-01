@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Lock, Eye, EyeOff, ShieldCheck, AlertTriangle, Loader2 } from 'lucide-react';
 import {
     PinConfig, PIN_CHANGED_EVENT, getInitialPinConfig, loadCloudPinConfig,
-    verifyPin, isDeviceTrusted, trustThisDevice, hasTrustedDeviceFlag, clearTrustedDeviceFlag
+    verifyPin, isDeviceTrusted, trustThisDevice, hasTrustedDeviceFlag, clearTrustedDeviceFlag,
+    getCachedIdleLockMinutes, loadCloudIdleLockMinutes, IDLE_LOCK_CHANGED_EVENT
 } from '../services/authService';
 
 interface PinGateProps {
@@ -26,6 +27,15 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
     const [remember, setRemember] = useState(false);
     const [error, setError] = useState('');
     const [showPin, setShowPin] = useState(false);
+
+    // --- 자동 잠금: "이 기기 기억하기"를 안 하고 연 경우, 일정 시간 아무 조작이 없으면 다시 잠금 ---
+    const [idleMinutes, setIdleMinutes] = useState<number>(() => getCachedIdleLockMinutes());
+    const [idleLockedMsg, setIdleLockedMsg] = useState(false); // "오래 사용하지 않아 잠겼어요" 안내
+    const [idleWarning, setIdleWarning] = useState(false);     // 1분 남았을 때 안내
+    const lastActivityRef = useRef(Date.now());
+    // 한 번이라도 열렸으면, 다시 잠글 때 화면(작성 중인 메모 등)을 없애지 않고 위에 잠금 화면만 덮음
+    const [everUnlocked, setEverUnlocked] = useState(false);
+    const contentRef = useRef<HTMLDivElement>(null);
 
     const unlockedVersionRef = useRef(unlockedVersion);
     unlockedVersionRef.current = unlockedVersion;
@@ -95,6 +105,61 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
     }, []);
 
     const noPin = config.source === 'none';
+    const unlocked = noPin || unlockedVersion === config.version;
+    // 기억된 기기가 아닌데 열려 있는 상태 → 자동 잠금 대상
+    const sessionOnly = unlocked && !noPin && !isDeviceTrusted(config.version);
+
+    useEffect(() => { if (unlocked) setEverUnlocked(true); }, [unlocked]);
+
+    // 클라우드의 자동 잠금 설정 확인(시작할 때 한 번) + 이 기기에서 설정을 바꾸면 바로 반영
+    useEffect(() => {
+        loadCloudIdleLockMinutes().then(m => { if (m !== null) setIdleMinutes(m); });
+        const onChanged = (e: Event) => { const m = (e as CustomEvent<number>).detail; if (typeof m === 'number') setIdleMinutes(m); };
+        window.addEventListener(IDLE_LOCK_CHANGED_EVENT, onChanged);
+        return () => window.removeEventListener(IDLE_LOCK_CHANGED_EVENT, onChanged);
+    }, []);
+
+    useEffect(() => {
+        if (!sessionOnly || idleMinutes <= 0) { setIdleWarning(false); return; }
+        lastActivityRef.current = Date.now();
+        const limit = idleMinutes * 60 * 1000;
+        const onActivity = () => {
+            lastActivityRef.current = Date.now();
+            setIdleWarning(w => (w ? false : w));
+        };
+        const lockNow = () => {
+            setIdleWarning(false);
+            setIdleLockedMsg(true);
+            setPinInput('');
+            setError('');
+            setUnlockedVersion(null);
+        };
+        const check = () => {
+            const idle = Date.now() - lastActivityRef.current;
+            if (idle >= limit) lockNow();
+            else setIdleWarning(limit - idle <= 60 * 1000);
+        };
+        const events = ['pointerdown', 'keydown', 'wheel', 'touchstart'];
+        events.forEach(ev => window.addEventListener(ev, onActivity, { passive: true }));
+        window.addEventListener('scroll', onActivity, { passive: true, capture: true });
+        const timer = setInterval(check, 5000);
+        // 다른 탭·앱에 있다가 돌아오면(백그라운드에서는 타이머가 늦게 돌 수 있음) 바로 확인
+        const onVisible = () => { if (document.visibilityState === 'visible') check(); };
+        document.addEventListener('visibilitychange', onVisible);
+        return () => {
+            events.forEach(ev => window.removeEventListener(ev, onActivity));
+            window.removeEventListener('scroll', onActivity, { capture: true } as any);
+            clearInterval(timer);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
+    }, [sessionOnly, idleMinutes]);
+
+    // 잠금 화면이 덮여 있는 동안 뒤의 화면은 누르거나 입력할 수 없게
+    useEffect(() => {
+        const el = contentRef.current;
+        if (!el) return;
+        if (!unlocked) el.setAttribute('inert', ''); else el.removeAttribute('inert');
+    }, [unlocked, everUnlocked]);
 
     // PIN이 이 기기에도 캐시에도 없으면, 클라우드 확인이 끝날 때까지 잠깐 대기 화면
     if (noPin && !cloudChecked) {
@@ -105,10 +170,12 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
         );
     }
 
-    const unlocked = noPin || unlockedVersion === config.version;
+    const lockScreen = renderLockScreen();
 
-    if (unlocked) {
-        return (
+    // 처음 잠금을 풀기 전: 앱을 아예 띄우지 않음
+    if (!unlocked && !everUnlocked) return lockScreen;
+
+    return (
             <>
                 {noPin && (
                     <div className="fixed left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 bg-amber-500 text-white text-[11px] font-bold px-3.5 py-2 rounded-full shadow-lg whitespace-nowrap"
@@ -117,16 +184,33 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
                         PIN 잠금 꺼짐 — 사이드바 아래 "PIN 변경"에서 설정하세요
                     </div>
                 )}
-                {children}
+                {unlocked && idleWarning && (
+                    <div className="fixed left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 bg-slate-800 text-white text-[11px] font-bold px-3.5 py-2 rounded-full shadow-lg whitespace-nowrap"
+                        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.75rem)' }}>
+                        <Lock className="w-3.5 h-3.5 shrink-0" />
+                        1분 안에 자동 잠금 — 화면을 누르면 계속 사용
+                    </div>
+                )}
+                {/* 다시 잠겨도 작성 중이던 내용이 사라지지 않도록 화면은 그대로 두고 위에 잠금 화면을 덮음 */}
+                <div ref={contentRef} className="h-full w-full" aria-hidden={!unlocked}>
+                    {children}
+                </div>
+                {!unlocked && (
+                    <div className="fixed inset-0 z-[10000]">{lockScreen}</div>
+                )}
             </>
-        );
-    }
+    );
+
+    // PIN 입력 화면 (처음 열 때 / 자동 잠금으로 다시 잠겼을 때 공용)
+    function renderLockScreen() {
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         if (pinInput.length > 0 && verifyPin(config, pinInput)) {
             setError('');
             if (remember) trustThisDevice(config.version);
+            setIdleLockedMsg(false);
+            lastActivityRef.current = Date.now();
             setUnlockedVersion(config.version);
         } else {
             setError('PIN이 올바르지 않습니다.');
@@ -143,6 +227,11 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
                     </div>
                     <h1 className="font-bold text-slate-800 text-base">MediNote AI</h1>
                     <p className="text-xs text-slate-400 mt-1">PIN 번호를 입력해주세요</p>
+                    {idleLockedMsg && (
+                        <p className="text-[11px] text-amber-600 mt-2 text-center leading-relaxed">
+                            {idleMinutes}분 동안 사용하지 않아 잠겼어요.<br />작성 중이던 내용은 그대로 있어요.
+                        </p>
+                    )}
                 </div>
 
                 <div className="relative mb-3">
@@ -191,6 +280,7 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
             </form>
         </div>
     );
+    }
 };
 
 export default PinGate;

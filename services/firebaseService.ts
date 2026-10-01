@@ -426,3 +426,21 @@ export const savePinSetting = async (setting: PinSetting): Promise<void> => {
     await ensureAuth();
     await setDoc(doc(db, SETTINGS_COLLECTION, PIN_DOC_ID), setting);
 };
+
+// ----------------------------------------------------------------------------
+// 앱 설정: 자동 잠금 시간 등 (모든 기기 공통) — appSettings/prefs
+// ----------------------------------------------------------------------------
+export interface AppPrefs {
+    idleLockMinutes?: number; // "이 기기 기억하기"를 안 한 기기의 자동 잠금 시간(분), 0 = 끔
+}
+
+export const fetchAppPrefs = async (): Promise<AppPrefs | null> => {
+    await ensureAuth();
+    const snap = await getDoc(doc(db, SETTINGS_COLLECTION, 'prefs'));
+    return snap.exists() ? (snap.data() as AppPrefs) : null;
+};
+
+export const saveAppPrefs = async (prefs: AppPrefs): Promise<void> => {
+    await ensureAuth();
+    await setDoc(doc(db, SETTINGS_COLLECTION, 'prefs'), prefs, { merge: true });
+};
