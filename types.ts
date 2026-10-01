@@ -36,6 +36,7 @@ export interface Note {
   metaUpdatedAt?: number;
   // AI 결과를 저장한 메모('ai')는 메모 활용 도구의 분석 대상에서 빠짐 (결과가 다시 입력으로 섞이지 않게)
   origin?: 'ai';
+  deleted?: boolean; // 클라우드에만 쓰는 "삭제됨" 표시 (다른 기기에 삭제를 전달하기 위함, 화면에는 나오지 않음)
   // --- 환자 팔로업 (환자 메모를 주기적으로 열어 확인) ---
   followUpCheckedAt?: number; // 마지막으로 "확인함"을 누른 시각
   followUpIntervalDays?: number; // 확인 주기(일)

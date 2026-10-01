@@ -17,7 +17,7 @@ import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NoteCategory, to
 import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote } from './services/studyUtils';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines } from './services/claudeService';
-import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, isDeletedNoteId, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
+import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 
 const sanitizeNotes = (rawNotes: any[]): Note[] => {
@@ -101,6 +101,28 @@ const App: React.FC = () => {
   // Use ref for notes to prevent re-triggering quiz generation on note updates
   const notesRef = useRef<Note[]>(notes);
   useEffect(() => { notesRef.current = notes; }, [notes]);
+  // 실시간 동기화 콜백(처음 한 번 만든 함수)에서 현재 화면·열린 메모를 알기 위한 참조
+  const viewRef = useRef(view);
+  useEffect(() => { viewRef.current = view; }, [view]);
+  const activeNoteIdRef = useRef(activeNoteId);
+  useEffect(() => { activeNoteIdRef.current = activeNoteId; }, [activeNoteId]);
+  // 편집 중에 다른 기기에서 지워져서 화면에만 남겨둔 메모 — 편집을 마치고 나왔는데 저장 안 했으면 정리
+  const keptForEditRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+      if (view === ViewMode.EDIT || keptForEditRef.current.size === 0) return;
+      const ids = Array.from(keptForEditRef.current);
+      keptForEditRef.current = new Set();
+      (async () => {
+          const gone = new Set<string>();
+          for (const id of ids) if (!(await getNoteFromDB(id).catch(() => undefined))) gone.add(id);
+          if (gone.size === 0) return;
+          setNotes(prev => prev.filter(n => !gone.has(n.id)));
+          if (activeNoteIdRef.current && gone.has(activeNoteIdRef.current)) {
+              setActiveNoteId(null);
+              if (viewRef.current === ViewMode.DETAIL) setView(ViewMode.LIST);
+          }
+      })();
+  }, [view]);
 
   // Quiz State with Queue support
   const [quizState, setQuizState] = useState<QuizState>({
@@ -120,6 +142,59 @@ const App: React.FC = () => {
   const quizAbortController = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+
+    // 다른 기기에서 지운 메모를 이 기기에서도 지움 (편집 중인 메모는 작성 내용을 잃지 않게 화면에는 남김)
+    const removeLocally = async (ids: Set<string>) => {
+        if (ids.size === 0) return;
+        const editingId = viewRef.current === ViewMode.EDIT ? activeNoteIdRef.current : null;
+        if (editingId && ids.has(editingId)) keptForEditRef.current.add(editingId);
+        for (const id of ids) await deleteNoteFromDB(id).catch(console.error);
+        setNotes(prev => prev.filter(n => !ids.has(n.id) || n.id === editingId));
+        if (activeNoteIdRef.current && ids.has(activeNoteIdRef.current) && viewRef.current === ViewMode.DETAIL) {
+            setView(ViewMode.LIST);
+            setActiveNoteId(null);
+        }
+    };
+    // 저장하려던 메모가 이미 다른 기기에서 지워진 경우(클라우드 저장 직전 확인에서 발견)
+    setRemoteDeletedHandler(id => { removeLocally(new Set([id])); });
+
+    // 실시간 동기화 처리: 콜백이 겹쳐도 도착 순서대로
+    let syncChain: Promise<void> = Promise.resolve();
+    const onRemote = (remoteNotes: Note[]) => {
+        syncChain = syncChain.then(async () => {
+            // (이 기기에서 지운 메모의 삭제 표시도 처리 — 지운 것이 확실히 반영되도록)
+            const live = remoteNotes.filter(r => r.deleted || !isDeletedNoteId(r.id));
+            const decisions = await Promise.all(live.map(async r => {
+                const local = await getNoteFromDB(r.id).catch(() => undefined);
+                // 이 기기 사본을 유지하는 건 "더 최신이면서, 이 기기에서 고치고 아직 클라우드에 못 올린 경우"뿐.
+                // (그 외에는 클라우드를 따름 — 기기 시계가 어긋나 다른 기기의 최신 수정을 되돌리는 일 방지)
+                const keepLocal = !!local && isNewerCopy(local, r) && (isUnsyncedNote(r.id) || hasPendingCloudWrite(r.id));
+                return { r, local, keepLocal };
+            }));
+            // 다른 기기에서 지운 메모 → 이 기기에서도 지움
+            await removeLocally(new Set(decisions.filter(d => !d.keepLocal && d.r.deleted && d.local).map(d => d.r.id)));
+            const accepted = decisions.filter(d => !d.keepLocal && !d.r.deleted && !isDeletedNoteId(d.r.id)).map(d => d.r);
+
+            if (accepted.length > 0) {
+                setNotes(prevNotes => {
+                    const noteMap = new Map<string, Note>();
+                    prevNotes.forEach(n => noteMap.set(n.id, n));
+                    accepted.forEach(n => noteMap.set(n.id, n));
+                    const merged = Array.from(noteMap.values());
+                    merged.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+                    return merged;
+                });
+                await saveAllNotesToDB(accepted).catch(console.error);
+            }
+            // 이 기기 사본이 더 최신인데 올라가지 않은 메모 → 다시 올림 (보내는 중이거나 이번 세션에 거절된 건 제외)
+            decisions
+                .filter(d => d.keepLocal && d.local && !hasPendingCloudWrite(d.r.id) && !hasFailedCloudWrite(d.r.id))
+                .forEach(d => { saveNoteToFirestore(d.local as Note); });
+        }).catch(e => console.error("Sync merge failed", e));
+    };
+
     const initData = async () => {
         try {
             const savedBackupTime = localStorage.getItem('medinote_last_backup');
@@ -127,54 +202,33 @@ const App: React.FC = () => {
 
             // Fast Track Loading from Local DB
             const recentNotes = await getRecentNotesFromDB(15);
-            if (recentNotes.length > 0) {
+            if (recentNotes.length > 0 && !cancelled) {
                 setNotes(recentNotes);
             }
 
             // Full Load from Local DB
             const dbNotes = await getAllNotesFromDB();
-            setNotes(dbNotes.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
-
+            if (!cancelled) setNotes(dbNotes.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
         } catch (e) { console.error("Init failed", e); }
+
+        if (cancelled) return;
+        // 기기 저장소를 다 읽은 뒤에 실시간 동기화를 시작 (먼저 시작하면, 동기화로 받은 변경·삭제를
+        // 기기 저장소 내용이 뒤늦게 덮어써서 되돌리는 일이 있었음)
+        console.log("App: Initializing Firebase Sync...");
+        unsubscribe = syncNotesFromFirestore(onRemote);
+
+        // 지난번에 클라우드에 올라가지 못한 변경(앱을 닫았거나 연결이 끊겼던 경우)을 다시 올림
+        for (const u of listUnsyncedNotes()) {
+            if (u.deleted) { deleteNoteFromFirestore(u.id); continue; }
+            const local = await getNoteFromDB(u.id).catch(() => undefined);
+            // 클라우드가 더 최신이면 덮지 않고, 확인이 안 되면 다음에 다시 시도
+            if (local) saveNoteToFirestore(local, { replay: true });
+            else forgetUnsynced(u.id);
+        }
     };
     initData();
 
-    // Initialize Firebase Sync
-    console.log("App: Initializing Firebase Sync...");
-    // 실시간 동기화: 이 기기(로컬DB)에 더 최신 사본이 있으면(예: 클라우드로 보내기 전에 앱을
-    // 다시 연 경우) 클라우드의 오래된 사본으로 덮지 않고, 오히려 로컬 사본을 다시 올립니다.
-    // 콜백이 겹쳐도 도착 순서대로 반영되도록 순서대로 처리합니다.
-    let syncChain: Promise<void> = Promise.resolve();
-    const unsubscribe = syncNotesFromFirestore((remoteNotes) => {
-        syncChain = syncChain.then(async () => {
-            const live = remoteNotes.filter(r => !isDeletedNoteId(r.id));
-            const decisions = await Promise.all(live.map(async r => {
-                const local = await getNoteFromDB(r.id).catch(() => undefined);
-                return { r, local, keepLocal: !!local && isNewerCopy(local, r) };
-            }));
-            const accepted = decisions.filter(d => !d.keepLocal).map(d => d.r);
-
-            if (accepted.length > 0) {
-                setNotes(prevNotes => {
-                    const noteMap = new Map<string, Note>();
-                    prevNotes.forEach(n => noteMap.set(n.id, n));
-                    accepted.forEach(n => { if (!isDeletedNoteId(n.id)) noteMap.set(n.id, n); });
-                    
-                    const merged = Array.from(noteMap.values());
-                    // Sort merged list
-                    merged.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-                    return merged;
-                });
-                await saveAllNotesToDB(accepted.filter(n => !isDeletedNoteId(n.id))).catch(console.error);
-            }
-            // 이미 보내는 중(서버 확인 대기)인 메모는 다시 올리지 않음
-            decisions
-                .filter(d => d.keepLocal && d.local && !hasPendingCloudWrite(d.r.id))
-                .forEach(d => { saveNoteToFirestore(d.local as Note); });
-        }).catch(e => console.error("Sync merge failed", e));
-    });
-
-    return () => unsubscribe();
+    return () => { cancelled = true; if (unsubscribe) unsubscribe(); };
   }, []);
 
   const handleLoadMoreNotes = async () => {
@@ -213,7 +267,23 @@ const App: React.FC = () => {
       setIsCloudLoading(true);
       setIsFetchingAll(true);
       try {
-          const allNotes = await fetchAllNotesFromFirestore();
+          const fetched = await fetchAllNotesFromFirestore();
+          // 다른 기기에서 지운 메모(삭제 표시) → 이 기기에서도 지움 (이 기기에서 그 뒤에 고쳐 아직 못 올린 경우는 제외)
+          const tombstones = fetched.filter(n => n.deleted);
+          if (tombstones.length > 0) {
+              const removeIds = new Set<string>();
+              for (const t of tombstones) {
+                  const local = await getNoteFromDB(t.id).catch(() => undefined);
+                  if (!local) continue;
+                  if (isNewerCopy(local, t) && (isUnsyncedNote(t.id) || hasPendingCloudWrite(t.id))) continue;
+                  await deleteNoteFromDB(t.id).catch(console.error);
+                  removeIds.add(t.id);
+              }
+              const editingId = viewRef.current === ViewMode.EDIT ? activeNoteIdRef.current : null;
+              if (editingId && removeIds.has(editingId)) keptForEditRef.current.add(editingId);
+              if (removeIds.size > 0) setNotes(prev => prev.filter(n => !removeIds.has(n.id) || n.id === editingId));
+          }
+          const allNotes = fetched.filter(n => !n.deleted);
           if (allNotes.length > 0) {
               const localById = new Map(notesRef.current.map(n => [n.id, n]));
               const newerFromCloud = allNotes.filter(n => {
@@ -1046,7 +1116,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleUpdateNote = async (incoming: Note) => {
+  const handleUpdateNote = async (incoming: Note): Promise<boolean> => {
     try {
         // 복습·확인 기록 같은 부가정보 저장(patchNoteMeta)과 순서를 맞추고, 그 사이 더 최신 부가정보가
         // 저장돼 있으면 그것을 유지 (요약 저장이 "확인함" 기록 등을 덮지 않도록)
@@ -1065,6 +1135,13 @@ const App: React.FC = () => {
                         followUpCheckedAt: Math.max(latest.followUpCheckedAt || 0, incoming.followUpCheckedAt || 0) || undefined,
                         metaUpdatedAt: latest.metaUpdatedAt
                     };
+                }
+                // AI 요약이 바뀐 저장(요약·저널클럽·요약 삭제 등)은 내용 수정 시각이 그대로라 다른 기기로
+                // 실시간 전달이 안 됐음 → 부가정보 수정 시각을 올려서 전달되게 함
+                const summaryChanged = !latest || (latest.summary || '') !== (merged.summary || '')
+                    || (latest.summarizedAt || 0) !== (merged.summarizedAt || 0);
+                if (summaryChanged) {
+                    merged = { ...merged, metaUpdatedAt: Date.now() };
                 }
                 await saveNoteToDB(merged);
                 return merged;
@@ -1092,9 +1169,11 @@ const App: React.FC = () => {
             });
         }
         embedAndPersistNotes([updatedNote], { silent: true });
+        return true;
     } catch(e) {
         console.error("Update Error", e);
         alert("메모 수정 저장 실패");
+        return false;
     }
   };
 
@@ -1156,7 +1235,13 @@ const App: React.FC = () => {
               updatedAt: now,
               metaUpdatedAt: now
           };
-          await handleUpdateNote(merged);
+          if (!(await handleUpdateNote(merged))) return null; // 이 기기 저장부터 실패하면 원본은 그대로
+          // 합친 메모가 클라우드에 확실히 저장된 뒤에만 나머지를 지움 (용량 초과 등으로 저장이 거절되면 원본 보존)
+          const saved = await waitForCloudSave(target.id, 20000);
+          if (!saved) {
+              alert('합친 메모의 클라우드 저장을 확인하지 못해서(연결 끊김 또는 용량 초과) 원래 메모들은 지우지 않았어요.\n합친 메모는 이 기기에 저장돼 있으니, 연결된 뒤 확인하고 나머지 메모를 직접 지워주세요.');
+              return target.id;
+          }
           for (const o of others) {
               await deleteNoteFromDB(o.id);
               deleteNoteFromFirestore(o.id);

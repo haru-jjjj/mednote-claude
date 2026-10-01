@@ -34,7 +34,7 @@ interface Props {
     onBack: () => void;
     onSelectNote: (id: string) => void;
     onSaveNewNote: (note: Note) => Promise<void>;
-    onUpdateNote: (note: Note) => void | Promise<void>; // 케이스 분석 갱신·인계장 저장용
+    onUpdateNote: (note: Note) => void | Promise<unknown>; // 케이스 분석 갱신·인계장 저장용
     handoverDoc?: Note; // 저장돼 있는 인계장 (메모 활용 > 인계장 정리)
     onMergePatient?: (ids: string[]) => Promise<void>; // 같은 환자 번호 메모 합치기
     onFollowUpCheck: (id: string, intervalDays: number) => void; // "확인함"
