@@ -7,6 +7,7 @@ import { marked } from 'marked';
 import { summarizeSingleNote, formatMedicalMarkdown, analyzeJournalArticle, refineNoteSummary } from '../services/claudeService';
 import { summaryFieldsFor, archiveCurrentSummary, requestChainFor, historyOf } from '../services/summaryHistory';
 import SummaryHistoryPanel from './SummaryHistoryPanel';
+import { splitNoteParts, coverageProgress } from '../services/quizCoverage';
 import { looksLikePaper, isGuidelineCheckCandidate, noteAgeDays, formatAge } from '../services/studyUtils';
 import { cosineSimilarity } from '../services/voyageService';
 import { buildContentWithSummary, splitMovedContent, contentForAnalysis } from '../services/insightUtils';
@@ -154,6 +155,12 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
   const ageDays = noteAgeDays(note, Date.now());
   const isOldCheckable = isGuidelineCheckCandidate(note, Date.now());
   const suggestGuidelineCheck = isOldCheckable && !note.guidelineCheck && !isCheckingGuideline;
+  // 퀴즈 출제 범위 (한 번이라도 퀴즈에 나온 메모만 표시)
+  const quizProgress = useMemo(() => {
+      if (!note.quizCoverage) return null;
+      const parts = splitNoteParts(note);
+      return parts.length ? { ...coverageProgress(parts, note.quizCoverage), count: parts.length } : null;
+  }, [note.content, note.summary, note.transcription, note.images, note.quizCoverage]);
   const [showAiMenu, setShowAiMenu] = useState(false);
   useEffect(() => { setShowAiMenu(false); }, [note.id]);
 
@@ -562,7 +569,17 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             
             {/* 날짜 + 분류 태그 한 줄 (다시 누르면 해제) */}
             <div className="mb-6 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-sm text-slate-400 flex items-center font-medium"><Calendar className="w-4 h-4 mr-1.5" /> {new Date(note.createdAt).toLocaleString()}</span>
+                <span className="text-sm text-slate-400 flex items-center font-medium">
+                    <Calendar className="w-4 h-4 mr-1.5" /> {new Date(note.createdAt).toLocaleString()}
+                    {quizProgress && (
+                        <span
+                            className="ml-2 text-[11px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded"
+                            title="이 메모를 구역으로 나눠, 퀴즈에 나온 구역 수 / 전체 구역 수 (덜 나온 구역부터 출제)"
+                        >
+                            🎯 퀴즈 {quizProgress.touched}/{quizProgress.count} 구역
+                        </span>
+                    )}
+                </span>
                 <div className="flex items-center gap-2">
                     <span className="text-xs font-bold text-slate-400">분류</span>
                     <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">

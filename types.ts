@@ -30,6 +30,8 @@ export interface Note {
   reviewIntervalDays?: number; // 직전에 잡힌 복습 간격(일)
   lastReviewedAt?: number; // 마지막으로 이 메모로 퀴즈를 푼 시각
   wrongAnswers?: WrongAnswer[]; // 이 메모에서 나온 틀린 문제 (오답 노트, 메모당 최대 5개)
+  // 퀴즈 출제 범위: 구역(내용 해시) → 출제 횟수·마지막 출제 시각·이미 낸 요점 (services/quizCoverage.ts)
+  quizCoverage?: Record<string, QuizCoverageEntry>;
   // --- 가이드라인 점검 ---
   guidelineCheck?: GuidelineCheck;
   // 내용이 아닌 부가정보(복습 일정·오답·점검 결과)를 마지막으로 바꾼 시각.
@@ -56,6 +58,12 @@ export interface SummaryVersion {
   // new = AI 요약 새로 만들기, journal = 저널클럽 분석, refine = 질문·추가 요청 반영, legacy = 이력 기능 전에 만든 요약
   mode: 'new' | 'journal' | 'refine' | 'legacy';
   request?: string; // refine일 때 내가 입력한 질문·추가 사항
+}
+
+export interface QuizCoverageEntry {
+  n: number; // 이 구역에서 낸 문제 수
+  at: number; // 마지막으로 낸 시각
+  t?: string[]; // 이미 낸 요점 (다음 문제는 다른 요점으로)
 }
 
 export interface HandoverMeta {
@@ -149,6 +157,8 @@ export interface QuizQuestion {
     relatedNoteIds?: string[];
     // 오답 노트에서 다시 푸는 문제일 때: 이 문제가 저장된 메모 id
     replayOfNoteId?: string;
+    // 메모의 어느 구역에서 낸 문제인지 (푼 뒤 출제 범위 기록에 사용)
+    coverage?: { noteId: string; partKey: string; partLabel: string; partIndex: number; partCount: number; topic?: string };
 }
 
 export interface QuizState {

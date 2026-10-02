@@ -893,62 +893,61 @@ export const extractTextFromImages = async (images: string[]): Promise<string> =
 // ----------------------------------------------------------------------------
 // AI 퀴즈 복습 (핵심 유지 기능): MCQ / OX
 // ----------------------------------------------------------------------------
-// 메모마다 번호를 붙이고 길이를 고르게 나눠 담습니다. (예전엔 여러 메모를 이어 붙인 뒤
-// 앞에서 4,000자만 잘라서, 앞 메모가 길면 뒤 메모는 아예 빠졌습니다.)
-// 모델이 실제로 출제에 쓴 메모 번호를 돌려주게 해서, 복습 일정·오답 노트가 그 메모에만 붙게 합니다.
-const QUIZ_CONTEXT_TOTAL_CHARS = 5400;
-const buildQuizContext = (notes: Note[], withSummary: boolean): string => {
-    const per = Math.floor(QUIZ_CONTEXT_TOTAL_CHARS / Math.max(1, notes.length));
-    return notes.map((n, i) => {
-        const body = [
-            n.content || '',
-            withSummary && n.summary ? `(AI Summary: ${n.summary})` : '',
-            n.transcription ? `(Extracted Text: ${n.transcription})` : ''
-        ].filter(Boolean).join('\n');
-        return `[Note ${i + 1}: ${n.title || 'Untitled'}]\n${body.length > per ? body.slice(0, per) + ' …' : body}`;
-    }).join('\n\n---\n\n');
+// 문제 하나 = 메모 하나의 "구역" 하나 (services/quizCoverage.ts).
+// 예전엔 메모 3개를 합쳐 5,400자만 보내서 긴 메모의 뒷부분·AI 요약은 거의 출제되지 않았습니다.
+// 이제 앱이 아직 덜 나온 구역을 골라 그 구역 전체를 보내고, 이미 낸 요점은 피하게 합니다.
+export interface QuizFocus {
+    note: Note; // 사진은 빼고 넘겨도 됨 (사진 구역이면 image로 따로 전달)
+    part: { key: string; kind: 'note' | 'imageText' | 'summary' | 'image'; label: string; text: string };
+    partIndex: number; // 0부터
+    partCount: number;
+    outline: string[]; // 메모 전체 구역 이름 (맥락용)
+    askedTopics: string[]; // 이 구역에서 이미 낸 요점
+    image?: string; // 사진 구역일 때 그 사진
+}
+
+const PART_KIND_NOTES: Record<QuizFocus['part']['kind'], string> = {
+    note: "This part is the reader's own writing.",
+    imageText: 'This part is text the app extracted from photos attached to the note.',
+    summary: "This part is the AI-written summary attached to the note (it may contain guideline information found by web search). Test it like the reader's own content.",
+    image: 'This part is the attached photo (the image above) (figure, ECG, table, slide, handwritten note…). Base the question on what the photo shows.'
 };
 
-const SOURCE_NOTE_NUMBERS_SCHEMA = {
-    type: 'array',
-    items: { type: 'integer', minimum: 1 },
-    description: 'Numbers of the notes ([Note N]) this question is actually based on.'
+const buildFocusContext = (f: QuizFocus): string => {
+    const asked = f.askedTopics.filter(Boolean);
+    return `
+            NOTE TITLE: ${f.note.title || 'Untitled'}
+            SECTIONS OF THIS NOTE (for context only): ${f.outline.slice(0, 40).join(' / ') || '(one section)'}
+
+            FOCUS PART — "${f.part.label}" (part ${f.partIndex + 1} of ${f.partCount}). ${PART_KIND_NOTES[f.part.kind]}
+            """${f.part.text || (f.part.kind === 'image' ? '(no extracted text — use the attached photo)' : '')}"""
+            ${asked.length ? `\n            POINTS FROM THIS PART ALREADY TESTED (choose a DIFFERENT point; only if every point is used, re-test the most important one from a new angle):\n${asked.map(t => `            - ${t}`).join('\n')}\n` : ''}
+            COVERAGE RULES:
+            - The question MUST test a specific point that is stated in the FOCUS PART (a fact, threshold, mechanism,
+              step, or judgment written there) — not general knowledge that the part does not contain.
+            - Prefer a point not tested before; across many questions the reader wants every part of the note covered.
+            - In "topic", name the exact point you tested in ≤ 12 words, in Korean (e.g. "AF 지속 시 CHA2DS2-VASc 기준 항응고").`;
 };
 
-const pickUsedNoteIds = (notes: Note[], numbers: any): string[] => {
-    const all = notes.map(n => n.id);
-    if (!Array.isArray(numbers)) return all;
-    const picked = Array.from(new Set(numbers
-        .filter((x: any) => Number.isInteger(x) && x >= 1 && x <= notes.length)
-        .map((x: number) => notes[x - 1].id)));
-    return picked.length > 0 ? picked : all;
-};
-export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage = 'Korean', signal?: AbortSignal): Promise<QuizQuestion | null> => {
+const focusImageBlocks = (f: QuizFocus): any[] => (f.image ? [imageBlock(f.image)] : []);
+
+const coverageOf = (f: QuizFocus, topic: any): QuizQuestion['coverage'] => ({
+    noteId: f.note.id,
+    partKey: f.part.key,
+    partLabel: f.part.label,
+    partIndex: f.partIndex,
+    partCount: f.partCount,
+    topic: typeof topic === 'string' ? topic.trim().slice(0, 80) : undefined
+});
+
+export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLanguage = 'Korean'): Promise<QuizQuestion | null> => {
     try {
-        if (notes.length === 0) return null;
-
-        const content: any[] = [];
-        let imageCount = 0;
-        const MAX_IMAGES = 1;
-
-        notes.forEach(note => {
-            if (imageCount < MAX_IMAGES && note.images && note.images.length > 0) {
-                note.images.forEach(base64 => {
-                    if (imageCount < MAX_IMAGES) {
-                        content.push(imageBlock(base64));
-                        imageCount++;
-                    }
-                });
-            }
-        });
-
-        const contextText = buildQuizContext(notes, false);
+        const content: any[] = focusImageBlocks(focus);
 
         const prompt = `
             You are an attending physician writing subspecialty board-level questions.
             ${READER_PROFILE}
-            Analyze the attached images (if any) and the following text context from the reader's own notes.
-            Create ONE high-quality multiple choice question that integrates concepts from these notes if possible.
+            Create ONE high-quality multiple choice question from the FOCUS PART of the reader's own note below.
 
             QUESTION LEVEL:
             - For cardiology content: cardiovascular disease subspecialty board / fellowship in-training exam level
@@ -956,23 +955,18 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
             - For non-cardiology content: internal medicine board level, written for an attending.
             - Test application and judgment, not recall: a clinical vignette with the data an expert would use
               (ECG/EGM findings, echo or hemodynamic values, device parameters, labs) and a decision to make.
+              If the point is a plain fact (a definition, a list, a procedural step), still frame it in a short
+              clinical context where possible.
             - Distractors must be plausible choices that a less experienced physician would pick
               (e.g. an outdated threshold, the right drug in the wrong setting, a correct step in the wrong order).
             - The keyed answer must be unambiguously correct under current major guidelines; avoid items where
-              experts genuinely disagree.
-
-            CRITICAL INSTRUCTION:
-            - Some notes may consist ONLY of images (e.g., handwritten notes, textbook screenshots, anatomical diagrams).
-            - You MUST analyze the visual content of these images deeply to extract medical concepts for the question.
-            - If the text context is empty or minimal, rely entirely on the visual information from the images.
+              experts genuinely disagree. If the note itself is outdated on this point, key the CURRENT answer and
+              say in the explanation that the note differs.
             - **Output Language: ${language}** (The question, options, and explanation MUST be written in ${language}).
-
-            Context Text (notes are numbered [Note 1], [Note 2], ...):
-            """${contextText}"""
+            ${buildFocusContext(focus)}
 
             Task:
-            1. Create a challenging clinical scenario based on the provided context.
-               In source_note_numbers, list only the note numbers the question actually draws on.
+            1. Create a challenging clinical scenario testing one point of the FOCUS PART.
             2. Provide exactly 5 options (A-E).
             3. CRITICAL: Provide an explanation that states why the answer is correct (with the guideline
                threshold or trial behind it) and, briefly, why each distractor is wrong.
@@ -991,7 +985,7 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
                     options: { type: 'array', items: { type: 'string' }, minItems: 5, maxItems: 5 },
                     correctAnswerIndex: { type: 'integer', minimum: 0, maximum: 4 },
                     explanation: { type: 'string' },
-                    source_note_numbers: SOURCE_NOTE_NUMBERS_SCHEMA,
+                    topic: { type: 'string', description: 'The exact point from the focus part this question tests (≤ 12 words, Korean).' },
                     sources: {
                         type: 'array',
                         items: {
@@ -1001,7 +995,7 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
                         }
                     }
                 },
-                required: ['question', 'options', 'correctAnswerIndex', 'explanation', 'source_note_numbers']
+                required: ['question', 'options', 'correctAnswerIndex', 'explanation', 'topic']
             },
             maxTokens: 1500
         });
@@ -1019,7 +1013,8 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
             sources: input.sources || [],
             id: uuidv4(),
             type: 'MULTIPLE_CHOICE',
-            relatedNoteIds: pickUsedNoteIds(notes, input.source_note_numbers)
+            relatedNoteIds: [focus.note.id],
+            coverage: coverageOf(focus, input.topic)
         };
 
     } catch (error) {
@@ -1029,47 +1024,26 @@ export const generateMedicalQuiz = async (notes: Note[], language: QuizLanguage 
     }
 };
 
-export const generateOXQuiz = async (notes: Note[], language: QuizLanguage = 'Korean', signal?: AbortSignal): Promise<QuizQuestion | null> => {
+export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 'Korean'): Promise<QuizQuestion | null> => {
     try {
-        if (notes.length === 0) return null;
-
-        const content: any[] = [];
-        let imageCount = 0;
-        const MAX_IMAGES = 1;
-
-        notes.forEach(note => {
-            if (imageCount < MAX_IMAGES && note.images && note.images.length > 0) {
-                note.images.forEach(base64 => {
-                    if (imageCount < MAX_IMAGES) {
-                        content.push(imageBlock(base64));
-                        imageCount++;
-                    }
-                });
-            }
-        });
-
-        const contextText = buildQuizContext(notes, true);
-
+        const content: any[] = focusImageBlocks(focus);
         const targetAnswerIsTrue = Math.random() < 0.5;
 
         const prompt = `
             ${READER_PROFILE}
-            Based on the following notes (and attached images if any), create a single "True or False" statement for a quick review quiz, pitched at the reader's level above.
+            Create a single "True or False" statement for a quick review quiz from the FOCUS PART of the reader's own
+            note below, pitched at the reader's level above.
             The statement must be unambiguously true or false under current major guidelines — avoid points where experts genuinely disagree.
-
+            ${focus.image ? `
             CRITICAL VISUAL ANALYSIS INSTRUCTION:
-            - If a note contains BOTH text and images (charts, histology, diagrams), you MUST analyze the visual content.
-            - Do not rely solely on the provided text. Cross-reference the text with the visual data in the images.
+            - Analyze the attached photo itself (charts, ECG, histology, diagrams, tables) — do not rely only on the extracted text.` : ''}
 
             - **You MUST generate a statement that is ${targetAnswerIsTrue ? "TRUE" : "FALSE"}**. This is a strict requirement for balance.
             - **Output Language: ${language}** (The statement and explanation MUST be written in ${language}).
-
-            Note Content (notes are numbered [Note 1], [Note 2], ...):
-            """${contextText}"""
+            ${buildFocusContext(focus)}
 
             Instructions:
-            - Create ONE statement related to the medical facts in these notes.
-            - In source_note_numbers, list only the note numbers the statement actually draws on.
+            - Create ONE statement about one point of the FOCUS PART.
             - The statement must be medically ${targetAnswerIsTrue ? "accurate (True)" : "inaccurate/false (False)"}.
 
             ${!targetAnswerIsTrue ? `
@@ -1102,9 +1076,9 @@ export const generateOXQuiz = async (notes: Note[], language: QuizLanguage = 'Ko
                     question: { type: 'string' },
                     isTrue: { type: 'boolean' },
                     explanation: { type: 'string' },
-                    source_note_numbers: SOURCE_NOTE_NUMBERS_SCHEMA
+                    topic: { type: 'string', description: 'The exact point from the focus part this statement tests (≤ 12 words, Korean).' }
                 },
-                required: ['question', 'isTrue', 'explanation', 'source_note_numbers']
+                required: ['question', 'isTrue', 'explanation', 'topic']
             },
             maxTokens: 800
         });
@@ -1122,7 +1096,8 @@ export const generateOXQuiz = async (notes: Note[], language: QuizLanguage = 'Ko
             correctAnswerIndex: input.isTrue ? 0 : 1,
             explanation: input.explanation,
             sources: [],
-            relatedNoteIds: pickUsedNoteIds(notes, input.source_note_numbers)
+            relatedNoteIds: [focus.note.id],
+            coverage: coverageOf(focus, input.topic)
         };
     } catch (error) {
         if ((error as Error).message === "Aborted by user") throw error;

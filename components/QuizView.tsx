@@ -622,6 +622,13 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                              </div>
                         ) : null}
 
+                        {currentQ.coverage && (
+                            <p className="mt-6 text-[11px] text-slate-400">
+                                📍 출제 구역: {currentQ.coverage.partLabel} ({currentQ.coverage.partIndex + 1}/{currentQ.coverage.partCount})
+                                {currentQ.coverage.topic ? ` · ${currentQ.coverage.topic}` : ''}
+                            </p>
+                        )}
+
                         <div className="mt-8 flex justify-end">
                             <button type="button" onClick={handleNext} className="bg-slate-900 hover:bg-black text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex items-center gap-2">
                                 {quizState.questionQueue.length === 0 && quizState.noMoreQuestions ? '결과 보기' : 'Next Question'} {quizState.questionQueue.length > 0 && <span className="text-xs bg-slate-700 px-1.5 py-0.5 rounded text-slate-300">{quizState.source === 'WRONG' ? `${quizState.questionQueue.length}개 남음` : 'Ready'}</span>} <ArrowRight className="w-4 h-4" />

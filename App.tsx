@@ -20,6 +20,7 @@ import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAg
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 import { sanitizeHistory, historyKey, archiveCurrentSummary, trimHistory } from './services/summaryHistory';
+import { splitNoteParts, textPartsCached, coverageProgress, pickQuizPart, askedTopicsOf, recordQuizCoverage, sanitizeCoverage } from './services/quizCoverage';
 
 const sanitizeNotes = (rawNotes: any[]): Note[] => {
     if (!Array.isArray(rawNotes)) return [];
@@ -50,6 +51,7 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
             summarizedAt: typeof n.summarizedAt === 'number' ? n.summarizedAt : undefined,
             summaryKind: n.summaryKind === 'journal' ? 'journal' : undefined,
             summaryHistory: sanitizeHistory(n.summaryHistory),
+            quizCoverage: sanitizeCoverage(n.quizCoverage),
             reviewDueAt: typeof n.reviewDueAt === 'number' ? n.reviewDueAt : undefined,
             reviewIntervalDays: typeof n.reviewIntervalDays === 'number' ? n.reviewIntervalDays : undefined,
             lastReviewedAt: typeof n.lastReviewedAt === 'number' ? n.lastReviewedAt : undefined,
@@ -486,7 +488,11 @@ const App: React.FC = () => {
       
       // 가중치 선택: 복습일이 된 메모 > 아직 안 푼 메모 > 복습일이 남은 메모 (services/studyUtils.ts)
       const now = Date.now();
-      const itemsWithWeights = candidates.map(note => ({ note, weight: quizPickWeight(note, now) }));
+      // 아직 덜 출제된 구역이 많은 메모일수록 더 자주 (메모 전체를 고루 다루도록)
+      const itemsWithWeights = candidates.map(note => {
+          const uncovered = 1 - coverageProgress(textPartsCached(note), note.quizCoverage).ratio;
+          return { note, weight: quizPickWeight(note, now) * (1 + 1.5 * uncovered) };
+      });
 
       // Sum of all weights
       const totalWeight = itemsWithWeights.reduce((sum, item) => sum + item.weight, 0);
@@ -507,6 +513,8 @@ const App: React.FC = () => {
   const quizSessionRef = useRef(0);
   // "오늘의 복습" 세션에서 이미 문제를 만든 메모 (같은 메모로 두 번 내지 않도록)
   const reviewUsedIdsRef = useRef<Set<string>>(new Set());
+  // 이번 세션에서 이미 문제를 만든(아직 안 푼 것 포함) 구역 — 미리 만들어 두는 문제가 같은 구역에서 겹치지 않게
+  const reservedPartsRef = useRef<Map<string, Set<string>>>(new Map());
 
   useEffect(() => {
     // Background Quiz Generation Logic
@@ -531,84 +539,91 @@ const App: React.FC = () => {
             // 그 사이 세션이 끝났거나 새로 시작됐으면 이 요청은 버림(복습 대상 소모·유료 호출 방지)
             if (quizSessionRef.current !== session) return;
             
-            let randomContextNotes: Note[] = [];
+            // 세션이 바뀐 뒤 늦게 끝난 요청이 새 세션의 기록을 건드리지 않도록 지금 세션의 것을 잡아 둠
+            const reservedMap = reservedPartsRef.current;
+            const reviewUsed = reviewUsedIdsRef.current;
+            const skipIds: string[] = []; // 낼 내용이 없는 메모 (이번 요청에서 건너뜀)
 
-            if (quizState.source === 'REVIEW') {
-                // 오늘의 복습: 복습일이 된 메모를 가장 오래 밀린 것부터 한 개씩 (메모 1개 = 문제 1개)
-                const now = Date.now();
-                const due = notesRef.current
-                    .filter(n => isReviewDue(n, now) && !reviewUsedIdsRef.current.has(n.id))
-                    .sort((a, b) => (a.reviewDueAt || 0) - (b.reviewDueAt || 0));
-                if (due.length === 0) {
-                    setIfCurrent(prev => ({ ...prev, isGenerating: false, noMoreQuestions: true }));
-                    return;
-                }
-                reviewUsedIdsRef.current.add(due[0].id);
-                randomContextNotes = [due[0]];
-            } else {
-                // PRIORITY 1: Pick from LOCAL notes first for better randomness
-                if (notesRef.current.length > 0) {
-                    // Try to fill 3 slots with local notes
-                    for(let i=0; i<3; i++) {
-                        const currentExclude = [...recentRandomIds, ...randomContextNotes.map(n => n.id)];
-                        const localN = pickLocalRandomNote(notesRef.current, currentExclude);
-                        if (localN && !randomContextNotes.some(n => n.id === localN.id)) randomContextNotes.push(localN);
+            let fullNote: Note | null = null;
+            let parts: ReturnType<typeof splitNoteParts> = [];
+            let part: ReturnType<typeof pickQuizPart> = null;
+
+            // 낼 내용이 없는 메모(빈 메모 등)는 건너뛰고 최대 3번까지 다른 메모로
+            for (let attempt = 0; attempt < 3 && !part; attempt++) {
+                let focusNote: Note | null = null;
+                if (quizState.source === 'REVIEW') {
+                    // 오늘의 복습: 복습일이 된 메모를 가장 오래 밀린 것부터 한 개씩 (메모 1개 = 문제 1개)
+                    const now = Date.now();
+                    const due = notesRef.current
+                        .filter(n => isReviewDue(n, now) && !reviewUsed.has(n.id))
+                        .sort((a, b) => (a.reviewDueAt || 0) - (b.reviewDueAt || 0));
+                    if (due.length === 0) {
+                        setIfCurrent(prev => ({ ...prev, isGenerating: false, noMoreQuestions: true }));
+                        return;
+                    }
+                    reviewUsed.add(due[0].id);
+                    focusNote = due[0];
+                } else {
+                    // 문제 하나에 메모 하나: 복습일·안 푼 메모·덜 출제된 메모 우선 (최근에 낸 메모는 잠시 제외)
+                    const exclude = [...recentRandomIds, ...skipIds];
+                    if (notesRef.current.length > 0) {
+                        focusNote = pickLocalRandomNote(notesRef.current, exclude);
+                    }
+                    // 기기에 메모가 없으면(새 기기 등) 클라우드에서
+                    if (!focusNote) {
+                         const cloudNotes = await fetchRandomNotesBatch(1, exclude, notesRef.current);
+                         focusNote = cloudNotes[0] || null;
                     }
                 }
 
-                // PRIORITY 2: If local notes are insufficient (e.g., empty app), try Cloud
-                if (randomContextNotes.length === 0) {
-                     const cloudNotes = await fetchRandomNotesBatch(3, recentRandomIds, notesRef.current);
-                     randomContextNotes = cloudNotes;
+                if (!focusNote) {
+                     setIfCurrent(prev => ({ 
+                         ...prev, 
+                         isGenerating: false, 
+                         error: notesRef.current.length === 0 ? "작성된 메모가 없습니다. 먼저 메모를 작성해주세요." : "문제를 생성할 메모를 찾지 못했습니다."
+                     }));
+                     return;
                 }
+
+                // 사진까지 있는 전체 메모로 구역을 나누고, 아직 덜 나온 구역을 고름
+                fullNote = (await getNoteFromDB(focusNote.id).catch(() => undefined)) || focusNote;
+                if (quizSessionRef.current !== session) return;
+                parts = splitNoteParts(fullNote);
+                part = pickQuizPart(parts, fullNote.quizCoverage, reservedMap.get(fullNote.id));
+                if (!part) skipIds.push(fullNote.id);
             }
 
-            if (randomContextNotes.length === 0) {
-                 setIfCurrent(prev => ({ 
-                     ...prev, 
-                     isGenerating: false, 
-                     error: notesRef.current.length === 0 ? "작성된 메모가 없습니다. 먼저 메모를 작성해주세요." : "문제를 생성할 메모를 찾지 못했습니다." 
-                 }));
-                 return;
+            if (!part || !fullNote) {
+                setIfCurrent(prev => ({ ...prev, isGenerating: false, error: "문제로 낼 내용이 있는 메모를 찾지 못했습니다. 다시 시도해주세요." }));
+                return;
             }
-            
-            // Hydrate notes (fetch images/full content if needed)
-            // MEMORY OPTIMIZATION: Limit images per note during hydration to save memory on mobile
-            const hydratedNotes: Note[] = [];
-            for (const note of randomContextNotes) {
-                try {
-                    const fullNote = await getNoteFromDB(note.id);
-                    if (fullNote) {
-                        // Keep only first 2 images to save memory
-                        const optimizedNote = {
-                            ...fullNote,
-                            images: fullNote.images ? fullNote.images.slice(0, 2) : []
-                        };
-                        hydratedNotes.push(optimizedNote);
-                    } else {
-                        hydratedNotes.push(note);
-                    }
-                } catch (dbErr) {
-                    console.warn("DB Hydration failed for note", note.id, dbErr);
-                    hydratedNotes.push(note);
-                }
-            }
-
-            // Update history buffer - INCREASED SIZE TO 50
+            const focusId = fullNote.id;
             if (quizState.source !== 'REVIEW') {
-                setRecentRandomIds(prev => {
-                    const newIds = hydratedNotes.map(n => n.id);
-                    const updated = [...newIds, ...prev];
-                    return updated.slice(0, 50); // Keep history of last 50 items to reduce repetition
-                });
+                setRecentRandomIds(prev => [focusId, ...skipIds, ...prev.filter(id => id !== focusId && !skipIds.includes(id))].slice(0, 50));
             }
+            const reserved = reservedMap.get(focusId) || new Set<string>();
+            reserved.add(part.key);
+            reservedMap.set(focusId, reserved);
+
+            const { images: _omit, ...lightNote } = fullNote;
+            const focus = {
+                note: lightNote as Note,
+                part,
+                partIndex: parts.indexOf(part),
+                partCount: parts.length,
+                outline: parts.map(p => p.label),
+                askedTopics: askedTopicsOf(fullNote.quizCoverage, part.key),
+                image: part.kind === 'image' && typeof part.imageIndex === 'number' ? (fullNote.images || [])[part.imageIndex] : undefined
+            };
 
             let question: QuizQuestion | null = null;
             if (quizState.mode === 'DETAILED') {
-                question = await generateMedicalQuiz(hydratedNotes, quizState.language);
+                question = await generateMedicalQuiz(focus, quizState.language);
             } else {
-                question = await generateOXQuiz(hydratedNotes, quizState.language);
+                question = await generateOXQuiz(focus, quizState.language);
             }
+            // 실패하면 그 구역은 다시 고를 수 있게
+            if (!question) reserved.delete(part.key);
 
             if (question) {
                 setIfCurrent(prev => {
@@ -659,6 +674,7 @@ const App: React.FC = () => {
   const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' = 'RANDOM') => {
       quizSessionRef.current += 1;
       reviewUsedIdsRef.current = new Set();
+      reservedPartsRef.current = new Map();
       setQuizState({
           isActive: true,
           mode: mode,
@@ -764,6 +780,16 @@ const App: React.FC = () => {
                       quizMasteryCount: wasCorrect ? (latest.quizMasteryCount || 0) + 1 : 0,
                       ...scheduleNextReview(latest.reviewIntervalDays, wasCorrect, now)
                   };
+                  // 출제 범위 기록: 이 구역에서 문제 1개를 냈고, 이런 요점을 다뤘음
+                  if (q.coverage && q.coverage.noteId === ids[i]) {
+                      patch.quizCoverage = recordQuizCoverage(
+                          latest.quizCoverage,
+                          splitNoteParts(latest).map(p => p.key),
+                          q.coverage.partKey,
+                          q.coverage.topic,
+                          now
+                      );
+                  }
                   if (!wasCorrect && i === 0) {
                       patch.wrongAnswers = upsertWrongAnswer(latest.wrongAnswers, wrongAnswerFromQuestion(q, chosenIndex ?? -1, now, language));
                   }
@@ -1135,6 +1161,7 @@ const App: React.FC = () => {
                         wrongAnswers: latest.wrongAnswers, guidelineCheck: latest.guidelineCheck, tag: latest.tag, work: latest.work,
                         followUpIntervalDays: latest.followUpIntervalDays, followUpDueAt: latest.followUpDueAt,
                         followUpCheckedAt: Math.max(latest.followUpCheckedAt || 0, incoming.followUpCheckedAt || 0) || undefined,
+                        quizCoverage: latest.quizCoverage, // 퀴즈 출제 범위도 더 최신 쪽 유지
                         metaUpdatedAt: latest.metaUpdatedAt
                     };
                 }
