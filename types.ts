@@ -2,6 +2,7 @@
 export interface Source {
   title: string;
   uri: string;
+  snippet?: string; // 질문 노트: 답변이 인용한 원문 일부 (출처 확인용)
 }
 
 export interface Note {

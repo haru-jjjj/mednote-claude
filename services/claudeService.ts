@@ -654,8 +654,18 @@ const THREAD_SYSTEM = `
     - When photos are attached (ECG, EGM/intracardiac tracing, echo, angiogram, CT, lab table, slide, handwritten note),
       read them directly: describe what you actually see that matters, then answer. Say clearly when image quality or
       cropping limits the reading, and do not invent values that are not visible.
-    - For anything that depends on current guidelines, recent trials or numbers, use web search (up to 3) and rely on
-      what you find; say so when evidence is weak, conflicting or you are unsure. Never invent numbers or citations.
+    - SOURCES (the reader needs every clinical claim to be traceable):
+      - Before stating guideline recommendations (COR/LOE), thresholds, doses, trial results or numbers, use web search
+        (up to 5) and base those statements on what you retrieved, so they carry citations. Prefer primary sources:
+        society guideline documents (ACC/AHA, ESC, HRS/EHRA, KSC …), the trial publication (NEJM, Lancet, JAMA, EHJ,
+        JACC, Circulation) or PubMed, then UpToDate-level reviews. Avoid blogs, news and SEO pages.
+      - In the sentence itself, name the source the way a fellow would cite it: society + guideline + year
+        (e.g. "2023 ACC/AHA/ACCP/HRS AF guideline, COR 1/LOE B-R") or trial name + journal + year.
+      - Do NOT write your own bracket numbers like [1] or a reference list at the end — the app numbers the citations
+        and lists the references automatically.
+      - If a statement comes only from general knowledge and you could not find a source, end it with "(출처 미확인)".
+        Say so when evidence is weak or conflicting. Never invent numbers, trials or citations.
+      - Purely conceptual explanations (mechanisms, definitions) do not need a search.
     - Format: Markdown. Use "###" for any headings (never "#" or "##"), bullets "- " with the full sentence on the same
       line, ≥/≤ instead of LaTeX. Tables are fine for comparisons (plain text cells).
     - Write in Korean with standard English medical terms/abbreviations, unless the reader writes in another language.
@@ -667,6 +677,7 @@ export const streamThreadAnswer = async (params: {
     question: ThreadTurn;
     onText?: (textSoFar: string) => void;
     onStatus?: (status: 'searching' | 'writing') => void;
+    onSources?: (sources: Source[]) => void;
     signal?: AbortSignal;
 }): Promise<{ text: string; sources: Source[]; truncated: boolean }> => {
     const apiKey = getApiKey();
@@ -675,7 +686,7 @@ export const streamThreadAnswer = async (params: {
         max_tokens: SMART_MIN_MAX_TOKENS,
         system: THREAD_SYSTEM,
         messages: buildThreadMessages(params.history, params.question),
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
         output_config: { effort: 'medium' },
         stream: true
     };
@@ -702,7 +713,9 @@ export const streamThreadAnswer = async (params: {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     const blockTypes = new Map<number, string>();
-    const sources = new Map<string, Source>();
+    // 출처 번호: 처음 인용된 순서대로 1, 2, 3 … (같은 주소는 같은 번호)
+    const sources = new Map<string, Source & { n: number }>();
+    const blockCites = new Map<number, Set<number>>(); // 글 조각 → 그 조각이 인용한 출처 번호들
     let text = '';
     let stopReason = '';
     let buf = '';
@@ -727,8 +740,31 @@ export const streamThreadAnswer = async (params: {
                 if (d.type === 'text_delta' && blockTypes.get(evt.index) === 'text') {
                     text += d.text || '';
                     params.onText?.(text);
-                } else if (d.type === 'citations_delta' && d.citation?.url && !sources.has(d.citation.url)) {
-                    sources.set(d.citation.url, { title: d.citation.title || d.citation.url, uri: d.citation.url });
+                } else if (d.type === 'citations_delta' && d.citation?.url) {
+                    const c = d.citation;
+                    let src = sources.get(c.url);
+                    if (!src) {
+                        src = { n: sources.size + 1, title: (c.title || c.url).trim(), uri: c.url };
+                        sources.set(c.url, src);
+                    }
+                    const excerpt = typeof c.cited_text === 'string' ? c.cited_text.replace(/\s+/g, ' ').trim() : '';
+                    if (excerpt && !src.snippet) src.snippet = excerpt.length > 220 ? excerpt.slice(0, 220) + '…' : excerpt;
+                    const set = blockCites.get(evt.index) || new Set<number>();
+                    set.add(src.n);
+                    blockCites.set(evt.index, set);
+                    params.onSources?.(Array.from(sources.values()).map(({ n, ...s }) => s));
+                }
+                break;
+            }
+            case 'content_block_stop': {
+                // 인용이 붙은 글 조각이 끝나면 그 뒤에 출처 번호 [n]을 붙임 (끝의 줄바꿈 앞에)
+                const nums = blockCites.get(evt.index);
+                if (nums && nums.size) {
+                    const marker = Array.from(nums).sort((a, b) => a - b).map(n => `[${n}]`).join('');
+                    const m = /(\s*)$/.exec(text);
+                    const tail = m ? m[1] : '';
+                    text = text.slice(0, text.length - tail.length) + marker + tail;
+                    params.onText?.(text);
                 }
                 break;
             }
@@ -765,7 +801,9 @@ export const streamThreadAnswer = async (params: {
     }
     const truncated = stopReason === 'max_tokens' || stopReason === 'pause_turn';
     if (truncated) text += '\n\n> 참고: 답변이 중간에 끊겼습니다. "이어서 설명해줘"라고 물어보면 이어집니다.';
-    return { text, sources: Array.from(sources.values()).slice(0, 8), truncated };
+    // 번호 순서 그대로 (번호와 목록이 어긋나지 않게 자르지 않음)
+    const list = Array.from(sources.values()).sort((a, b) => a.n - b.n).map(({ n, ...s }) => s);
+    return { text, sources: list, truncated };
 };
 
 // ----------------------------------------------------------------------------

@@ -59,7 +59,8 @@ export const encodeThread = (messages: ThreadMessage[]): string => {
             const src = (m.sources || []).filter(s => s && s.uri);
             if (src.length) {
                 block.push('<!-- mt:src -->');
-                src.forEach(s => block.push(`- [${cleanTitle(s.title || s.uri)}](${cleanUri(s.uri)})`));
+                // 순서가 곧 본문의 [n] 번호. 인용한 원문 일부는 " :: " 뒤에 한 줄로
+                src.forEach(s => block.push(`- [${cleanTitle(s.title || s.uri)}](${cleanUri(s.uri)})${s.snippet ? ` :: ${scrub(s.snippet).replace(/\s+/g, ' ')}` : ''}`));
                 block.push('<!-- /mt:src -->');
             }
             out.push(block.join('\n'));
@@ -98,12 +99,12 @@ export const parseThread = (content: string): ThreadMessage[] => {
             const sources: Source[] = [];
             const sm = /<!-- mt:src -->\n?([\s\S]*?)\n?<!-- \/mt:src -->/.exec(text);
             if (sm) {
-                const re = /\[([^\]]*)\]\(([^)\s]+)\)/g;
-                let m: RegExpExecArray | null;
-                while ((m = re.exec(sm[1])) !== null) {
+                sm[1].split('\n').forEach(line => {
+                    const m = /^- \[([^\]]*)\]\(([^)\s]+)\)(?:\s*::\s*(.*))?$/.exec(line.trim());
+                    if (!m) return;
                     const uri = m[2].replace(/%28/g, '(').replace(/%29/g, ')').replace(/%20/g, ' ');
-                    sources.push({ title: m[1], uri });
-                }
+                    sources.push({ title: m[1], uri, ...(m[3] && m[3].trim() ? { snippet: m[3].trim() } : {}) });
+                });
                 text = text.replace(sm[0], '');
             }
             msgs.push({ role: 'assistant', at, text: text.trim(), ...(sources.length ? { sources } : {}) });

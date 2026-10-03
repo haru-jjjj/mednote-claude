@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { ArrowLeft, ArrowUp, Clock, Loader2, Trash2, X, Plus, Search, Globe, Edit, RotateCw, Sparkles, BrainCircuit, ChevronRight, MessageSquareText, Image as ImageIcon } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import type { Note, ThreadPending } from '../types';
+import type { Note, ThreadPending, Source } from '../types';
 import { formatMedicalMarkdown, streamThreadAnswer } from '../services/claudeService';
 import { encodeThread, parseThread, threadTitleFrom, countQuestions, lastQuestionUnanswered, pendingOf, THREAD_SOFT_LIMIT_CHARS, ThreadMessage } from '../services/threadFormat';
 import { getNoteFromDB } from '../services/storage';
@@ -26,6 +26,7 @@ interface StreamState {
     quote?: string;
     text: string;
     status: 'thinking' | 'searching' | 'writing';
+    sources?: Source[];
 }
 
 const renderMd = (md: string): string => {
@@ -59,24 +60,53 @@ const MAX_PHOTOS_PER_QUESTION = 4;
 const MAX_THREAD_IMAGE_CHARS = 700000;
 const MAX_THREAD_DOC_BYTES = 900000; // 사진 + 대화 글자(한글은 글자당 약 3바이트)를 합쳐 1MB 아래로
 
+const hostOf = (uri: string) => { try { return new URL(uri).hostname.replace(/^www\./, ''); } catch { return ''; } };
+const escAttr = (v: string) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+// 렌더링된 답변에서 [1][2] 출처 번호를 누르면 그 출처가 열리는 작은 위첨자로.
+// (마크다운 변환 뒤에 바꿈 — 의학 표기 변환이 주소의 _ $ 등을 바꾸지 않게. 코드 블록·태그 속성 안은 그대로)
+const linkCitations = (html: string, sources: Source[]): string => {
+    if (!sources.length) return html;
+    return html.split(/(<pre[\s\S]*?<\/pre>|<[^>]+>)/g).map(part => {
+        if (part.startsWith('<')) return part;
+        return part.replace(/\[(\d{1,2})\]/g, (all, num) => {
+            const src = sources[Number(num) - 1];
+            if (!src || !/^https?:\/\//.test(src.uri)) return all;
+            return `<sup class="cite"><a href="${escAttr(src.uri)}" title="${escAttr(src.title)}">${num}</a></sup>`;
+        });
+    }).join('');
+};
+
 // 답변 하나 (마크다운 렌더링은 내용이 바뀔 때만)
-const AnswerBlock: React.FC<{ text: string; sources?: { title: string; uri: string }[] }> = React.memo(({ text, sources }) => {
-    const html = useMemo(() => renderMd(text), [text]);
+const AnswerBlock: React.FC<{ text: string; sources?: Source[] }> = React.memo(({ text, sources }) => {
+    const list = sources || [];
+    const html = useMemo(
+        () => linkCitations(renderMd(text), list).replace(/<a href="(https?:)/g, '<a target="_blank" rel="noopener noreferrer" href="$1'),
+        [text, sources]
+    );
     return (
         <div data-answer="1">
             <div
-                className="prose prose-sm prose-slate max-w-none text-slate-700 leading-relaxed break-words [&_code]:break-all [&_code]:whitespace-pre-wrap"
+                className="prose prose-sm prose-slate max-w-none text-slate-700 leading-relaxed break-words [&_code]:break-all [&_code]:whitespace-pre-wrap [&_sup.cite]:ml-0.5 [&_sup.cite_a]:no-underline [&_sup.cite_a]:text-accent-600 [&_sup.cite_a]:font-bold [&_sup.cite_a]:text-[10px] [&_sup.cite_a]:px-1 [&_sup.cite_a]:rounded [&_sup.cite_a]:bg-accent-50"
                 dangerouslySetInnerHTML={{ __html: html }}
             />
-            {sources && sources.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-3">
-                    {sources.map((s, i) => (
-                        <a key={i} href={s.uri} target="_blank" rel="noopener noreferrer"
-                           className="flex items-center gap-1 px-2 py-1 bg-white text-slate-600 rounded-md text-[11px] border border-slate-200 hover:border-accent-300">
-                            <Globe className="w-3 h-3" />
-                            <span className="truncate max-w-[180px]">{s.title}</span>
-                        </a>
-                    ))}
+            {list.length > 0 && (
+                <div className="mt-3 pt-2.5 border-t border-slate-100">
+                    <p className="text-[11px] font-bold text-slate-400 mb-1.5">참고 문헌</p>
+                    <ol className="space-y-1.5">
+                        {list.map((s, i) => (
+                            <li key={i} className="flex gap-2 text-[12px] leading-snug">
+                                <span className="shrink-0 w-5 text-right font-bold text-accent-600">{i + 1}</span>
+                                <div className="min-w-0">
+                                    <a href={s.uri} target="_blank" rel="noopener noreferrer" className="text-slate-700 hover:text-accent-700 hover:underline break-words">
+                                        {s.title}
+                                    </a>
+                                    {hostOf(s.uri) && <span className="text-slate-400"> · {hostOf(s.uri)}</span>}
+                                    {s.snippet && <p className="text-[11px] text-slate-400 mt-0.5 line-clamp-2">“{s.snippet}”</p>}
+                                </div>
+                            </li>
+                        ))}
+                    </ol>
                 </div>
             )}
         </div>
@@ -199,6 +229,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                 question: { role: 'user', text: question.text, quote: question.quote, images: imgsOf(question) },
                 onText: t => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], text: t, status: 'writing' } } : prev),
                 onStatus: st => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], status: st } } : prev),
+                onSources: list => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], sources: list } } : prev),
                 signal: controller.signal
             });
             // 그 사이 바뀐 내용(제목·적어둔 질문 등)을 덮지 않도록 저장 직전 최신 대화에 답만 붙임.
@@ -622,7 +653,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                                 {stream.status === 'searching' ? '근거 찾는 중…' : stream.status === 'writing' ? '답변 쓰는 중…' : '생각하는 중…'}
                                 <button onClick={() => controllersRef.current.get(active.id)?.abort()} className="ml-auto text-slate-400 hover:text-red-500 font-bold">멈추기</button>
                             </p>
-                            {stream.text && <AnswerBlock text={stream.text} />}
+                            {stream.text && <AnswerBlock text={stream.text} sources={stream.sources} />}
                         </div>
                     )}
 
