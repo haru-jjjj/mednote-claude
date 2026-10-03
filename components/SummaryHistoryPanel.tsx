@@ -15,9 +15,9 @@ interface Props {
 }
 
 const MODE_COLORS: Record<SummaryVersion['mode'], string> = {
-    new: 'bg-indigo-50 text-indigo-600 border-indigo-100',
-    journal: 'bg-violet-50 text-violet-600 border-violet-100',
-    refine: 'bg-emerald-50 text-emerald-700 border-emerald-100',
+    new: 'bg-accent-50 text-accent-600 border-accent-100',
+    journal: 'bg-accent-50 text-accent-600 border-accent-100',
+    refine: 'bg-sage-50 text-sage-700 border-sage-100',
     legacy: 'bg-slate-50 text-slate-500 border-slate-200'
 };
 
@@ -67,7 +67,7 @@ const SummaryHistoryPanel: React.FC<Props> = ({ note, disabled, onRestore, onDel
                         const current = isCurrentVersion(note, v);
                         const isOpen = openId === v.id;
                         return (
-                            <li key={v.id} className={`rounded-lg border ${current ? 'border-indigo-200 bg-indigo-50/40' : 'border-slate-100 bg-slate-50/50'}`}>
+                            <li key={v.id} className={`rounded-lg border ${current ? 'border-accent-200 bg-accent-50/40' : 'border-slate-100 bg-slate-50/50'}`}>
                                 <button
                                     onClick={() => setOpenId(isOpen ? null : v.id)}
                                     className="w-full flex items-start gap-2 px-2.5 py-2 text-left"
@@ -77,7 +77,7 @@ const SummaryHistoryPanel: React.FC<Props> = ({ note, disabled, onRestore, onDel
                                             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${MODE_COLORS[v.mode]}`}>
                                                 {v.mode === 'legacy' && v.kind === 'journal' ? '이전 저널클럽 분석' : MODE_LABELS[v.mode]}
                                             </span>
-                                            {current && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-600 text-white">현재</span>}
+                                            {current && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-accent-600 text-white">현재</span>}
                                             <span className="text-[11px] text-slate-400">{fmt(v.createdAt)}</span>
                                         </span>
                                         {v.request && (
@@ -101,7 +101,7 @@ const SummaryHistoryPanel: React.FC<Props> = ({ note, disabled, onRestore, onDel
                                             <div className="flex flex-wrap gap-1.5 mt-2">
                                                 {v.sources.map((src, i) => (
                                                     <a key={i} href={src.uri} target="_blank" rel="noopener noreferrer"
-                                                       className="flex items-center gap-1 px-2 py-1 bg-white text-slate-600 rounded-md text-[11px] border border-slate-200 hover:border-indigo-300">
+                                                       className="flex items-center gap-1 px-2 py-1 bg-white text-slate-600 rounded-md text-[11px] border border-slate-200 hover:border-accent-300">
                                                         <Globe className="w-3 h-3" />
                                                         <span className="truncate max-w-[160px]">{src.title}</span>
                                                     </a>
@@ -113,7 +113,7 @@ const SummaryHistoryPanel: React.FC<Props> = ({ note, disabled, onRestore, onDel
                                                 <button
                                                     onClick={() => onRestore(v)}
                                                     disabled={disabled}
-                                                    className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold disabled:opacity-50"
+                                                    className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-accent-600 hover:bg-accent-700 text-white text-xs font-bold disabled:opacity-50"
                                                 >
                                                     <RotateCcw className="w-3.5 h-3.5" /> 이 버전으로 되돌리기
                                                 </button>

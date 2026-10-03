@@ -159,10 +159,10 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                   <div className="w-full max-w-4xl mx-auto">
                       <div className="text-center mb-10">
                           <div className="inline-flex items-center justify-center w-16 h-16 bg-white rounded-2xl shadow-sm border border-slate-200 mb-6">
-                              <BrainCircuit className="w-8 h-8 text-blue-600" />
+                              <BrainCircuit className="w-8 h-8 text-accent-600" />
                           </div>
-                          <h2 className="text-2xl font-bold text-slate-900 mb-3">AI Medical Quiz</h2>
-                          <p className="text-slate-500 mb-6 text-base">Choose your study mode based on your available time.</p>
+                          <h2 className="text-2xl font-bold text-slate-900 mb-3">AI 퀴즈 복습</h2>
+                          <p className="text-slate-500 mb-6 text-base">시간에 맞춰 문제 방식을 고르세요.</p>
                           
                           {/* Language Selection */}
                           <div className="inline-flex flex-wrap justify-center items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm gap-1">
@@ -173,7 +173,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                       onClick={() => setSelectedLanguage(lang)}
                                       className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg text-sm font-bold transition-all flex items-center gap-2
                                         ${selectedLanguage === lang
-                                            ? 'bg-slate-900 text-white shadow-sm'
+                                            ? 'bg-accent-700 text-white shadow-sm'
                                             : 'text-slate-500 hover:bg-slate-100'}`}
                                    >
                                        <Languages className="w-3.5 h-3.5 shrink-0" />
@@ -184,14 +184,14 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                       </div>
                       
                       {/* 오늘의 복습: 복습일이 된 메모로만 문제를 냄 (메모 1개당 1문제) */}
-                      <div className={`mb-6 rounded-2xl border p-5 md:p-6 ${reviewDueCount > 0 ? 'bg-amber-50/70 border-amber-200' : 'bg-white border-slate-200'}`}>
+                      <div className={`mb-6 rounded-2xl border p-5 md:p-6 ${reviewDueCount > 0 ? 'bg-accent-50/70 border-accent-200' : 'bg-white border-slate-200'}`}>
                           <div className="flex items-start gap-3">
-                              <div className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ${reviewDueCount > 0 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-400'}`}>
+                              <div className={`w-10 h-10 shrink-0 rounded-xl flex items-center justify-center ${reviewDueCount > 0 ? 'bg-accent-100 text-accent-700' : 'bg-slate-100 text-slate-400'}`}>
                                   <Calendar className="w-5 h-5" />
                               </div>
                               <div className="min-w-0 flex-1">
                                   <h3 className="text-lg font-bold text-slate-900">
-                                      오늘의 복습 {reviewDueCount > 0 && <span className="text-amber-700">{reviewDueCount}개</span>}
+                                      오늘의 복습 {reviewDueCount > 0 && <span className="text-accent-700">{reviewDueCount}개</span>}
                                   </h3>
                                   <p className="text-sm text-slate-500 leading-relaxed mt-1">
                                       {reviewDueCount > 0
@@ -204,14 +204,14 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                           <button
                                               type="button"
                                               onClick={() => onStart('DETAILED', selectedLanguage, 'REVIEW')}
-                                              className="px-4 py-2 rounded-xl bg-slate-900 text-white text-sm font-bold hover:bg-black transition-colors flex items-center gap-1.5"
+                                              className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 transition-colors flex items-center gap-1.5"
                                           >
                                               <BookOpen className="w-4 h-4" /> 케이스 문제로 복습
                                           </button>
                                           <button
                                               type="button"
                                               onClick={() => onStart('QUICK_OX', selectedLanguage, 'REVIEW')}
-                                              className="px-4 py-2 rounded-xl bg-white border border-amber-300 text-amber-700 text-sm font-bold hover:bg-amber-100 transition-colors flex items-center gap-1.5"
+                                              className="px-4 py-2 rounded-xl bg-white border border-accent-300 text-accent-700 text-sm font-bold hover:bg-accent-100 transition-colors flex items-center gap-1.5"
                                           >
                                               <Zap className="w-4 h-4" /> OX로 빠르게
                                           </button>
@@ -230,17 +230,17 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                               type="button"
                               onClick={(e) => { e.preventDefault(); e.stopPropagation(); onStart('DETAILED', selectedLanguage); }}
                               disabled={notes.length === 0}
-                              className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-blue-300 hover:-translate-y-1 transition-all text-left group disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-accent-300 hover:-translate-y-1 transition-all text-left group disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                              <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center mb-4 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                              <div className="w-10 h-10 rounded-xl bg-accent-50 text-accent-600 flex items-center justify-center mb-4 group-hover:bg-accent-600 group-hover:text-white transition-colors">
                                   <BookOpen className="w-5 h-5" />
                               </div>
-                              <h3 className="text-lg md:text-xl font-bold text-slate-900 mb-2">Detailed Case Study</h3>
+                              <h3 className="text-lg md:text-xl font-bold text-slate-900 mb-2">케이스 문제</h3>
                               <p className="text-slate-500 text-sm leading-relaxed mb-4">
-                                  Deep dive into clinical vignettes with comprehensive explanations and reference sources. Best for deep learning.
+                                  임상 상황을 주고 판단을 묻는 5지선다. 해설과 근거 자료가 함께 나옵니다.
                               </p>
-                              <div className="flex items-center text-blue-600 font-bold text-sm md:text-base">
-                                  Start Review <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
+                              <div className="flex items-center text-accent-600 font-bold text-sm md:text-base">
+                                  시작 <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
                               </div>
                           </button>
      
@@ -249,17 +249,17 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                               type="button"
                               onClick={(e) => { e.preventDefault(); e.stopPropagation(); onStart('QUICK_OX', selectedLanguage); }}
                               disabled={notes.length === 0}
-                              className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-amber-300 hover:-translate-y-1 transition-all text-left group disabled:opacity-50 disabled:cursor-not-allowed"
+                              className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-accent-300 hover:-translate-y-1 transition-all text-left group disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                              <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center mb-4 group-hover:bg-amber-500 group-hover:text-white transition-colors">
+                              <div className="w-10 h-10 rounded-xl bg-accent-50 text-accent-600 flex items-center justify-center mb-4 group-hover:bg-accent-600 group-hover:text-white transition-colors">
                                   <Zap className="w-5 h-5" />
                               </div>
-                              <h3 className="text-lg md:text-xl font-bold text-slate-900 mb-2">Quick OX Review</h3>
+                              <h3 className="text-lg md:text-xl font-bold text-slate-900 mb-2">OX 빠른 복습</h3>
                               <p className="text-slate-500 text-sm leading-relaxed mb-4">
-                                  Fast-paced True/False questions generated instantly in the background. Perfect for quick refreshes.
+                                  짧은 참/거짓 문제를 연달아 풉니다. 틈날 때 가볍게 훑기 좋습니다.
                               </p>
-                              <div className="flex items-center text-amber-600 font-bold text-sm md:text-base">
-                                  Start Blitz <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
+                              <div className="flex items-center text-accent-600 font-bold text-sm md:text-base">
+                                  시작 <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
                               </div>
                           </button>
                       </div>
@@ -273,18 +273,18 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                       {/* 오답 노트 */}
                       <div className="mt-8 bg-white rounded-2xl border border-slate-200 p-5 md:p-6">
                           <div className="flex flex-wrap items-center gap-3 mb-1">
-                              <div className="w-10 h-10 shrink-0 rounded-xl bg-rose-50 text-rose-500 flex items-center justify-center">
+                              <div className="w-10 h-10 shrink-0 rounded-xl bg-clay-50 text-clay-500 flex items-center justify-center">
                                   <XCircle className="w-5 h-5" />
                               </div>
                               <div className="min-w-0 flex-1">
-                                  <h3 className="text-lg font-bold text-slate-900">오답 노트 {wrongAnswers.length > 0 && <span className="text-rose-500">{wrongAnswers.length}</span>}</h3>
+                                  <h3 className="text-lg font-bold text-slate-900">오답 노트 {wrongAnswers.length > 0 && <span className="text-clay-500">{wrongAnswers.length}</span>}</h3>
                                   <p className="text-xs text-slate-500">틀린 문제는 해설·원본 메모와 함께 자동 저장됩니다. 다시 풀어서 맞히면 빠집니다.</p>
                               </div>
                               {wrongAnswers.length > 0 && (
                                   <button
                                       type="button"
                                       onClick={() => onStartWrongReview(wrongAnswers)}
-                                      className="px-4 py-2 rounded-xl bg-rose-500 text-white text-sm font-bold hover:bg-rose-600 transition-colors flex items-center gap-1.5 whitespace-nowrap"
+                                      className="px-4 py-2 rounded-xl bg-clay-500 text-white text-sm font-bold hover:bg-clay-600 transition-colors flex items-center gap-1.5 whitespace-nowrap"
                                   >
                                       <RotateCw className="w-4 h-4" /> 틀린 문제 다시 풀기
                                   </button>
@@ -304,7 +304,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                   onClick={() => setExpandedWrongId(isOpen ? null : w.id)}
                                                   className="w-full text-left p-3 hover:bg-slate-50 transition-colors flex items-start gap-2"
                                               >
-                                                  <span className={`shrink-0 mt-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded ${w.type === 'OX' ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                                                  <span className={`shrink-0 mt-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded ${w.type === 'OX' ? 'bg-accent-100 text-accent-700' : 'bg-accent-100 text-accent-700'}`}>
                                                       {w.type === 'OX' ? 'OX' : '케이스'}
                                                   </span>
                                                   <span className={`flex-1 min-w-0 text-sm text-slate-700 ${isOpen ? '' : 'line-clamp-2'}`}>
@@ -313,11 +313,11 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                   {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />}
                                               </button>
                                               <div className="px-3 pb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400">
-                                                  <span>내 답 <b className="text-red-500">{optLabel(w.chosenIndex)}</b> · 정답 <b className="text-green-600">{optLabel(w.correctAnswerIndex)}</b></span>
-                                                  {(w.wrongCount || 1) > 1 && <span className="text-rose-500 font-bold">{w.wrongCount}번 틀림</span>}
+                                                  <span>내 답 <b className="text-red-500">{optLabel(w.chosenIndex)}</b> · 정답 <b className="text-sage-600">{optLabel(w.correctAnswerIndex)}</b></span>
+                                                  {(w.wrongCount || 1) > 1 && <span className="text-clay-500 font-bold">{w.wrongCount}번 틀림</span>}
                                                   <span>{new Date(w.wrongAt).toLocaleDateString()}</span>
-                                                  <button type="button" onClick={() => onOpenNote(w.noteId)} className="text-blue-500 hover:text-blue-700 font-bold truncate max-w-[180px]" title="원본 메모 열기">
-                                                      📄 {w.noteTitle}
+                                                  <button type="button" onClick={() => onOpenNote(w.noteId)} className="text-accent-500 hover:text-accent-700 font-bold truncate max-w-[180px]" title="원본 메모 열기">
+                                                      {w.noteTitle}
                                                   </button>
                                                   <button
                                                       type="button"
@@ -333,7 +333,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                       {w.type !== 'OX' && (
                                                           <ol className="mt-2 space-y-1 text-sm">
                                                               {w.options.map((o, i) => (
-                                                                  <li key={i} className={`flex gap-2 ${i === w.correctAnswerIndex ? 'text-green-700 font-bold' : i === w.chosenIndex ? 'text-red-600 line-through' : 'text-slate-500'}`}>
+                                                                  <li key={i} className={`flex gap-2 ${i === w.correctAnswerIndex ? 'text-sage-700 font-bold' : i === w.chosenIndex ? 'text-red-600 line-through' : 'text-slate-500'}`}>
                                                                       <span className="shrink-0">{String.fromCharCode(65 + i)}.</span>
                                                                       <span dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(formatMedicalMarkdown(o)) }} />
                                                                   </li>
@@ -346,7 +346,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                       {w.sources && w.sources.length > 0 && (
                                                           <div className="flex flex-wrap gap-2 mt-2">
                                                               {w.sources.map((src, i) => (
-                                                                  <a key={i} href={src.uri} target="_blank" rel="noopener noreferrer" className="text-[11px] text-blue-600 bg-white border border-slate-200 rounded px-2 py-1 truncate max-w-[220px] hover:border-blue-300">
+                                                                  <a key={i} href={src.uri} target="_blank" rel="noopener noreferrer" className="text-[11px] text-accent-600 bg-white border border-slate-200 rounded px-2 py-1 truncate max-w-[220px] hover:border-accent-300">
                                                                       {src.title || src.uri}
                                                                   </a>
                                                               ))}
@@ -380,7 +380,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
       return (
           <div className="flex flex-col items-center justify-center h-full bg-slate-50 p-6 text-center animate-in fade-in">
               <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center mb-6">
-                  <Trophy className="w-8 h-8 text-amber-500" />
+                  <Trophy className="w-8 h-8 text-accent-500" />
               </div>
               <h2 className="text-xl font-bold text-slate-800 mb-2">{title}</h2>
               {total > 0 && (
@@ -392,7 +392,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                       : '틀린 문제는 오답 노트에 저장됐고, 해당 메모는 내일 다시 복습 목록에 나옵니다.'}
               </p>
               <div className="flex flex-col gap-3 w-full max-w-xs">
-                  <button type="button" onClick={onEndSession} className="w-full bg-slate-900 text-white hover:bg-black py-3 rounded-xl font-bold shadow-sm transition-all">
+                  <button type="button" onClick={onEndSession} className="w-full bg-accent-700 text-white hover:bg-accent-800 py-3 rounded-xl font-bold shadow-sm transition-all">
                       퀴즈 첫 화면으로
                   </button>
                   <button type="button" onClick={onStop} className="w-full text-slate-400 hover:text-slate-600 py-2 text-sm font-medium transition-colors">
@@ -409,13 +409,13 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
           <div className="flex flex-col items-center justify-center h-full bg-slate-50 p-6 text-center animate-in fade-in">
               <div className="relative mb-8">
                   <div className="w-20 h-20 border-4 border-slate-200 rounded-full"></div>
-                  <div className="w-20 h-20 border-4 border-blue-600 rounded-full border-t-transparent animate-spin absolute top-0 left-0"></div>
+                  <div className="w-20 h-20 border-4 border-accent-600 rounded-full border-t-transparent animate-spin absolute top-0 left-0"></div>
                   <div className="absolute inset-0 flex items-center justify-center">
-                      <Sparkles className="w-6 h-6 text-blue-600" />
+                      <Sparkles className="w-6 h-6 text-accent-600" />
                   </div>
               </div>
               <h2 className="text-xl font-bold text-slate-800 mb-2">
-                  {quizState.error ? '문제가 발생했습니다' : (quizState.mode === 'QUICK_OX' ? 'Quick Review 생성 중...' : 'Case Study 분석 중...')}
+                  {quizState.error ? '문제가 발생했습니다' : (quizState.mode === 'QUICK_OX' ? 'OX 문제 만드는 중...' : '케이스 문제 만드는 중...')}
               </h2>
               <p className="text-slate-400 text-sm mb-8">
                   {quizState.error ? quizState.error : 'AI가 메모를 분석하여 문제를 만들고 있습니다.\n잠시만 기다려주세요.'}
@@ -426,7 +426,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                     <button 
                         type="button"
                         onClick={(e) => { e.preventDefault(); e.stopPropagation(); onRetry(); }} 
-                        className="w-full bg-blue-600 text-white hover:bg-blue-700 py-3 rounded-xl font-bold shadow-sm transition-all flex items-center justify-center gap-2"
+                        className="w-full bg-accent-600 text-white hover:bg-accent-700 py-3 rounded-xl font-bold shadow-sm transition-all flex items-center justify-center gap-2"
                     >
                         <RotateCw className="w-4 h-4" /> 다시 시도하기
                     </button>
@@ -455,12 +455,12 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                 <button type="button" onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full text-slate-500 transition-colors" title="목록으로 (퀴즈 유지)">
                     <ArrowLeft className="w-4 h-4" />
                 </button>
-                <div className={`p-2 rounded-lg ${isOX ? 'bg-amber-50 text-amber-600' : 'bg-blue-50 text-blue-600'}`}>
+                <div className={`p-2 rounded-lg ${isOX ? 'bg-accent-50 text-accent-600' : 'bg-accent-50 text-accent-600'}`}>
                     {isOX ? <Zap className="w-4 h-4" /> : <BookOpen className="w-4 h-4" />}
                 </div>
                 <div>
                     <h2 className="font-bold text-slate-800 text-base md:text-lg">
-                        {quizState.source === 'REVIEW' ? '오늘의 복습' : quizState.source === 'WRONG' ? '오답 다시 풀기' : (isOX ? 'Quick Review' : 'Case Study')}
+                        {quizState.source === 'REVIEW' ? '오늘의 복습' : quizState.source === 'WRONG' ? '오답 다시 풀기' : (isOX ? 'OX 빠른 복습' : '케이스 문제')}
                     </h2>
                     <div className="text-[11px] text-slate-400 flex items-center gap-1">
                         <Trophy className="w-3 h-3" /> Score: {quizState.stats.correct}/{quizState.stats.total}
@@ -478,8 +478,8 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                 {/* Question Card */}
                 <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 md:p-10 mb-6 animate-in slide-in-from-right duration-300">
                     <span className={`inline-block px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider mb-4 
-                        ${isOX ? 'bg-amber-100 text-amber-700' : 'bg-indigo-100 text-indigo-700'}`}>
-                        {isOX ? 'True or False' : 'Clinical Vignette'}
+                        ${isOX ? 'bg-accent-100 text-accent-700' : 'bg-accent-100 text-accent-700'}`}>
+                        {isOX ? '참 / 거짓' : '케이스'}
                     </span>
                     {/* Render Question with Medical Formatting */}
                     <h3 className={`${isOX ? 'text-xl md:text-2xl text-center py-6' : 'text-lg md:text-xl text-center'} font-bold text-slate-900 leading-relaxed`} dangerouslySetInnerHTML={renderMarkdown(currentQ.question)}>
@@ -494,11 +494,11 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                 let btnClass = "flex-1 aspect-square md:aspect-auto md:h-24 rounded-xl text-2xl font-black border-2 transition-all flex items-center justify-center shadow-sm active:scale-95";
                                 
                                 if (isRevealed) {
-                                    if (isCorrect) btnClass += " bg-green-500 border-green-500 text-white opacity-100";
+                                    if (isCorrect) btnClass += " bg-sage-500 border-sage-500 text-white opacity-100";
                                     else if (isSelected) btnClass += " bg-red-500 border-red-500 text-white opacity-100";
                                     else btnClass += " bg-slate-50 border-slate-200 text-slate-300 opacity-50";
                                 } else {
-                                    if (opt === 'O') btnClass += isSelected ? " border-blue-500 bg-blue-500 text-white" : " border-slate-200 hover:border-blue-300 hover:bg-blue-50 text-blue-500";
+                                    if (opt === 'O') btnClass += isSelected ? " border-accent-500 bg-accent-600 text-white" : " border-slate-200 hover:border-accent-300 hover:bg-accent-50 text-accent-500";
                                     else btnClass += isSelected ? " border-red-500 bg-red-500 text-white" : " border-slate-200 hover:border-red-300 hover:bg-red-50 text-red-500";
                                 }
 
@@ -521,18 +521,18 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                     {!isOX && (
                         <div className="space-y-3 mt-6">
                              {currentQ.options.map((option, idx) => {
-                                let statusClass = "border-slate-200 hover:border-blue-400 hover:bg-blue-50 text-slate-700";
+                                let statusClass = "border-slate-200 hover:border-accent-400 hover:bg-accent-50 text-slate-700";
                                 const isSelected = selectedOption === idx;
                                 const isCorrect = currentQ.correctAnswerIndex === idx;
                                 if (isRevealed) {
-                                    if (isCorrect) statusClass = "border-green-500 bg-green-50 text-green-900 ring-1 ring-green-500 font-bold";
+                                    if (isCorrect) statusClass = "border-sage-500 bg-sage-50 text-sage-900 ring-1 ring-sage-500 font-bold";
                                     else if (isSelected && !isCorrect) statusClass = "border-red-500 bg-red-50 text-red-900 ring-1 ring-red-500";
                                     else statusClass = "border-slate-100 text-slate-400 opacity-60";
-                                } else if (isSelected) statusClass = "border-blue-600 bg-blue-50 ring-1 ring-blue-600 text-blue-900 font-medium";
+                                } else if (isSelected) statusClass = "border-accent-600 bg-accent-50 ring-1 ring-accent-600 text-accent-900 font-medium";
 
                                 return (
                                     <button type="button" key={idx} onClick={() => handleOptionClick(idx)} disabled={isRevealed} className={`w-full text-left p-4 rounded-lg border transition-all flex items-start gap-3 ${statusClass}`}>
-                                        <div className={`w-6 h-6 rounded-full border flex-shrink-0 flex items-center justify-center text-[11px] font-bold ${isRevealed && isCorrect ? 'border-green-600 bg-green-600 text-white' : isRevealed && isSelected && !isCorrect ? 'border-red-500 bg-red-500 text-white' : isSelected ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 text-slate-400'}`}>
+                                        <div className={`w-6 h-6 rounded-full border flex-shrink-0 flex items-center justify-center text-[11px] font-bold ${isRevealed && isCorrect ? 'border-sage-600 bg-sage-600 text-white' : isRevealed && isSelected && !isCorrect ? 'border-red-500 bg-red-500 text-white' : isSelected ? 'border-accent-600 bg-accent-600 text-white' : 'border-slate-300 text-slate-400'}`}>
                                             {String.fromCharCode(65 + idx)}
                                         </div>
                                         <span className="text-base" dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(formatMedicalMarkdown(option))}}></span>
@@ -548,10 +548,10 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                     <div className="bg-slate-100 rounded-3xl p-6 md:p-8 animate-in fade-in slide-in-from-bottom-4 relative">
                         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                             <div className="flex items-center gap-2 font-bold text-slate-800 shrink-0">
-                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white ${selectedOption === currentQ.correctAnswerIndex ? 'bg-green-500' : 'bg-red-500'}`}>
+                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white ${selectedOption === currentQ.correctAnswerIndex ? 'bg-sage-500' : 'bg-red-500'}`}>
                                     {selectedOption === currentQ.correctAnswerIndex ? <CheckCircle2 className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
                                 </div>
-                                <span>{selectedOption === currentQ.correctAnswerIndex ? 'Correct!' : 'Incorrect'}</span>
+                                <span>{selectedOption === currentQ.correctAnswerIndex ? '정답' : '오답'}</span>
                             </div>
                             
                             <div className="flex gap-2 ml-auto">
@@ -573,10 +573,10 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                         type="button"
                                         onClick={handleRequestDetail}
                                         disabled={isDetailLoading}
-                                        className="whitespace-nowrap text-[11px] font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-3 py-2 rounded-full flex items-center gap-1.5 transition-all disabled:opacity-50 shadow-sm"
+                                        className="whitespace-nowrap text-[11px] font-bold text-accent-600 bg-accent-50 hover:bg-accent-100 border border-accent-200 px-3 py-2 rounded-full flex items-center gap-1.5 transition-all disabled:opacity-50 shadow-sm"
                                     >
                                         {isDetailLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Microscope className="w-3.5 h-3.5" />}
-                                        {isDetailLoading ? "Generating..." : "AI Deep Dive"}
+                                        {isDetailLoading ? "해설 만드는 중..." : "자세한 해설"}
                                     </button>
                                 )}
                             </div>
@@ -594,7 +594,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                         {(!isOX && currentQ.sources && currentQ.sources.length > 0) || (enhancedExplanation && enhancedExplanation.sources && enhancedExplanation.sources.length > 0) ? (
                              <div className="mt-6 pt-4 border-t border-slate-200">
                                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1">
-                                    <BookOpen className="w-3.5 h-3.5" /> References
+                                    <BookOpen className="w-3.5 h-3.5" /> 참고 자료
                                 </h4>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                     {(enhancedExplanation ? enhancedExplanation.sources : currentQ.sources)?.map((src, i) => (
@@ -603,13 +603,13 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                             href={src.uri} 
                                             target="_blank" 
                                             rel="noopener noreferrer"
-                                            className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 hover:border-blue-300 hover:shadow-sm transition-all group"
+                                            className="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 hover:border-accent-300 hover:shadow-sm transition-all group"
                                         >
-                                            <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center group-hover:bg-blue-100 group-hover:text-blue-600 transition-colors shrink-0">
-                                                <ExternalLink className="w-4 h-4 text-slate-400 group-hover:text-blue-600" />
+                                            <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center group-hover:bg-accent-100 group-hover:text-accent-600 transition-colors shrink-0">
+                                                <ExternalLink className="w-4 h-4 text-slate-400 group-hover:text-accent-600" />
                                             </div>
                                             <div className="min-w-0 flex-1">
-                                                <div className="text-xs font-bold text-slate-700 truncate group-hover:text-blue-700">
+                                                <div className="text-xs font-bold text-slate-700 truncate group-hover:text-accent-700">
                                                     {src.title || "Reference Source"}
                                                 </div>
                                                 <div className="text-[10px] text-slate-400 truncate">
@@ -624,14 +624,14 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
 
                         {currentQ.coverage && (
                             <p className="mt-6 text-[11px] text-slate-400">
-                                📍 출제 구역: {currentQ.coverage.partLabel} ({currentQ.coverage.partIndex + 1}/{currentQ.coverage.partCount})
+                                출제 구역: {currentQ.coverage.partLabel} ({currentQ.coverage.partIndex + 1}/{currentQ.coverage.partCount})
                                 {currentQ.coverage.topic ? ` · ${currentQ.coverage.topic}` : ''}
                             </p>
                         )}
 
                         <div className="mt-8 flex justify-end">
-                            <button type="button" onClick={handleNext} className="bg-slate-900 hover:bg-black text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex items-center gap-2">
-                                {quizState.questionQueue.length === 0 && quizState.noMoreQuestions ? '결과 보기' : 'Next Question'} {quizState.questionQueue.length > 0 && <span className="text-xs bg-slate-700 px-1.5 py-0.5 rounded text-slate-300">{quizState.source === 'WRONG' ? `${quizState.questionQueue.length}개 남음` : 'Ready'}</span>} <ArrowRight className="w-4 h-4" />
+                            <button type="button" onClick={handleNext} className="bg-accent-700 hover:bg-accent-800 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex items-center gap-2">
+                                {quizState.questionQueue.length === 0 && quizState.noMoreQuestions ? '결과 보기' : '다음 문제'} {quizState.questionQueue.length > 0 && <span className="text-xs bg-slate-700 px-1.5 py-0.5 rounded text-slate-300">{quizState.source === 'WRONG' ? `${quizState.questionQueue.length}개 남음` : 'Ready'}</span>} <ArrowRight className="w-4 h-4" />
                             </button>
                         </div>
                     </div>
@@ -642,8 +642,8 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
         {/* Floating Action Button for check */}
         {!isRevealed && selectedOption !== null && (
             <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 w-full max-w-md px-6 z-20 animate-in slide-in-from-bottom-10">
-                 <button type="button" onClick={handleCheckAnswer} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-bold text-lg shadow-xl shadow-blue-200 active:scale-95 transition-all">
-                     Check Answer
+                 <button type="button" onClick={handleCheckAnswer} className="w-full bg-accent-600 hover:bg-accent-700 text-white py-4 rounded-2xl font-bold text-lg shadow-xl active:scale-95 transition-all">
+                     정답 확인
                  </button>
             </div>
         )}
@@ -654,7 +654,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                 <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]">
                     <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-white sticky top-0 z-10">
                         <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                            <BookOpen className="w-5 h-5 text-blue-600" />
+                            <BookOpen className="w-5 h-5 text-accent-600" />
                             {labels.source}
                         </h3>
                         <button type="button" onClick={() => setShowSourceNotes(false)} className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-full">

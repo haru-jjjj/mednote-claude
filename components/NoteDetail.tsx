@@ -14,6 +14,7 @@ import { buildContentWithSummary, splitMovedContent, contentForAnalysis } from '
 import { sectionizeHtml } from '../services/sectionize';
 import { estimateDataRecordCount } from '../services/pasteUtils';
 import { getNoteFromDB } from '../services/storage';
+import AutoTextarea from './AutoTextarea';
 
 interface NoteDetailProps {
   note: Note;
@@ -490,20 +491,20 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
       {/* Sticky Header */}
       <div className="h-12 px-3 border-b border-slate-100 flex items-center justify-between bg-white z-50 flex-none sticky top-0">
         <button onClick={onBack} className="flex items-center text-slate-500 hover:text-slate-800 py-2">
-            <ArrowLeft className="w-5 h-5 mr-1" /> <span className="text-base font-medium">Back</span>
+            <ArrowLeft className="w-5 h-5 mr-1" /> <span className="text-base font-medium">목록</span>
         </button>
         <div className="flex items-center gap-1 sm:gap-2">
              {/* AI 도구는 한 버튼(메뉴)으로 모음: 요약 / 저널클럽 준비 / 가이드라인 점검 */}
              <div className="relative">
                 <button
                     onClick={() => setShowAiMenu(v => !v)}
-                    className={`relative flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-sm font-bold transition-colors ${showAiMenu ? 'bg-indigo-50 text-indigo-600' : 'text-slate-500 hover:text-indigo-600 hover:bg-indigo-50/60'}`}
+                    className={`relative flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-sm font-bold transition-colors ${showAiMenu ? 'bg-accent-50 text-accent-600' : 'text-slate-500 hover:text-accent-600 hover:bg-accent-50/60'}`}
                     title="AI 도구"
                 >
-                    {(isBusy || isCheckingGuideline) ? <Loader2 className="w-4 h-4 animate-spin text-indigo-500" /> : <Sparkles className="w-4 h-4" />}
+                    {(isBusy || isCheckingGuideline) ? <Loader2 className="w-4 h-4 animate-spin text-accent-500" /> : <Sparkles className="w-4 h-4" />}
                     AI
                     {suggestGuidelineCheck && (
-                        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-500" />
+                        <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-warn-500" />
                     )}
                 </button>
                 {showAiMenu && (
@@ -514,7 +515,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                 {
                                     key: 'summary',
                                     icon: isSummarizing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />,
-                                    color: 'text-indigo-600 bg-indigo-50',
+                                    color: 'text-accent-600 bg-accent-50',
                                     label: note.summary && !isJournalSummary ? 'AI 요약 새로 만들기' : 'AI 요약',
                                     desc: isPatientNote ? '케이스 요약·추정/감별 진단·추가 공부' : '메모 종류에 맞춰 요약·정리',
                                     disabled: isBusy,
@@ -523,7 +524,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                 {
                                     key: 'journal',
                                     icon: isAnalyzingJournal ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />,
-                                    color: 'text-violet-600 bg-violet-50',
+                                    color: 'text-accent-600 bg-accent-50',
                                     label: isJournalSummary ? '저널클럽 분석 다시 하기' : '저널클럽 준비',
                                     desc: '설계·결과(NNT)·비뚤림·예상 질문 정리',
                                     disabled: isBusy,
@@ -532,10 +533,10 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                 {
                                     key: 'guideline',
                                     icon: isCheckingGuideline ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />,
-                                    color: 'text-emerald-700 bg-emerald-50',
+                                    color: 'text-accent-600 bg-accent-50',
                                     label: isCheckingGuideline ? '가이드라인 점검 중…' : note.guidelineCheck ? '가이드라인 다시 점검' : '최신 가이드라인 점검',
                                     desc: suggestGuidelineCheck ? `${formatAge(ageDays)} 수정한 메모 — 점검 권장` : '수치·권고가 지금도 맞는지 확인',
-                                    descClass: suggestGuidelineCheck ? 'text-amber-600' : undefined,
+                                    descClass: suggestGuidelineCheck ? 'text-warn-600' : undefined,
                                     disabled: isCheckingGuideline,
                                     onClick: () => onCheckGuideline(note.id),
                                 },
@@ -558,7 +559,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                 )}
              </div>
              <div className="w-px h-4 bg-slate-200 mx-1"></div>
-             <button onClick={() => onEdit(note)} className="text-slate-400 hover:text-blue-500 p-2" title="Edit"><Edit className="w-5 h-5" /></button>
+             <button onClick={() => onEdit(note)} className="text-slate-400 hover:text-accent-500 p-2" title="Edit"><Edit className="w-5 h-5" /></button>
              <button onClick={() => onDelete(note.id)} className="text-slate-400 hover:text-red-500 p-2" title="Delete"><Trash2 className="w-5 h-5" /></button>
         </div>
       </div>
@@ -576,7 +577,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                             className="ml-2 text-[11px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded"
                             title="이 메모를 구역으로 나눠, 퀴즈에 나온 구역 수 / 전체 구역 수 (덜 나온 구역부터 출제)"
                         >
-                            🎯 퀴즈 {quizProgress.touched}/{quizProgress.count} 구역
+                            퀴즈 {quizProgress.touched}/{quizProgress.count} 구역
                         </span>
                     )}
                 </span>
@@ -585,7 +586,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                     <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">
                         {CATEGORIES.map(c => {
                             const on = hasCategory(note, c);
-                            const color = c === 'patient' ? 'text-rose-600' : c === 'work' ? 'text-emerald-700' : 'text-blue-600';
+                            const color = c === 'patient' ? 'text-clay-600' : c === 'work' ? 'text-sage-700' : 'text-accent-600';
                             return (
                                 <button
                                     key={c}
@@ -606,13 +607,13 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
 
             {/* 같은 환자 번호의 메모가 더 있으면 알려주고 합치기 제안 */}
             {isPatientNote && samePatientNotes.length > 0 && (
-                <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50/70 p-3 text-sm">
-                    <div className="font-bold text-amber-800 mb-1">⚠️ 같은 번호의 환자 메모가 {samePatientNotes.length}개 더 있어요</div>
+                <div className="mb-6 rounded-xl border border-warn-200 bg-warn-50/70 p-3 text-sm">
+                    <div className="font-bold text-warn-800 mb-1">같은 번호의 환자 메모가 {samePatientNotes.length}개 더 있어요</div>
                     <ul className="text-xs space-y-0.5 mb-2">
                         {samePatientNotes.map(n => (
                             <li key={n.id}>
-                                <button onClick={() => onSelectNote(n.id)} className="text-amber-800 hover:underline text-left">
-                                    · {n.title || '(제목 없음)'} <span className="text-amber-600">({new Date(n.createdAt).toLocaleDateString()})</span>
+                                <button onClick={() => onSelectNote(n.id)} className="text-warn-800 hover:underline text-left">
+                                    · {n.title || '(제목 없음)'} <span className="text-warn-600">({new Date(n.createdAt).toLocaleDateString()})</span>
                                 </button>
                             </li>
                         ))}
@@ -621,7 +622,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         <button
                             onClick={() => onMergePatient([note.id, ...samePatientNotes.map(n => n.id)])}
                             disabled={isBusy}
-                            className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold disabled:opacity-50"
+                            className="px-3 py-1.5 rounded-lg bg-warn-600 hover:bg-warn-700 text-white text-xs font-bold disabled:opacity-50"
                         >
                             하나로 합치기 (작성 날짜 소제목으로)
                         </button>
@@ -632,25 +633,25 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             {/* 가이드라인 점검 결과 */}
             {(note.guidelineCheck || isCheckingGuideline) && (
                 <div className={`mb-6 rounded-xl border p-4 ${
-                    isCheckingGuideline ? 'bg-emerald-50/50 border-emerald-100'
-                    : note.guidelineCheck?.status === 'changed' ? 'bg-amber-50/70 border-amber-200'
-                    : note.guidelineCheck?.status === 'ok' ? 'bg-emerald-50/60 border-emerald-100'
+                    isCheckingGuideline ? 'bg-sage-50/50 border-sage-100'
+                    : note.guidelineCheck?.status === 'changed' ? 'bg-warn-50/70 border-warn-200'
+                    : note.guidelineCheck?.status === 'ok' ? 'bg-sage-50/60 border-sage-100'
                     : 'bg-slate-50 border-slate-200'
                 }`}>
                     <div className="flex items-center gap-2">
                         {isCheckingGuideline ? (
                             <>
-                                <Loader2 className="w-4 h-4 animate-spin text-emerald-600" />
-                                <span className="text-sm font-bold text-emerald-700">최신 가이드라인과 비교하는 중… (30초~1분, 다른 화면에 가도 계속 진행)</span>
+                                <Loader2 className="w-4 h-4 animate-spin text-sage-600" />
+                                <span className="text-sm font-bold text-sage-700">최신 가이드라인과 비교하는 중… (30초~1분, 다른 화면에 가도 계속 진행)</span>
                             </>
                         ) : note.guidelineCheck && (
                             <>
                                 <span className={`text-sm font-bold ${
-                                    note.guidelineCheck.status === 'changed' ? 'text-amber-700'
-                                    : note.guidelineCheck.status === 'ok' ? 'text-emerald-700' : 'text-slate-600'
+                                    note.guidelineCheck.status === 'changed' ? 'text-warn-700'
+                                    : note.guidelineCheck.status === 'ok' ? 'text-sage-700' : 'text-slate-600'
                                 }`}>
-                                    {note.guidelineCheck.status === 'changed' ? '⚠️ 최신 가이드라인과 달라진 내용 있음'
-                                        : note.guidelineCheck.status === 'ok' ? '✅ 최신 가이드라인과 일치' : '❔ 확인이 어려움'}
+                                    {note.guidelineCheck.status === 'changed' ? '최신 가이드라인과 달라진 내용 있음'
+                                        : note.guidelineCheck.status === 'ok' ? '최신 가이드라인과 일치' : '확인이 어려움'}
                                 </span>
                                 <span className="text-[11px] text-slate-400">{new Date(note.guidelineCheck.checkedAt).toLocaleDateString()} 점검</span>
                                 <div className="ml-auto flex items-center gap-1">
@@ -678,7 +679,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                 <div className="flex flex-wrap gap-2 pt-3 mt-3 border-t border-black/5">
                                     {note.guidelineCheck.sources.map((src, idx) => (
                                         <a key={idx} href={src.uri} target="_blank" rel="noopener noreferrer"
-                                           className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-emerald-700 rounded-lg text-sm font-medium border border-emerald-100 hover:border-emerald-300 transition-colors shadow-sm">
+                                           className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-sage-700 rounded-lg text-sm font-medium border border-sage-100 hover:border-sage-300 transition-colors shadow-sm">
                                             <Globe className="w-3 h-3" />
                                             <span className="truncate max-w-[180px]">{src.title}</span>
                                         </a>
@@ -695,12 +696,12 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             {isPaperNote && !note.summary && !isBusy && (
                 <button
                     onClick={handleJournalClub}
-                    className="w-full mb-6 flex items-start gap-3 text-left bg-violet-50/60 border border-violet-100 rounded-xl p-4 hover:bg-violet-50 transition-colors"
+                    className="w-full mb-6 flex items-start gap-3 text-left bg-accent-50/60 border border-accent-100 rounded-xl p-4 hover:bg-accent-50 transition-colors"
                 >
-                    <FileText className="w-5 h-5 text-violet-500 shrink-0 mt-0.5" />
+                    <FileText className="w-5 h-5 text-accent-500 shrink-0 mt-0.5" />
                     <div className="min-w-0">
-                        <div className="font-bold text-violet-700 text-sm">논문으로 보이는 메모 — 저널클럽 준비 정리</div>
-                        <div className="text-xs text-violet-500 mt-1 leading-relaxed">
+                        <div className="font-bold text-accent-700 text-sm">논문으로 보이는 메모 — 저널클럽 준비 정리</div>
+                        <div className="text-xs text-accent-500 mt-1 leading-relaxed">
                             연구 설계(PICO), 핵심 결과(ARR·NNT), 비뚤림 위험, 적용 가능성, 기존 연구·가이드라인과의 관계, 교수님이 물어볼 만한 질문과 답을 정리합니다. 초록만 붙여넣어도 됩니다.
                         </div>
                     </div>
@@ -711,12 +712,12 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             {isPatientNote && !note.summary && !isBusy && (
                 <button
                     onClick={handleSummarize}
-                    className="w-full mb-6 flex items-start gap-3 text-left bg-rose-50/60 border border-rose-100 rounded-xl p-4 hover:bg-rose-50 transition-colors"
+                    className="w-full mb-6 flex items-start gap-3 text-left bg-clay-50/60 border border-clay-100 rounded-xl p-4 hover:bg-clay-50 transition-colors"
                 >
-                    <Sparkles className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
+                    <Sparkles className="w-5 h-5 text-clay-500 shrink-0 mt-0.5" />
                     <div className="min-w-0">
-                        <div className="font-bold text-rose-700 text-sm">환자 메모 — AI로 추정·감별 진단, 추가 공부 정리</div>
-                        <div className="text-xs text-rose-500 mt-1 leading-relaxed">
+                        <div className="font-bold text-clay-700 text-sm">환자 메모 — AI로 추정·감별 진단, 추가 공부 정리</div>
+                        <div className="text-xs text-clay-500 mt-1 leading-relaxed">
                             케이스 요약(날짜별 핵심 수치 추이), 추정 진단과 근거, 감별 진단, 추가로 확인할 것, 이 케이스로 공부할 내용을 정리합니다. 기록을 더 추가한 뒤 다시 누르면 새로 분석해요.
                         </div>
                     </div>
@@ -727,12 +728,12 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             {isDataNote && !isPaperNote && !note.summary && !isBusy && (
                 <button
                     onClick={handleSummarize}
-                    className="w-full mb-6 flex items-start gap-3 text-left bg-indigo-50/60 border border-indigo-100 rounded-xl p-4 hover:bg-indigo-50 transition-colors"
+                    className="w-full mb-6 flex items-start gap-3 text-left bg-accent-50/60 border border-accent-100 rounded-xl p-4 hover:bg-accent-50 transition-colors"
                 >
-                    <Sparkles className="w-5 h-5 text-indigo-500 shrink-0 mt-0.5" />
+                    <Sparkles className="w-5 h-5 text-accent-500 shrink-0 mt-0.5" />
                     <div className="min-w-0">
-                        <div className="font-bold text-indigo-700 text-sm">붙여넣은 기록 — AI로 묘사·표현 패턴 정리하기</div>
-                        <div className="text-xs text-indigo-500 mt-1 leading-relaxed">
+                        <div className="font-bold text-accent-700 text-sm">붙여넣은 기록 — AI로 묘사·표현 패턴 정리하기</div>
+                        <div className="text-xs text-accent-500 mt-1 leading-relaxed">
                             질환·소견별로 어떤 항목을 중시하는지, 어떤 표현을 자주 쓰는지, 결론 문장을 어떻게 쓰는지 정리합니다. 기록을 더 붙여넣은 뒤 다시 누르면 전체 기준으로 새로 정리돼요.
                         </div>
                     </div>
@@ -741,23 +742,23 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
 
             {/* AI Summary Section */}
             {(note.summary || isBusy) && (
-                <div className="mb-6 bg-indigo-50/60 border border-indigo-100 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 relative overflow-hidden">
+                <div className="mb-6 bg-accent-50/60 border border-accent-100 rounded-xl p-4 animate-in fade-in slide-in-from-top-2 relative overflow-hidden">
                     <div className="flex items-center justify-between gap-2 mb-3">
-                        <div className="flex flex-wrap items-center gap-2 text-indigo-700 font-bold min-w-0">
+                        <div className="flex flex-wrap items-center gap-2 text-accent-700 font-bold min-w-0">
                             {isBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : isJournalSummary ? <FileText className="w-4 h-4" /> : <Sparkles className="w-4 h-4" />}
                             <h3 className="text-base uppercase tracking-wide">
-                                {isBusy ? progressStatus : isJournalSummary ? 'Journal Club' : 'AI Smart Summary'}
+                                {isBusy ? progressStatus : isJournalSummary ? 'Journal Club' : 'AI 요약'}
                             </h3>
                             {!isBusy && note.summary && isSummaryOutdated && (
-                                <span className="text-[11px] font-bold text-amber-600 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded normal-case tracking-normal">
-                                    {isJournalSummary ? '메모 수정 전 분석 · 다시 분석 가능' : '메모 수정 전 요약 · ✨로 새로 요약'}
+                                <span className="text-[11px] font-bold text-warn-600 bg-warn-50 border border-warn-200 px-1.5 py-0.5 rounded normal-case tracking-normal">
+                                    {isJournalSummary ? '메모 수정 전 분석 · 다시 분석 가능' : '메모 수정 전 요약 · AI 메뉴에서 새로 요약'}
                                 </span>
                             )}
                         </div>
                         {!isBusy && note.summary && isJournalSummary && (
                             <button
                                 onClick={handleJournalClub}
-                                className="ml-auto mr-1 text-[11px] font-bold text-violet-500 hover:text-violet-700 whitespace-nowrap"
+                                className="ml-auto mr-1 text-[11px] font-bold text-accent-500 hover:text-accent-700 whitespace-nowrap"
                                 title="저널클럽 분석을 새로 만들기"
                             >
                                 저널클럽 분석 다시 하기
@@ -766,7 +767,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         {!isBusy && note.summary && isPatientNote && !isJournalSummary && (
                             <button
                                 onClick={handleSummarize}
-                                className="ml-auto mr-1 text-[11px] font-bold text-rose-500 hover:text-rose-700 whitespace-nowrap"
+                                className="ml-auto mr-1 text-[11px] font-bold text-clay-500 hover:text-clay-700 whitespace-nowrap"
                                 title="환자 메모 기준으로 추정·감별 진단, 추가 공부를 다시 정리"
                             >
                                 케이스 분석 다시 하기
@@ -775,7 +776,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         {note.summary && historyCount > 0 && (
                             <button
                                 onClick={() => setShowHistory(v => !v)}
-                                className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold whitespace-nowrap transition-colors ${showHistory ? 'bg-white text-indigo-700' : 'text-indigo-400 hover:text-indigo-700 hover:bg-white'}`}
+                                className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold whitespace-nowrap transition-colors ${showHistory ? 'bg-white text-accent-700' : 'text-accent-400 hover:text-accent-700 hover:bg-white'}`}
                                 title="AI 요약 이력 보기"
                             >
                                 <Clock className="w-3.5 h-3.5" /> 이력 {historyCount}
@@ -784,7 +785,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                         {!isBusy && note.summary && (
                             <button 
                                 onClick={handleDeleteSummary}
-                                className="p-1.5 text-indigo-400 hover:text-red-500 hover:bg-white rounded-full transition-all"
+                                className="p-1.5 text-accent-400 hover:text-red-500 hover:bg-white rounded-full transition-all"
                                 title="요약 삭제"
                             >
                                 <X className="w-5 h-5" />
@@ -794,27 +795,27 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                     
                     {isBusy && !isRefining ? (
                         <div className="space-y-2 animate-pulse">
-                            <div className="h-5 bg-indigo-200/50 rounded w-3/4"></div>
-                            <div className="h-5 bg-indigo-200/50 rounded w-full"></div>
-                            <div className="h-5 bg-indigo-200/50 rounded w-5/6"></div>
+                            <div className="h-5 bg-accent-200/50 rounded w-3/4"></div>
+                            <div className="h-5 bg-accent-200/50 rounded w-full"></div>
+                            <div className="h-5 bg-accent-200/50 rounded w-5/6"></div>
                         </div>
                     ) : (
                         <>
                             {/* CSS Fix: enforce breaking on code blocks within prose */}
                             <div 
-                                className={`prose prose-sm prose-indigo max-w-none text-slate-700 leading-relaxed mb-4 break-words [&_code]:break-all [&_code]:whitespace-pre-wrap transition-opacity ${isRefining ? 'opacity-50' : ''}`}
+                                className={`prose prose-sm prose-slate max-w-none text-slate-700 leading-relaxed mb-4 break-words [&_code]:break-all [&_code]:whitespace-pre-wrap transition-opacity ${isRefining ? 'opacity-50' : ''}`}
                                 dangerouslySetInnerHTML={{ __html: summaryHtml }} 
                             />
                             
                             {note.sources && note.sources.length > 0 && (
-                                <div className="flex flex-wrap gap-2 pt-3 border-t border-indigo-100/50">
+                                <div className="flex flex-wrap gap-2 pt-3 border-t border-accent-100/50">
                                     {note.sources.map((src, idx) => (
                                         <a 
                                             key={idx} 
                                             href={src.uri} 
                                             target="_blank" 
                                             rel="noopener noreferrer"
-                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-indigo-600 rounded-lg text-sm font-medium border border-indigo-100 hover:border-indigo-300 transition-colors shadow-sm"
+                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-accent-600 rounded-lg text-sm font-medium border border-accent-100 hover:border-accent-300 transition-colors shadow-sm"
                                         >
                                             <Globe className="w-3 h-3" />
                                             <span className="truncate max-w-[150px]">{src.title}</span>
@@ -823,15 +824,15 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                 </div>
                             )}
                             {/* 질문·추가 사항 → 요약 전체를 다시 정리 (이전 버전은 이력에) */}
-                            <div className="mt-3 pt-3 border-t border-indigo-100/70">
-                                <div className="flex items-end gap-2 bg-white border border-indigo-100 rounded-xl px-3 py-2 focus-within:border-indigo-300 transition-colors">
-                                    <textarea
+                            <div className="mt-3 pt-3 border-t border-accent-100/70">
+                                <div className="flex items-end gap-2 bg-white border border-accent-100 rounded-xl px-3 py-2 focus-within:border-accent-300 transition-colors">
+                                    <AutoTextarea
                                         value={refineText}
                                         onChange={e => setRefineText(e.target.value)}
                                         onKeyDown={e => {
                                             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { e.preventDefault(); handleRefine(); }
                                         }}
-                                        rows={Math.min(5, Math.max(1, refineText.split('\n').length))}
+                                        minRows={1} maxRows={8}
                                         disabled={isRefining}
                                         placeholder={isJournalSummary
                                             ? '분석에 질문하거나 추가할 내용 (예: 통계 관련 예상 질문 더 / 이전 trial과 비교표)'
@@ -841,13 +842,13 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                     <button
                                         onClick={handleRefine}
                                         disabled={!refineText.trim() || isBusy}
-                                        className="shrink-0 w-8 h-8 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
+                                        className="shrink-0 w-8 h-8 rounded-lg bg-accent-600 hover:bg-accent-700 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed"
                                         title="요청을 반영해 요약 전체를 다시 정리 (Ctrl/⌘+Enter)"
                                     >
                                         {isRefining ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-4 h-4" />}
                                     </button>
                                 </div>
-                                <p className="text-[11px] text-indigo-400 mt-1.5 px-1">
+                                <p className="text-[11px] text-accent-400 mt-1.5 px-1">
                                     {isRefining ? '반영하는 중… (30초~1분)' : '질문·요청을 반영해 요약 전체를 다시 정리해요. 이전 버전은 이력에 남아요.'}
                                 </p>
                             </div>
@@ -855,7 +856,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                 <button
                                     onClick={handleMoveSummaryToContent}
                                     disabled={isBusy}
-                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 text-xs font-bold transition-colors"
+                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-accent-200 text-accent-600 hover:bg-accent-50 text-xs font-bold transition-colors"
                                     title="요약을 메모 본문 맨 위에 넣고, 원래 메모는 아래에 접어서 보관"
                                 >
                                     <FileText className="w-3.5 h-3.5" /> 메모 내용으로 저장
@@ -870,7 +871,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             {!note.summary && !isBusy && historyCount > 0 && !showHistory && (
                 <button
                     onClick={() => setShowHistory(true)}
-                    className="mb-6 flex items-center gap-1.5 text-xs font-bold text-slate-400 hover:text-indigo-600"
+                    className="mb-6 flex items-center gap-1.5 text-xs font-bold text-slate-400 hover:text-accent-600"
                 >
                     <Clock className="w-3.5 h-3.5" /> AI 요약 이력 {historyCount}개 보기
                 </button>
@@ -910,7 +911,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
             {isContentRendering ? (
                 <div className="flex flex-col items-center justify-center py-20 opacity-50 space-y-3">
                     <Loader2 className="w-10 h-10 animate-spin text-slate-400" />
-                    <span className="text-base text-slate-400">Rendering large content...</span>
+                    <span className="text-base text-slate-400">불러오는 중...</span>
                 </div>
             ) : (
                 <>
@@ -940,9 +941,9 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                             <button
                                 key={rn.id}
                                 onClick={() => onSelectNote(rn.id)}
-                                className="w-full text-left p-3.5 bg-white rounded-xl border border-slate-200 hover:border-indigo-300 hover:shadow-sm transition-all flex items-start gap-3"
+                                className="w-full text-left p-3.5 bg-white rounded-xl border border-slate-200 hover:border-accent-300 hover:shadow-sm transition-all flex items-start gap-3"
                             >
-                                <div className="w-8 h-8 shrink-0 rounded-lg bg-indigo-50 text-indigo-500 flex items-center justify-center mt-0.5">
+                                <div className="w-8 h-8 shrink-0 rounded-lg bg-accent-50 text-accent-500 flex items-center justify-center mt-0.5">
                                     <Link2 className="w-4 h-4" />
                                 </div>
                                 <div className="min-w-0">

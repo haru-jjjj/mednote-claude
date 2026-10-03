@@ -74,7 +74,7 @@ const GuidelineCheckView: React.FC<Props> = ({ notes, checkingIds, onCheck, onOp
                 <button onClick={onBack} className="p-2 text-slate-500 hover:text-slate-800" title="목록으로">
                     <ArrowLeft className="w-5 h-5" />
                 </button>
-                <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                <ShieldCheck className="w-5 h-5 text-sage-600" />
                 <h2 className="font-bold text-slate-800">오래된 메모 점검</h2>
                 {isFetchingAll && <span className="ml-1 flex items-center gap-1 text-[11px] text-slate-400"><Loader2 className="w-4 h-4 text-slate-300 animate-spin" /> 예전 메모 불러오는 중</span>}
             </div>
@@ -83,15 +83,15 @@ const GuidelineCheckView: React.FC<Props> = ({ notes, checkingIds, onCheck, onOp
                 <div className="max-w-3xl mx-auto p-4 md:p-6 pb-24">
                     <div className="bg-white border border-slate-200 rounded-xl p-4 mb-4 text-sm text-slate-600 leading-relaxed">
                         {Math.round(GUIDELINE_STALE_DAYS / 365)}년 넘게 수정하지 않은 메모 중 <b>수치·권고</b>(기준값, 목표치, 용량, 기간, 권고 등급 등)가 들어 있는 메모입니다.
-                        <b> 점검</b>을 누른 메모만 최신 가이드라인·연구와 비교해 바뀐 내용을 ⚠️로 표시합니다.
+                        <b> 점검</b>을 누른 메모만 최신 가이드라인·연구와 비교해 바뀐 내용을 따로 표시합니다.
                         <span className="block text-xs text-slate-400 mt-1">
                             메모 1개당 약 100~200원(웹 검색 포함). 결과는 메모에 저장되어 모든 기기에서 보이고, 메모 화면에서도 언제든 점검할 수 있습니다. 환자 메모는 제외됩니다.
                         </span>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-1.5 mb-3">
-                        {chip('todo', '점검 전', todo.length, 'bg-emerald-50 border-emerald-200 text-emerald-700')}
-                        {chip('changed', '⚠️ 바뀐 내용 있음', changed.length, 'bg-amber-50 border-amber-200 text-amber-700')}
+                        {chip('todo', '점검 전', todo.length, 'bg-sage-50 border-sage-200 text-sage-700')}
+                        {chip('changed', '바뀐 내용 있음', changed.length, 'bg-warn-50 border-warn-200 text-warn-700')}
                         {chip('all', '전체', candidates.length, 'bg-slate-100 border-slate-300 text-slate-700')}
                     </div>
 
@@ -108,16 +108,16 @@ const GuidelineCheckView: React.FC<Props> = ({ notes, checkingIds, onCheck, onOp
                                 return (
                                     <div key={n.id} className="bg-white border border-slate-200 rounded-xl p-3 flex items-start gap-3">
                                         <button type="button" onClick={() => onOpenNote(n.id)} className="flex-1 min-w-0 text-left group">
-                                            <div className="flex items-center gap-1 text-sm font-bold text-slate-800 group-hover:text-blue-600">
+                                            <div className="flex items-center gap-1 text-sm font-bold text-slate-800 group-hover:text-accent-600">
                                                 <span className="truncate">{n.title || '(제목 없음)'}</span>
-                                                <ChevronRight className="w-3.5 h-3.5 shrink-0 text-slate-300 group-hover:text-blue-500" />
+                                                <ChevronRight className="w-3.5 h-3.5 shrink-0 text-slate-300 group-hover:text-accent-500" />
                                             </div>
                                             <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-400 mt-0.5">
                                                 <span>{formatAge(noteAgeDays(n, now))} 수정</span>
                                                 <span>수치 {sig.numeric} · 권고 표현 {sig.recommendation}</span>
                                                 {gc && (
-                                                    <span className={`font-bold ${gc.status === 'changed' ? 'text-amber-600' : gc.status === 'ok' ? 'text-emerald-600' : 'text-slate-500'}`}>
-                                                        {gc.status === 'changed' ? '⚠️ 바뀐 내용 있음' : gc.status === 'ok' ? '✅ 일치' : '❔ 확인 어려움'}
+                                                    <span className={`font-bold ${gc.status === 'changed' ? 'text-warn-600' : gc.status === 'ok' ? 'text-sage-600' : 'text-slate-500'}`}>
+                                                        {gc.status === 'changed' ? '바뀐 내용 있음' : gc.status === 'ok' ? '일치' : '확인 어려움'}
                                                         {' · '}{new Date(gc.checkedAt).toLocaleDateString()}
                                                     </span>
                                                 )}
@@ -131,7 +131,7 @@ const GuidelineCheckView: React.FC<Props> = ({ notes, checkingIds, onCheck, onOp
                                             onClick={() => onCheck(n.id)}
                                             disabled={checking}
                                             className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors disabled:opacity-60 flex items-center gap-1 ${
-                                                gc ? 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50' : 'bg-emerald-600 border-emerald-600 text-white hover:bg-emerald-700'
+                                                gc ? 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50' : 'bg-sage-600 border-sage-600 text-white hover:bg-sage-700'
                                             }`}
                                         >
                                             {checking && <Loader2 className="w-3.5 h-3.5 animate-spin" />}

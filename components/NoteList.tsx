@@ -61,7 +61,7 @@ const NoteCard = React.memo(({ note, onClick, badge }: { note: Note, onClick: ()
         <div
             id={`note-${note.id}`}
             onClick={onClick}
-            className="rounded-lg border p-4 cursor-pointer transition-colors relative bg-white border-slate-200 hover:border-blue-300 hover:bg-slate-50"
+            className="rounded-lg border p-4 cursor-pointer transition-colors relative bg-white border-slate-200 hover:border-accent-300 hover:bg-slate-50"
         >
             <div className="flex flex-col gap-2">
                 <p className="text-sm text-slate-600 leading-normal line-clamp-4 h-auto min-h-[1.5rem]" style={{ wordBreak: 'keep-all', overflowWrap: 'break-word' }}>
@@ -79,13 +79,13 @@ const NoteCard = React.memo(({ note, onClick, badge }: { note: Note, onClick: ()
                     </span>
                     <div className="flex items-center gap-1.5">
                         {note.guidelineCheck?.status === 'changed' && (
-                            <span className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded" title="최신 가이드라인과 달라진 내용이 있음">⚠️ 가이드라인</span>
+                            <span className="text-[11px] font-bold text-warn-700 bg-warn-50 border border-warn-200 px-1.5 py-0.5 rounded" title="최신 가이드라인과 달라진 내용이 있음">가이드라인 변경</span>
                         )}
                         {badge && (
-                            <span className="text-[11px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">{badge}</span>
+                            <span className="text-[11px] font-bold text-accent-600 bg-accent-50 px-1.5 py-0.5 rounded">{badge}</span>
                         )}
                         {note.summary && (
-                            <div className="flex items-center gap-1 text-[11px] text-indigo-400 bg-indigo-50 px-1.5 py-0.5 rounded">
+                            <div className="flex items-center gap-1 text-[11px] text-accent-400 bg-accent-50 px-1.5 py-0.5 rounded">
                                 <Sparkles className="w-3 h-3" /> {note.summaryKind === 'journal' ? 'Journal' : 'Summary'}
                             </div>
                         )}
@@ -307,11 +307,11 @@ const NoteList: React.FC<NoteListProps> = ({
       <div className="p-3 space-y-2 bg-white border-b border-slate-100 z-10 flex-shrink-0">
         {/* Search Bar */}
         <div className="relative group">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 group-focus-within:text-blue-500 transition-colors" />
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4 group-focus-within:text-accent-500 transition-colors" />
             <input
                 type="text"
                 placeholder="검색 (내용, 사진 텍스트, AI 요약 — 여러 단어 가능)..."
-                className="w-full pl-10 pr-16 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-blue-300 focus:ring-2 focus:ring-blue-50 transition-all outline-none text-slate-700 text-sm font-medium placeholder:text-slate-400"
+                className="w-full pl-10 pr-16 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:border-accent-300 focus:ring-2 focus:ring-accent-50 transition-all outline-none text-slate-700 text-sm font-medium placeholder:text-slate-400"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
             />
@@ -340,7 +340,7 @@ const NoteList: React.FC<NoteListProps> = ({
                 const active = tagFilter === f;
                 const label = f === 'all' ? '전체' : CATEGORY_LABELS[f];
                 const count = f === 'all' ? null : tagCounts[f];
-                const activeClass = f === 'all' ? 'bg-blue-50 border-blue-200 text-blue-600' : CATEGORY_COLORS[f].active;
+                const activeClass = f === 'all' ? 'bg-accent-50 border-accent-200 text-accent-600' : CATEGORY_COLORS[f].active;
                 return (
                     <button
                         key={f}
@@ -358,7 +358,7 @@ const NoteList: React.FC<NoteListProps> = ({
                 <button
                     type="button"
                     onClick={onOpenReview}
-                    className="ml-auto px-3 py-1 rounded-full text-xs font-bold border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors whitespace-nowrap"
+                    className="ml-auto px-3 py-1 rounded-full text-xs font-bold border border-accent-200 bg-accent-50 text-accent-700 hover:bg-accent-100 transition-colors whitespace-nowrap"
                     title="복습일이 된 메모로 퀴즈 풀기"
                 >
                     오늘 복습 {reviewDueCount}개 →
@@ -372,8 +372,8 @@ const NoteList: React.FC<NoteListProps> = ({
                     <span>키워드 일치 <b>{otherNotes.length}</b>개</span>
                     <span className="flex items-center gap-1">
                         연관 메모
-                        {isSemanticSearching && (<><Loader2 className="w-3 h-3 animate-spin text-amber-500" /> <span className="text-amber-600">찾는 중…</span></>)}
-                        {semanticStatus === 'ready' && <b className="text-amber-600">{semanticMatches.length}개</b>}
+                        {isSemanticSearching && (<><Loader2 className="w-3 h-3 animate-spin text-accent-500" /> <span className="text-accent-600">찾는 중…</span></>)}
+                        {semanticStatus === 'ready' && <b className="text-accent-600">{semanticMatches.length}개</b>}
                         {semanticStatus === 'error' && <span className="text-red-500">연결 실패 — 키워드 결과만 표시</span>}
                         {semanticStatus === 'unavailable' && <span className="text-slate-400">사용 안 함 (Voyage 키 없음)</span>}
                     </span>
@@ -443,7 +443,7 @@ const NoteList: React.FC<NoteListProps> = ({
                                     <button
                                         onClick={onLoadMore}
                                         disabled={isLoadingMore}
-                                        className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 rounded-full text-slate-500 text-sm font-medium hover:bg-slate-50 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full max-w-[280px] justify-center"
+                                        className="flex items-center gap-2 px-5 py-2.5 bg-white border border-slate-200 rounded-full text-slate-500 text-sm font-medium hover:bg-slate-50 hover:text-accent-600 hover:border-accent-200 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full max-w-[280px] justify-center"
                                     >
                                         {isLoadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4" />}
                                         {isLoadingMore ? '불러오는 중...' : '클라우드에서 이전 메모 더 불러오기'}
@@ -454,7 +454,7 @@ const NoteList: React.FC<NoteListProps> = ({
                                     <button
                                         onClick={onFetchAll}
                                         disabled={isLoadingMore}
-                                        className="flex items-center gap-2 px-5 py-2.5 bg-blue-50 border border-blue-100 rounded-full text-blue-600 text-sm font-bold hover:bg-blue-100 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full max-w-[280px] justify-center"
+                                        className="flex items-center gap-2 px-5 py-2.5 bg-accent-50 border border-accent-100 rounded-full text-accent-600 text-sm font-bold hover:bg-accent-100 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full max-w-[280px] justify-center"
                                     >
                                         {isLoadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4" />}
                                         {isLoadingMore ? '불러오는 중...' : '클라우드 모든 메모 한꺼번에 불러오기'}
@@ -469,10 +469,10 @@ const NoteList: React.FC<NoteListProps> = ({
             {/* 연관 검색 결과: 키워드는 없지만 내용이 비슷한 메모 */}
             {isSearching && (semanticMatches.length > 0 || isSemanticSearching) && (
                 <div className={otherNotes.length > 0 ? "pt-5 mt-2 border-t border-slate-100" : ""}>
-                    <div className="flex items-center gap-1.5 text-xs font-bold text-amber-600 mb-3 px-1">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-accent-600 mb-3 px-1">
                         <Lightbulb className="w-3.5 h-3.5" />
-                        연관 메모 <span className="font-normal text-amber-500">— 키워드는 없지만 내용이 비슷한 메모</span>
-                        {isSemanticSearching && <Loader2 className="w-3 h-3 animate-spin text-amber-400" />}
+                        연관 메모 <span className="font-normal text-accent-500">— 키워드는 없지만 내용이 비슷한 메모</span>
+                        {isSemanticSearching && <Loader2 className="w-3 h-3 animate-spin text-accent-400" />}
                     </div>
                     <div className="space-y-3">
                          {semanticMatches.map(({ note, score }) => (

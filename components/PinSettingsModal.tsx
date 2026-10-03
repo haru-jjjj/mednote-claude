@@ -64,7 +64,7 @@ const PinSettingsModal: React.FC<PinSettingsModalProps> = ({ onClose }) => {
         }
     };
 
-    const inputClass = "w-full text-center tracking-[0.4em] text-base font-bold px-4 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400";
+    const inputClass = "w-full text-center tracking-[0.4em] text-base font-bold px-4 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-400";
 
     return (
         <div
@@ -77,7 +77,7 @@ const PinSettingsModal: React.FC<PinSettingsModalProps> = ({ onClose }) => {
             >
                 <div className="flex items-center justify-between mb-4">
                     <div className="flex items-center gap-2 font-bold text-slate-800">
-                        <KeyRound className="w-4 h-4 text-blue-600" />
+                        <KeyRound className="w-4 h-4 text-accent-600" />
                         {hasPin ? 'PIN 변경' : 'PIN 설정'}
                     </div>
                     <button onClick={onClose} disabled={saving} className="p-1 text-slate-400 hover:text-slate-600 rounded-full" aria-label="닫기">
@@ -87,12 +87,12 @@ const PinSettingsModal: React.FC<PinSettingsModalProps> = ({ onClose }) => {
 
                 {done ? (
                     <div className="text-center space-y-3">
-                        <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto" />
+                        <CheckCircle2 className="w-10 h-10 text-sage-500 mx-auto" />
                         <p className="text-sm font-bold text-slate-800">{hasPin ? 'PIN이 변경되었습니다.' : 'PIN이 설정되었습니다.'}</p>
                         <p className="text-xs text-slate-500 leading-relaxed">
                             모든 기기에 적용됩니다. 다른 기기에서 "이 기기 기억하기"로 들어가 있던 경우에도 다음 접속 때 새 PIN을 입력해야 합니다.
                         </p>
-                        <button onClick={onClose} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm py-2.5 rounded-xl">
+                        <button onClick={onClose} className="w-full bg-accent-600 hover:bg-accent-700 text-white font-bold text-sm py-2.5 rounded-xl">
                             확인
                         </button>
                     </div>
@@ -120,12 +120,12 @@ const PinSettingsModal: React.FC<PinSettingsModalProps> = ({ onClose }) => {
                         </div>
 
                         {error && <p className="text-xs text-red-500 leading-relaxed">{error}</p>}
-                        {pending && <p className="text-xs text-amber-600 leading-relaxed">{pending}</p>}
+                        {pending && <p className="text-xs text-warn-600 leading-relaxed">{pending}</p>}
 
                         <button
                             type="submit"
                             disabled={saving || !newPin || !confirmPin}
-                            className="w-full flex items-center justify-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm py-2.5 rounded-xl transition-colors"
+                            className="w-full flex items-center justify-center gap-1.5 bg-accent-600 hover:bg-accent-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm py-2.5 rounded-xl transition-colors"
                         >
                             {saving && <Loader2 className="w-4 h-4 animate-spin" />}
                             {hasPin ? '변경하기' : '설정하기'}
@@ -142,7 +142,7 @@ const PinSettingsModal: React.FC<PinSettingsModalProps> = ({ onClose }) => {
                     <select
                         value={idleMinutes}
                         onChange={e => handleIdleChange(Number(e.target.value))}
-                        className="w-full text-sm px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        className="w-full text-sm px-3 py-2 border border-slate-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-accent-400"
                     >
                         {IDLE_LOCK_OPTIONS.map(m => (
                             <option key={m} value={m}>{m === 0 ? '자동 잠금 안 함' : `${m}분 동안 사용하지 않으면 잠금`}</option>
@@ -152,8 +152,8 @@ const PinSettingsModal: React.FC<PinSettingsModalProps> = ({ onClose }) => {
                         "이 기기 기억하기"를 체크하지 않고 연 기기(공용 컴퓨터 등)에서, 화면을 누르거나 입력하지 않은 채
                         이 시간이 지나면 PIN을 다시 물어요. 작성 중이던 내용은 사라지지 않아요. 모든 기기에 같은 설정이 적용됩니다.
                     </p>
-                    {idleStatus === 'saved' && <p className="text-[10px] text-emerald-600 mt-1">저장됨 (모든 기기에 적용)</p>}
-                    {idleStatus === 'local' && <p className="text-[10px] text-amber-600 mt-1">이 기기에만 적용됨 — 클라우드 저장 실패(연결 또는 보안 규칙 확인)</p>}
+                    {idleStatus === 'saved' && <p className="text-[10px] text-sage-600 mt-1">저장됨 (모든 기기에 적용)</p>}
+                    {idleStatus === 'local' && <p className="text-[10px] text-warn-600 mt-1">이 기기에만 적용됨 — 클라우드 저장 실패(연결 또는 보안 규칙 확인)</p>}
                 </div>
             </div>
         </div>

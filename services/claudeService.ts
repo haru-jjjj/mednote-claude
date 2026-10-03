@@ -53,6 +53,9 @@ READER PROFILE (applies to everything you write):
   subspecialty depth the note doesn't support.
 - If something in the source is uncertain, outdated, or guideline-discordant, say so briefly
   instead of smoothing it over.
+- Style: plain, calm text. Do NOT use emoji or decorative symbols (no ⚠️ ✅ ❌ 🔥 📌 ✨ etc.).
+  When something needs a flag, write a short bold word instead, e.g. "**주의**", "**확인 필요**",
+  "**변경됨**". Arrows (→), ≥/≤ and plain bullets are fine.
 `;
 
 // ----------------------------------------------------------------------------
@@ -379,7 +382,7 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
               감별에 필요한 검사·정보.
             ### 추가로 확인할 것
               Missing data or tests, and guideline-based next steps worth checking (with the threshold
-              or class of recommendation where it matters). Flag anything potentially urgent with ⚠️.
+              or class of recommendation where it matters). Flag anything potentially urgent with a leading "**주의**".
             ### 추가 공부
               2~4 focused topics worth reading for THIS case (a guideline section, a landmark trial, a
               mechanism or procedural point), each with one line on why it matters here.
@@ -424,7 +427,7 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
               search for authoritative sources that confirm, refine, or correct what's written, and
               write the summary as verified, well-sourced clinical takeaways — essentially turning
               a rough memo into a properly grounded note. If a claim in the note seems imprecise,
-              outdated, or you cannot find support for it, say so briefly (e.g. "⚠️ 최신 가이드라인과
+              outdated, or you cannot find support for it, say so briefly (e.g. "**주의**: 최신 가이드라인과
               다를 수 있음") rather than silently repeating it as fact.
 
             LENGTH (STRICT for POLISHED / RUSHED — this is the most important rule):
@@ -536,7 +539,7 @@ export const refineNoteSummary = async (
         - Keep the existing structure, headings and style. Keep the length about the same unless the request
           needs more (then grow only as much as needed).
         - If the note now contains information the current version doesn't cover, integrate it too.
-        - If the request conflicts with the note or with current evidence, say so briefly with ⚠️ and the
+        - If the request conflicts with the note or with current evidence, say so briefly with a leading "**주의**" and the
           reason/source instead of complying blindly. Never invent numbers that are not in the note or a source.
         - Web search: only when the request needs evidence (guideline thresholds/COR·LOE, trials, recent data),
           up to 3 searches; cite what you use.
@@ -562,7 +565,7 @@ export const refineNoteSummary = async (
     const firstHeading = summary.indexOf('###');
     if (params.currentSummary.trim().startsWith('###') && firstHeading > 0) summary = summary.slice(firstHeading);
     if (data?.stop_reason === 'max_tokens') {
-        summary += '\n\n> ⚠️ 분량 제한으로 뒷부분이 잘렸을 수 있습니다. 요약 이력에서 이전 버전으로 되돌릴 수 있어요.';
+        summary += '\n\n> 참고: 분량 제한으로 뒷부분이 잘렸을 수 있습니다. 요약 이력에서 이전 버전으로 되돌릴 수 있어요.';
     }
     return { summary, sources: mergeSources(extractCitations(data, 8), params.currentSources || []) };
 };
@@ -573,17 +576,24 @@ export const refineNoteSummary = async (
 // - 근거가 필요한 질문은 웹 검색(최대 3회) 후 출처를 붙임
 // 참고: https://docs.claude.com/en/docs/build-with-claude/streaming
 // ----------------------------------------------------------------------------
-export interface ThreadTurn { role: 'user' | 'assistant'; text: string; quote?: string }
+export interface ThreadTurn { role: 'user' | 'assistant'; text: string; quote?: string; images?: string[] }
 
 const THREAD_HISTORY_CHARS = 40000;
+// 이전 대화의 사진은 최근 것만 다시 보냄 (매번 모든 사진을 보내면 비용·속도가 커짐)
+const THREAD_MAX_IMAGES = 6;
 
-const turnText = (t: ThreadTurn) =>
-    t.role === 'user' && t.quote
+const turnText = (t: ThreadTurn) => {
+    const base = t.role === 'user' && t.quote
         ? `(이전 답변에서 이 부분을 짚어서 묻는 질문)\n"""${t.quote}"""\n\n${t.text}`
         : t.text;
+    return base;
+};
+
+type ApiContent = string | any[];
+const toBlocks = (c: ApiContent): any[] => (typeof c === 'string' ? [{ type: 'text', text: c }] : c);
 
 // 최근 대화부터 거꾸로 담고, user로 시작하도록 맞춤 (API는 user/assistant가 번갈아 와야 함)
-const buildThreadMessages = (history: ThreadTurn[], question: ThreadTurn): { role: 'user' | 'assistant'; content: string }[] => {
+const buildThreadMessages = (history: ThreadTurn[], question: ThreadTurn): { role: 'user' | 'assistant'; content: ApiContent }[] => {
     const picked: ThreadTurn[] = [];
     let used = turnText(question).length;
     let omitted = false;
@@ -593,15 +603,42 @@ const buildThreadMessages = (history: ThreadTurn[], question: ThreadTurn): { rol
         picked.unshift(history[i]);
         used += len;
     }
+    // 사진: 이번 질문 것을 먼저, 남은 자리만큼 최근 질문 것부터
+    let imageBudget = THREAD_MAX_IMAGES;
+    const withImages = [...picked, question].map(t => ({ ...t, images: [] as string[], allImages: t.images || [] }));
+    for (let i = withImages.length - 1; i >= 0 && imageBudget > 0; i--) {
+        const t = withImages[i];
+        if (t.role !== 'user' || !t.allImages.length) continue;
+        t.images = t.allImages.slice(0, imageBudget);
+        imageBudget -= t.images.length;
+    }
+    const contentOf = (t: { role: string; text: string; quote?: string; images: string[]; allImages: string[] }): ApiContent => {
+        let text = turnText(t as ThreadTurn);
+        const dropped = t.allImages.length - t.images.length;
+        if (dropped > 0) text = `(이 질문에 사진 ${t.allImages.length}장을 첨부했었음${t.images.length ? ` — 그중 ${t.images.length}장만 다시 보냄` : ''})\n${text}`;
+        if (!t.images.length) return text;
+        return [...t.images.map(img => imageBlock(img)), { type: 'text', text }];
+    };
     // 번갈아 오도록 정리: 같은 역할이 연달아 오면 합치고(답이 없던 질문 등), 맨 앞은 user
-    const merged: { role: 'user' | 'assistant'; content: string }[] = [];
-    [...picked, question].forEach(t => {
+    const merged: { role: 'user' | 'assistant'; content: ApiContent }[] = [];
+    withImages.forEach(t => {
         const last = merged[merged.length - 1];
-        if (last && last.role === t.role) last.content += `\n\n${turnText(t)}`;
-        else merged.push({ role: t.role, content: turnText(t) });
+        const c = contentOf(t);
+        if (last && last.role === t.role) {
+            last.content = (typeof last.content === 'string' && typeof c === 'string')
+                ? `${last.content}\n\n${c}`
+                : [...toBlocks(last.content), ...toBlocks(c)];
+        } else {
+            merged.push({ role: t.role, content: c });
+        }
     });
     while (merged.length && merged[0].role !== 'user') merged.shift();
-    if (omitted && merged.length) merged[0].content = `(앞부분 대화는 길어서 생략됨)\n\n${merged[0].content}`;
+    if (omitted && merged.length) {
+        const note = '(앞부분 대화는 길어서 생략됨)\n\n';
+        const first = merged[0];
+        if (typeof first.content === 'string') first.content = note + first.content;
+        else first.content = [{ type: 'text', text: note.trim() }, ...first.content];
+    }
     return merged;
 };
 
@@ -613,6 +650,9 @@ const THREAD_SYSTEM = `
       mechanism, thresholds/doses with units, guideline class (COR/LOE) and year, landmark trials, practical pitfalls.
       Depth of a fellow-level discussion, but no padding; skip basics they obviously know.
     - When the question quotes part of an earlier answer, focus on exactly that part.
+    - When photos are attached (ECG, EGM/intracardiac tracing, echo, angiogram, CT, lab table, slide, handwritten note),
+      read them directly: describe what you actually see that matters, then answer. Say clearly when image quality or
+      cropping limits the reading, and do not invent values that are not visible.
     - For anything that depends on current guidelines, recent trials or numbers, use web search (up to 3) and rely on
       what you find; say so when evidence is weak, conflicting or you are unsure. Never invent numbers or citations.
     - Format: Markdown. Use "###" for any headings (never "#" or "##"), bullets "- " with the full sentence on the same
@@ -723,7 +763,7 @@ export const streamThreadAnswer = async (params: {
             : 'AI가 답변을 돌려주지 않았습니다. 잠시 후 다시 시도해주세요.');
     }
     const truncated = stopReason === 'max_tokens' || stopReason === 'pause_turn';
-    if (truncated) text += '\n\n> ⚠️ 답변이 중간에 끊겼습니다. "이어서 설명해줘"라고 물어보면 이어집니다.';
+    if (truncated) text += '\n\n> 참고: 답변이 중간에 끊겼습니다. "이어서 설명해줘"라고 물어보면 이어집니다.';
     return { text, sources: Array.from(sources.values()).slice(0, 8), truncated };
 };
 
@@ -935,7 +975,7 @@ export const CONTEXT_BUDGETS = {
 // 답이 분량 한도에서 잘렸으면 안내 문구를 붙임
 const withTruncationNotice = (text: string, data: any): string =>
     data?.stop_reason === 'max_tokens'
-        ? `${text}\n\n> ⚠️ 분량 한도에 걸려 뒷부분이 잘렸을 수 있습니다. 참고할 메모를 줄여서 다시 만들어보세요.`
+        ? `${text}\n\n> 참고: 분량 한도에 걸려 뒷부분이 잘렸을 수 있습니다. 참고할 메모를 줄여서 다시 만들어보세요.`
         : text;
 
 const NOTE_CITATION_RULES = `
@@ -948,7 +988,7 @@ CITATIONS (STRICT):
   e.g. "메모2의 결과 #5" (no brackets) so it is not confused with a note citation.
 - Anything NOT supported by the notes but needed for a correct answer: add it briefly and mark it
   "(메모 외 일반 지식)". Keep such additions short and clearly separated from what the notes say.
-- If notes contradict each other, or a note looks outdated / guideline-discordant, flag it with "⚠️".
+- If notes contradict each other, or a note looks outdated / guideline-discordant, flag it with a leading "**주의**".
 - When the question is about how something is DESCRIBED or DOCUMENTED (e.g. "MR은 판독에서 어떻게
   쓰더라", "interrogation에서 뭘 꼭 보더라"), answer from the pasted records in the notes: quote
   representative phrases verbatim, list the items that are consistently reported (in their usual
@@ -1389,7 +1429,7 @@ export const analyzeJournalArticle = async (note: Note): Promise<{ summary: stri
         const firstHeading = summary.indexOf('###');
         if (firstHeading > 0) summary = summary.slice(firstHeading);
         if (data?.stop_reason === 'max_tokens') {
-            summary += '\n\n> ⚠️ 분량 제한으로 뒷부분이 잘렸을 수 있습니다. "저널클럽 분석 다시 하기"로 다시 만들 수 있어요.';
+            summary += '\n\n> 참고: 분량 제한으로 뒷부분이 잘렸을 수 있습니다. "저널클럽 분석 다시 하기"로 다시 만들 수 있어요.';
         }
         return { summary, sources: extractCitations(data, 8) };
     } catch (error) {
@@ -1444,12 +1484,12 @@ export const checkNoteAgainstGuidelines = async (note: Note): Promise<GuidelineC
           "STATUS: UNCERTAIN" — couldn't verify the key claims (not enough checkable content, or no clear source)
         - Then, in Korean (standard English terms as usual):
           One line with the bottom line.
-          ### ⚠️ 바뀐 내용
-            One bullet per changed claim: "- ⚠️ **메모**: (what the note says, briefly quoted) → **현재**: (what
+          ### 바뀐 내용
+            One bullet per changed claim: "- **메모**: (what the note says, briefly quoted) → **현재**: (what
             is recommended now) — (guideline/trial name, year, COR/LOE if applicable)". Omit this section if none.
-          ### ✅ 지금도 맞는 내용
+          ### 지금도 맞는 내용
             Short bullets; group minor items together.
-          ### ❔ 확인하지 못한 것
+          ### 확인하지 못한 것
             Only if relevant.
         - Be concise (roughly up to 1,500 Korean characters). Bullets "- " with the sentence on the same line.
         - Output only the result — no narration of your process.
@@ -1502,7 +1542,7 @@ export const generateWeeklyDigest = async (
         ### 서로 이어지는 점
           1~3 bullets connecting notes to each other (e.g. a case note that illustrates a guideline note). Skip if none.
         ### 다시 볼 것
-          Weak spots from the wrong answers, and anything in the notes that looks uncertain or guideline-discordant (⚠️).
+          Weak spots from the wrong answers, and anything in the notes that looks uncertain or guideline-discordant (marked "**주의**").
         ### 다음 주 제안
           2~3 concrete things to study or check next, each with one line on why.
         Keep it under ~1,500 Korean characters. Bullets "- " with the sentence on the same line.
@@ -1538,7 +1578,7 @@ export const findCoverageGaps = async (topic: string, notes: Note[]): Promise<{ 
            most relevant current major guideline or a standard review. Use web search (up to 4 searches).
            8~15 items, at the level of clinically meaningful subsections (e.g. "Stroke risk assessment",
            "OAC choice & dosing", "Rhythm control — ablation indications").
-        2. For each item, judge how well the notes cover it: ✅ 충분 / 🟡 일부 / ❌ 없음.
+        2. For each item, judge how well the notes cover it: **충분** / **일부** / **없음** (write the word, no symbols).
 
         OUTPUT (Korean, standard English terms as usual):
         - First line: "기준: (guideline/source name, year)".
@@ -1747,7 +1787,7 @@ export const updateHandoverDocument = async (params: {
         - FIDELITY FIRST: do not add clinical content that is not in the notes; if a short clarification is truly
           needed for safety, mark it "(메모 외 보충)".
         - Merge duplicates. When notes conflict, keep the most recently modified one and add
-          "⚠️ 이전 메모와 다름: …" with both citations.
+          "**주의** 이전 메모와 다름: …" with both citations.
         - Cite right after each item using ONLY the permanent labels, e.g. "... [메모3]" or "[메모2][메모5]".
           Never invent labels.
         - End with "## 확인 필요" for outdated, conflicting or incomplete items (omit if none).

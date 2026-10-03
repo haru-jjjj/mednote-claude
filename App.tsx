@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers, Sparkles } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers, Sparkles, Search } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList, { TagFilter } from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
@@ -1266,8 +1266,8 @@ const App: React.FC = () => {
           const imageChars = images.reduce((s, i) => s + i.length, 0);
           const msg = `'${pid}' 환자 메모 ${full.length}개를 하나로 합칠까요?\n\n` +
               `가장 오래된 메모에 나머지 메모를 작성 날짜 소제목(## 날짜)으로 이어 붙이고, 나머지 ${full.length - 1}개는 삭제합니다.\n` +
-              `(각 메모의 AI 요약은 없어지니, 합친 뒤 ✨로 새로 요약해주세요)` +
-              (imageChars > 700_000 ? `\n\n⚠️ 사진이 많아(약 ${Math.round(imageChars / 1024)}KB) 클라우드 저장 한도(1MB)를 넘을 수 있어요.` : '');
+              `(각 메모의 AI 요약은 없어지니, 합친 뒤 AI 메뉴에서 새로 요약해주세요)` +
+              (imageChars > 700_000 ? `\n\n참고: 사진이 많아(약 ${Math.round(imageChars / 1024)}KB) 클라우드 저장 한도(1MB)를 넘을 수 있어요.` : '');
           if (!window.confirm(msg)) return null;
           const target = full[0];
           const others = full.slice(1);
@@ -1415,7 +1415,7 @@ const App: React.FC = () => {
       <div className={`${showSidebar ? 'w-full md:w-80 translate-x-0' : 'w-0 -translate-x-full md:w-0'} transition-all duration-300 flex-shrink-0 bg-white border-r border-slate-100 flex flex-col h-full absolute md:relative z-50 shadow-2xl md:shadow-none overflow-hidden`}>
         <div className="p-6 h-16 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-accent-600 rounded-lg flex items-center justify-center">
                <Network className="text-white w-4 h-4" />
             </div>
             <h1 className="font-bold text-lg text-slate-800 tracking-tight">MediNote</h1>
@@ -1428,103 +1428,53 @@ const App: React.FC = () => {
         <div className="px-5 mb-6 flex-shrink-0">
           <button
             onClick={() => { setView(ViewMode.CREATE); setActiveNoteId(null); if (isMobile) setShowSidebar(false); }}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 px-4 rounded-lg flex items-center justify-center font-bold text-sm shadow-lg shadow-blue-100 transition-all active:scale-95"
+            className="w-full bg-accent-700 hover:bg-accent-800 text-white py-3 px-4 rounded-lg flex items-center justify-center font-bold text-sm shadow-sm transition-all active:scale-95"
           >
             <Plus className="w-3.5 h-3.5 mr-2" />
             새 메모 작성
           </button>
         </div>
 
-        <nav className="flex-1 px-3 space-y-1 overflow-y-auto">
-          <button onClick={() => { setView(ViewMode.LIST); setSearchTerm(''); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${view === ViewMode.LIST ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}>
-            <LayoutGrid className="w-3.5 h-3.5 mr-3 shrink-0" /> 내 메모장
-          </button>
-
-          <button
-             onClick={handleRandomNote}
-             disabled={isRandomLoading}
-             className="w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-medium text-orange-600 hover:bg-orange-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-          >
-            {isRandomLoading ? <Loader2 className="w-3.5 h-3.5 mr-3 shrink-0 animate-spin" /> : <Shuffle className="w-3.5 h-3.5 mr-3 shrink-0" />}
-            무작위 공부하기
-          </button>
-
-          <button
-            onClick={() => { setView(ViewMode.THREADS); if (isMobile) setShowSidebar(false); }}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.THREADS ? 'bg-violet-50 text-violet-700' : 'text-slate-600 hover:bg-violet-50/60 hover:text-violet-700'}`}
-          >
-            <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-violet-100 text-violet-600">
-                <Sparkles className="w-3.5 h-3.5" />
-            </span>
-            질문 노트
-            {threadPendingCount > 0 && (
-                <span className="ml-auto shrink-0 bg-amber-50 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full" title="적어두고 아직 안 물어본 질문">
-                    적어둔 {threadPendingCount}
-                </span>
-            )}
-          </button>
-
-          <button
-            onClick={() => { setView(ViewMode.QUIZ); if (isMobile) setShowSidebar(false); }}
-            className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.QUIZ ? 'bg-blue-50 text-blue-600' : 'text-slate-600 hover:bg-blue-50/60 hover:text-blue-600'}`}
-          >
-            {quizState.isGenerating && quizState.isActive ? (
-                 <Loader2 className="w-3.5 h-3.5 mr-3 shrink-0 animate-spin text-blue-600" />
-            ) : (
-                 <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-blue-100 text-blue-600">
-                     <BrainCircuit className="w-3.5 h-3.5" />
-                 </span>
-            )}
-            AI 퀴즈 복습
-            {reviewDueCount > 0 ? (
-                <span className="ml-auto shrink-0 bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full" title="오늘 복습할 메모">
-                    오늘 {reviewDueCount}
-                </span>
-            ) : quizState.questionQueue.length > 0 && (
-                <span className="ml-auto shrink-0 bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded-full">
-                    {quizState.questionQueue.length}
-                </span>
-            )}
-          </button>
-
-          <button onClick={() => { setView(ViewMode.STUDY_GUIDE); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.STUDY_GUIDE ? 'bg-amber-50 text-amber-600' : 'text-slate-600 hover:bg-amber-50/60 hover:text-amber-600'}`}>
-             <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-amber-100 text-amber-600">
-                 <Lightbulb className="w-3.5 h-3.5" />
-             </span>
-             AI 주제 탐구
-          </button>
-
-          <button onClick={() => { setView(ViewMode.ASK_NOTES); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.ASK_NOTES ? 'bg-indigo-50 text-indigo-600' : 'text-slate-600 hover:bg-indigo-50/60 hover:text-indigo-600'}`}>
-             <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-indigo-100 text-indigo-600">
-                 <MessageSquareText className="w-3.5 h-3.5" />
-             </span>
-             내 메모에 물어보기
-          </button>
-
-          <button onClick={() => { setView(ViewMode.GUIDELINE_CHECK); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.GUIDELINE_CHECK ? 'bg-emerald-50 text-emerald-700' : 'text-slate-600 hover:bg-emerald-50/60 hover:text-emerald-700'}`}>
-             <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-emerald-100 text-emerald-700">
-                 {guidelineCheckingIds.length > 0 ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-             </span>
-             오래된 메모 점검
-          </button>
-
-          <button onClick={() => { setView(ViewMode.INSIGHTS); if (isMobile) setShowSidebar(false); }} className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.INSIGHTS ? 'bg-teal-50 text-teal-700' : 'text-slate-600 hover:bg-teal-50/60 hover:text-teal-700'}`}>
-             <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-teal-100 text-teal-700">
-                 <Layers className="w-3.5 h-3.5" />
-             </span>
-             메모 활용
-             {patientFollowUpDue > 0 && (
-                 <span className="ml-auto shrink-0 bg-rose-50 text-rose-600 text-[10px] px-1.5 py-0.5 rounded-full" title="확인할 차례인 환자 메모">
-                     환자 {patientFollowUpDue}
-                 </span>
-             )}
-          </button>
+        <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
+          {/* 모든 항목을 같은 모양으로: 아이콘은 단색, 선택된 항목만 강조색 */}
+          {([
+            { key: 'list', view: ViewMode.LIST, label: '내 메모장', icon: LayoutGrid, onClick: () => { setView(ViewMode.LIST); setSearchTerm(''); } },
+            { key: 'random', label: '무작위 공부하기', icon: Shuffle, onClick: handleRandomNote, busy: isRandomLoading, disabled: isRandomLoading, keepSidebar: false },
+            { key: 'threads', view: ViewMode.THREADS, label: '질문 노트', icon: MessageSquareText, badge: threadPendingCount > 0 ? `적어둔 ${threadPendingCount}` : null, badgeTitle: '적어두고 아직 안 물어본 질문' },
+            { key: 'quiz', view: ViewMode.QUIZ, label: 'AI 퀴즈 복습', icon: BrainCircuit, busy: quizState.isGenerating && quizState.isActive,
+              badge: reviewDueCount > 0 ? `오늘 ${reviewDueCount}` : (quizState.questionQueue.length > 0 ? String(quizState.questionQueue.length) : null), badgeTitle: '오늘 복습할 메모' },
+            { key: 'study', view: ViewMode.STUDY_GUIDE, label: 'AI 주제 탐구', icon: Lightbulb },
+            { key: 'ask', view: ViewMode.ASK_NOTES, label: '내 메모에 물어보기', icon: Search },
+            { key: 'guideline', view: ViewMode.GUIDELINE_CHECK, label: '오래된 메모 점검', icon: ShieldCheck, busy: guidelineCheckingIds.length > 0 },
+            { key: 'insights', view: ViewMode.INSIGHTS, label: '메모 활용', icon: Layers, badge: patientFollowUpDue > 0 ? `환자 ${patientFollowUpDue}` : null, badgeTitle: '확인할 차례인 환자 메모' },
+          ] as { key: string; view?: ViewMode; label: string; icon: React.ComponentType<{ className?: string }>; onClick?: () => void; busy?: boolean; disabled?: boolean; badge?: string | null; badgeTitle?: string }[]).map(item => {
+            const active = !!item.view && view === item.view;
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.key}
+                onClick={() => { if (item.onClick) item.onClick(); else if (item.view) setView(item.view); if (isMobile) setShowSidebar(false); }}
+                disabled={item.disabled}
+                className={`w-full flex items-center px-3 py-2.5 rounded-lg text-[13px] transition-colors whitespace-nowrap disabled:opacity-50 ${active ? 'bg-accent-50 text-accent-800 font-bold' : 'text-slate-600 font-medium hover:bg-slate-50 hover:text-slate-900'}`}
+              >
+                {item.busy
+                  ? <Loader2 className="w-4 h-4 mr-3 shrink-0 animate-spin text-accent-500" />
+                  : <Icon className={`w-4 h-4 mr-3 shrink-0 ${active ? 'text-accent-600' : 'text-slate-400'}`} />}
+                {item.label}
+                {item.badge && (
+                  <span className="ml-auto shrink-0 bg-slate-100 text-slate-600 text-[10px] font-bold px-1.5 py-0.5 rounded-full" title={item.badgeTitle}>
+                    {item.badge}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
         <div className="p-5 border-t border-slate-50 space-y-3">
             <div className="flex gap-2">
-                <button onClick={handleExportBackup} className="flex-1 flex flex-col items-center justify-center gap-1 py-3 bg-blue-50/50 rounded-xl text-[11px] font-bold text-blue-700 hover:bg-blue-100 transition-all">
-                    <Cloud className="w-4 h-4" /> 백업 저장하기
+                <button onClick={handleExportBackup} className="flex-1 flex flex-col items-center justify-center gap-1 py-3 bg-slate-50 rounded-xl text-[11px] font-bold text-slate-600 hover:bg-slate-100 transition-all">
+                    <Cloud className="w-4 h-4 text-slate-400" /> 백업 저장하기
                 </button>
                 <button onClick={handleOpenFilePicker} className="flex-1 flex flex-col items-center justify-center gap-1 py-3 bg-slate-50 rounded-xl text-[11px] font-bold text-slate-600 hover:bg-slate-100 transition-all">
                     <Upload className="w-4 h-4 text-slate-400" /> 복구 불러오기
@@ -1546,7 +1496,7 @@ const App: React.FC = () => {
             <div className="flex items-center justify-center gap-4">
                 <button
                     onClick={() => setShowPinSettings(true)}
-                    className="flex items-center gap-1.5 py-2 text-[11px] font-bold text-slate-400 hover:text-blue-600 transition-colors"
+                    className="flex items-center gap-1.5 py-2 text-[11px] font-bold text-slate-400 hover:text-accent-600 transition-colors"
                 >
                     <KeyRound className="w-3 h-3" /> PIN·자동 잠금
                 </button>
@@ -1571,10 +1521,10 @@ const App: React.FC = () => {
                 </button>
                 <span className="font-bold text-slate-800 text-base absolute left-1/2 transform -translate-x-1/2">MediNote</span>
                 <div className="flex items-center gap-1">
-                   <button onClick={handleExportBackup} className="w-10 h-10 flex items-center justify-center text-blue-500 hover:bg-blue-50 rounded-full" title="백업하기">
+                   <button onClick={handleExportBackup} className="w-10 h-10 flex items-center justify-center text-slate-400 hover:bg-slate-50 rounded-full" title="백업하기">
                       <Cloud className="w-5 h-5" />
                    </button>
-                   <button onClick={handleRandomNote} className="w-10 h-10 flex items-center justify-center text-orange-500 hover:bg-orange-50 rounded-full">
+                   <button onClick={handleRandomNote} className="w-10 h-10 flex items-center justify-center text-slate-400 hover:bg-slate-50 rounded-full" title="무작위 공부하기">
                       <Shuffle className="w-5 h-5" />
                    </button>
                 </div>
@@ -1717,7 +1667,7 @@ const App: React.FC = () => {
         </div>
 
         {view === ViewMode.LIST && (
-          <button onClick={() => { setView(ViewMode.CREATE); setActiveNoteId(null); if (isMobile) setShowSidebar(false); }} className="absolute bottom-10 right-8 w-14 h-14 bg-blue-600 text-white rounded-full shadow-2xl flex items-center justify-center transition-all z-40 active:scale-95 hover:bg-blue-700">
+          <button onClick={() => { setView(ViewMode.CREATE); setActiveNoteId(null); if (isMobile) setShowSidebar(false); }} className="absolute bottom-10 right-8 w-14 h-14 bg-accent-600 text-white rounded-full shadow-2xl flex items-center justify-center transition-all z-40 active:scale-95 hover:bg-accent-700">
             <Plus className="w-8 h-8" />
           </button>
         )}

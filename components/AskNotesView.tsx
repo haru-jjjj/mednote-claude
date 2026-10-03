@@ -3,6 +3,7 @@ import { ArrowLeft, MessageSquareText, Loader2, Search, FileStack, AlertTriangle
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { v4 as uuidv4 } from 'uuid';
+import AutoTextarea from './AutoTextarea';
 import { Note } from '../types';
 import { answerFromNotes, synthesizeNotes, formatMedicalMarkdown } from '../services/claudeService';
 import { findRelatedNotes as searchRelatedNotes } from '../services/noteSearch';
@@ -144,7 +145,7 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                     const nums = [firstNum, ...(rest.match(/\d{1,2}/g) || [])].map(Number);
                     if (nums.some(n => n < 1 || n > usedNotes.length)) return all;
                     return nums.map(n =>
-                        `<a data-note-ref="${n}" class="text-indigo-600 font-semibold no-underline cursor-pointer hover:underline whitespace-nowrap">[메모${n}]</a>`
+                        `<a data-note-ref="${n}" class="text-accent-600 font-semibold no-underline cursor-pointer hover:underline whitespace-nowrap">[메모${n}]</a>`
                     ).join('');
                 }
             );
@@ -181,7 +182,7 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                 <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full text-slate-500 transition-colors shrink-0" title="메인으로">
                     <ArrowLeft className="w-5 h-5" />
                 </button>
-                <span className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md bg-indigo-100 text-indigo-600">
+                <span className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md bg-accent-100 text-accent-600">
                     <MessageSquareText className="w-4 h-4" />
                 </span>
                 <h2 className="font-bold text-slate-800 text-sm md:text-base whitespace-nowrap truncate">내 메모에 물어보기</h2>
@@ -191,13 +192,13 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                 <div className="max-w-3xl mx-auto p-4 md:p-6 pb-24 space-y-4">
                     {/* 입력 */}
                     <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
-                        <textarea
+                        <AutoTextarea
                             value={query}
                             onChange={e => setQuery(e.target.value)}
                             onKeyDown={e => {
                                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); handleRun('ask'); }
                             }}
-                            rows={2}
+                            minRows={2} maxRows={8}
                             placeholder="질문이나 주제를 입력하세요 (예: CRT-D에서 LV threshold가 올랐을 때 확인할 것 / persistent AF ablation 전략)"
                             className="w-full resize-none outline-none text-sm text-slate-800 placeholder:text-slate-300 leading-relaxed"
                         />
@@ -205,7 +206,7 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                             <button
                                 onClick={() => handleRun('ask')}
                                 disabled={!query.trim() || busy}
-                                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-accent-600 hover:bg-accent-700 text-white text-xs font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                             >
                                 {busy && mode === 'ask' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
                                 질문하기
@@ -213,7 +214,7 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                             <button
                                 onClick={() => handleRun('synthesize')}
                                 disabled={!query.trim() || busy}
-                                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 text-xs font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white border border-accent-200 text-accent-600 hover:bg-accent-50 text-xs font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                             >
                                 {busy && mode === 'synthesize' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileStack className="w-3.5 h-3.5" />}
                                 정리본 만들기
@@ -242,7 +243,7 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                                     <button
                                         onClick={handleRegenerate}
                                         disabled={checkedIds.size === 0}
-                                        className="flex items-center gap-1 text-xs font-bold text-indigo-600 hover:text-indigo-800 whitespace-nowrap disabled:opacity-40"
+                                        className="flex items-center gap-1 text-xs font-bold text-accent-600 hover:text-accent-800 whitespace-nowrap disabled:opacity-40"
                                     >
                                         <RefreshCw className="w-3.5 h-3.5" /> 선택한 메모로 다시 만들기
                                     </button>
@@ -258,12 +259,12 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                                                 checked={checkedIds.has(n.id)}
                                                 onChange={() => toggleChecked(n.id)}
                                                 disabled={busy}
-                                                className="w-4 h-4 shrink-0 rounded border-slate-300 text-indigo-600"
+                                                className="w-4 h-4 shrink-0 rounded border-slate-300 text-accent-600"
                                             />
-                                            <span className="w-12 shrink-0 text-[11px] font-bold text-indigo-500">{idx >= 0 ? `[메모${idx + 1}]` : ''}</span>
+                                            <span className="w-12 shrink-0 text-[11px] font-bold text-accent-500">{idx >= 0 ? `[메모${idx + 1}]` : ''}</span>
                                             <button
                                                 onClick={() => onSelectNote(n.id)}
-                                                className="flex-1 min-w-0 text-left truncate text-slate-700 hover:text-indigo-600"
+                                                className="flex-1 min-w-0 text-left truncate text-slate-700 hover:text-accent-600"
                                                 title="메모 열기"
                                             >
                                                 {n.title || '제목 없음'}
@@ -298,7 +299,7 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                     {resultMarkdown && !isGenerating && (
                         <div className="bg-white border border-slate-200 rounded-xl p-4 md:p-5 shadow-sm">
                             <div className="flex items-center justify-between gap-2 mb-3">
-                                <span className="text-xs font-bold text-indigo-600">
+                                <span className="text-xs font-bold text-accent-600">
                                     {resultMode === 'ask' ? '답변' : '정리본'} · [메모N]을 누르면 해당 메모가 열려요
                                 </span>
                                 {/* 답변·정리본 모두 원할 때만 메모로 저장 (자동 저장 없음) */}
@@ -306,7 +307,7 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                                     savedNoteId ? (
                                         <button
                                             onClick={() => onSelectNote(savedNoteId)}
-                                            className="flex items-center gap-1 text-xs font-bold text-emerald-600 whitespace-nowrap"
+                                            className="flex items-center gap-1 text-xs font-bold text-sage-600 whitespace-nowrap"
                                         >
                                             <Check className="w-3.5 h-3.5" /> 저장됨 · 열기
                                         </button>
@@ -314,7 +315,7 @@ const AskNotesView: React.FC<AskNotesViewProps> = ({ notes, onBack, onSelectNote
                                         <button
                                             onClick={handleSaveAsNote}
                                             disabled={isSaving}
-                                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold whitespace-nowrap disabled:opacity-50"
+                                            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-accent-600 hover:bg-accent-700 text-white text-xs font-bold whitespace-nowrap disabled:opacity-50"
                                         >
                                             {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} 새 메모로 저장
                                         </button>

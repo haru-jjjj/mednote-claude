@@ -571,7 +571,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote, 
             type="button"
             onMouseDown={handleInteraction}
             onTouchStart={handleInteraction}
-            className="p-1 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-all flex items-center justify-center min-w-[28px] touch-manipulation active:bg-blue-100"
+            className="p-1 text-slate-500 hover:text-accent-600 hover:bg-accent-50 rounded transition-all flex items-center justify-center min-w-[28px] touch-manipulation active:bg-accent-100"
             title={label}
         >
             {icon}
@@ -599,7 +599,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote, 
                 className="flex items-center px-2.5 py-1.5 rounded-md font-medium text-slate-600 text-sm transition-all hover:bg-slate-100 border border-slate-200"
                 title="사진 첨부"
              >
-                {isProcessingImg ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5 mr-2 text-blue-500" />}
+                {isProcessingImg ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <ImageIcon className="w-3.5 h-3.5 mr-2 text-accent-500" />}
                 <span className="hidden md:inline">{isProcessingImg ? '처리 중' : '사진 첨부'}</span>
                 <span className="md:hidden">사진</span>
              </button>
@@ -620,7 +620,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote, 
               className={`flex items-center px-3 py-1.5 rounded-md font-bold text-white text-sm transition-all shadow-sm
                 ${(!hasContent && images.length === 0) || isProcessingImg
                   ? 'bg-slate-300 cursor-not-allowed' 
-                  : 'bg-blue-600 hover:bg-blue-700 hover:shadow-md active:scale-95'
+                  : 'bg-accent-600 hover:bg-accent-700 hover:shadow-md active:scale-95'
                 }`}
             >
               {isAppending ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <Save className="w-3.5 h-3.5 mr-2" />}
@@ -654,26 +654,26 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote, 
 
         {/* 같은 환자 번호의 메모가 이미 있으면 알려줌 (새 메모는 기존 메모에 이어붙이기 선택 가능) */}
         {samePatientNotes.length > 0 && (
-            <div className="flex-shrink-0 px-3 py-2 border-b border-amber-100 bg-amber-50/70 text-xs text-amber-800 space-y-1.5">
-                <div className="font-bold">⚠️ '{typedPatientId}' 번호의 환자 메모가 이미 {samePatientNotes.length}개 있어요</div>
+            <div className="flex-shrink-0 px-3 py-2 border-b border-warn-100 bg-warn-50/70 text-xs text-warn-800 space-y-1.5">
+                <div className="font-bold">'{typedPatientId}' 번호의 환자 메모가 이미 {samePatientNotes.length}개 있어요</div>
                 <ul className="space-y-0.5">
                     {samePatientNotes.slice(0, 3).map(n => (
-                        <li key={n.id} className="truncate">· {n.title || '(제목 없음)'} <span className="text-amber-600">({new Date(n.createdAt).toLocaleDateString()})</span></li>
+                        <li key={n.id} className="truncate">· {n.title || '(제목 없음)'} <span className="text-warn-600">({new Date(n.createdAt).toLocaleDateString()})</span></li>
                     ))}
-                    {samePatientNotes.length > 3 && <li className="text-amber-600">· 외 {samePatientNotes.length - 3}개</li>}
+                    {samePatientNotes.length > 3 && <li className="text-warn-600">· 외 {samePatientNotes.length - 3}개</li>}
                 </ul>
                 {!initialNote && onAppendToPatient ? (
                     <button
                         type="button"
                         onClick={() => setAppendTargetId(prev => (prev ? null : samePatientNotes[0].id))}
                         className={`px-2.5 py-1 rounded-full font-bold border transition-colors ${
-                            appendTargetId ? 'bg-amber-600 border-amber-600 text-white' : 'bg-white border-amber-300 text-amber-700 hover:bg-amber-100'
+                            appendTargetId ? 'bg-warn-600 border-warn-600 text-white' : 'bg-white border-warn-300 text-warn-700 hover:bg-warn-100'
                         }`}
                     >
                         {appendTargetId ? '✓ ' : ''}저장할 때 새 메모 대신 '{samePatientNotes[0].title || typedPatientId}' 끝에 {dateHeading(Date.now())} 소제목으로 이어붙이기
                     </button>
                 ) : (
-                    <div className="text-amber-700">저장한 뒤 메모 화면에서 같은 번호 메모를 하나로 합칠 수 있어요.</div>
+                    <div className="text-warn-700">저장한 뒤 메모 화면에서 같은 번호 메모를 하나로 합칠 수 있어요.</div>
                 )}
             </div>
         )}
@@ -704,8 +704,8 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote, 
                             </button>
                              {(idx > 0 || idx < images.length - 1) && (
                                 <div className="absolute bottom-1 left-1 right-1 flex justify-between z-10 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
-                                    <button onClick={(e) => moveImage(e, idx, 'left')} disabled={idx === 0} className="bg-black/40 hover:bg-blue-500 text-white rounded p-0.5"><ChevronLeft className="w-2.5 h-2.5"/></button>
-                                    <button onClick={(e) => moveImage(e, idx, 'right')} disabled={idx === images.length - 1} className="bg-black/40 hover:bg-blue-500 text-white rounded p-0.5"><ChevronRight className="w-2.5 h-2.5"/></button>
+                                    <button onClick={(e) => moveImage(e, idx, 'left')} disabled={idx === 0} className="bg-black/40 hover:bg-accent-600 text-white rounded p-0.5"><ChevronLeft className="w-2.5 h-2.5"/></button>
+                                    <button onClick={(e) => moveImage(e, idx, 'right')} disabled={idx === images.length - 1} className="bg-black/40 hover:bg-accent-600 text-white rounded p-0.5"><ChevronRight className="w-2.5 h-2.5"/></button>
                                 </div>
                             )}
                         </div>
@@ -719,7 +719,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({ onSave, onCancel, initialNote, 
             <ToolbarButton icon={<Undo size={14}/>} onClick={handleUndo} label="Undo" />
             <div className="w-px h-5 bg-slate-200 mx-1"></div>
             <ToolbarButton
-                icon={<span className="flex items-center gap-1 px-0.5 text-xs font-bold text-rose-600 whitespace-nowrap"><Calendar size={14}/>날짜</span>}
+                icon={<span className="flex items-center gap-1 px-0.5 text-xs font-bold text-clay-600 whitespace-nowrap"><Calendar size={14}/>날짜</span>}
                 onClick={insertDateHeading}
                 label="오늘 날짜 소제목 넣기 (보기 화면에서 접기/펼치기)"
             />

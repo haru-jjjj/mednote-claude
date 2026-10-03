@@ -136,9 +136,9 @@ export const categoryLabels = (n: CategoryState): string[] =>
 
 // 분류별 색 (배지·버튼 공용)
 export const CATEGORY_COLORS: Record<NoteCategory, { active: string; badge: string }> = {
-    memo: { active: 'bg-blue-50 border-blue-300 text-blue-600', badge: 'bg-blue-50 text-blue-500' },
-    patient: { active: 'bg-rose-50 border-rose-300 text-rose-600', badge: 'bg-rose-50 text-rose-500' },
-    work: { active: 'bg-emerald-50 border-emerald-300 text-emerald-700', badge: 'bg-emerald-50 text-emerald-600' },
+    memo: { active: 'bg-accent-50 border-accent-300 text-accent-600', badge: 'bg-accent-50 text-accent-500' },
+    patient: { active: 'bg-clay-50 border-clay-300 text-clay-600', badge: 'bg-clay-50 text-clay-500' },
+    work: { active: 'bg-sage-50 border-sage-300 text-sage-700', badge: 'bg-sage-50 text-sage-600' },
 };
 
 export enum ViewMode {

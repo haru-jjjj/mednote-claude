@@ -12,6 +12,7 @@ export interface ThreadMessage {
     text: string;
     quote?: string; // 답변에서 골라 물어본 부분
     sources?: Source[];
+    images?: number[]; // 이 질문에 첨부한 사진 = 대화 메모의 images 배열 번호 (사진은 메모와 같은 곳에 저장)
 }
 
 const Q_RE = /<!-- mt:q (\d+) -->/;
@@ -40,6 +41,8 @@ export const encodeThread = (messages: ThreadMessage[]): string => {
             const lines = scrub(m.text).split('\n');
             const first = (lines.shift() || '').trim() || '(질문)';
             const block = [`<!-- mt:q ${m.at} -->`, `## Q. ${first}`];
+            const imgs = (m.images || []).filter(i => Number.isInteger(i) && i >= 0);
+            if (imgs.length) block.push(`<!-- mt:img ${imgs.join(',')} -->`);
             const quote = scrub(m.quote || '');
             if (quote) {
                 block.push('<!-- mt:quote -->');
@@ -75,6 +78,12 @@ export const parseThread = (content: string): ThreadMessage[] => {
         if (Q_RE.test(marker)) {
             let text = body;
             let quote: string | undefined;
+            let images: number[] | undefined;
+            const im = /<!-- mt:img ([\d,]+) -->\n?/.exec(text);
+            if (im) {
+                images = im[1].split(',').map(Number).filter(n => Number.isInteger(n) && n >= 0);
+                text = text.replace(im[0], '');
+            }
             const qm = /<!-- mt:quote -->\n?([\s\S]*?)\n?<!-- \/mt:quote -->\n?/.exec(text);
             if (qm) {
                 quote = qm[1].split('\n').map(l => l.replace(/^> ?/, '')).join('\n').trim() || undefined;
@@ -83,7 +92,7 @@ export const parseThread = (content: string): ThreadMessage[] => {
             const lines = text.trim().split('\n');
             const first = (lines.shift() || '').replace(/^##\s+Q\.\s?/, '');
             const rest = lines.join('\n').trim();
-            msgs.push({ role: 'user', at, text: [first, rest].filter(Boolean).join('\n'), ...(quote ? { quote } : {}) });
+            msgs.push({ role: 'user', at, text: [first, rest].filter(Boolean).join('\n'), ...(quote ? { quote } : {}), ...(images && images.length ? { images } : {}) });
         } else {
             let text = body;
             const sources: Source[] = [];

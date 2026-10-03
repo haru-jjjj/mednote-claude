@@ -178,7 +178,7 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
     return (
             <>
                 {noPin && (
-                    <div className="fixed left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 bg-amber-500 text-white text-[11px] font-bold px-3.5 py-2 rounded-full shadow-lg whitespace-nowrap"
+                    <div className="fixed left-1/2 -translate-x-1/2 z-[9999] flex items-center gap-1.5 bg-warn-500 text-white text-[11px] font-bold px-3.5 py-2 rounded-full shadow-lg whitespace-nowrap"
                         style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 1rem)' }}>
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                         PIN 잠금 꺼짐 — 사이드바 아래 "PIN 변경"에서 설정하세요
@@ -222,13 +222,13 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
         <div className="h-full w-full flex items-center justify-center bg-slate-50 px-6 overflow-y-auto">
             <form onSubmit={handleSubmit} className="w-full max-w-xs bg-white rounded-2xl shadow-lg border border-slate-200 p-6">
                 <div className="flex flex-col items-center mb-5">
-                    <div className="w-12 h-12 rounded-xl bg-blue-600 flex items-center justify-center mb-3">
+                    <div className="w-12 h-12 rounded-xl bg-accent-600 flex items-center justify-center mb-3">
                         <Lock className="w-6 h-6 text-white" />
                     </div>
                     <h1 className="font-bold text-slate-800 text-base">MediNote AI</h1>
                     <p className="text-xs text-slate-400 mt-1">PIN 번호를 입력해주세요</p>
                     {idleLockedMsg && (
-                        <p className="text-[11px] text-amber-600 mt-2 text-center leading-relaxed">
+                        <p className="text-[11px] text-warn-600 mt-2 text-center leading-relaxed">
                             {idleMinutes}분 동안 사용하지 않아 잠겼어요.<br />작성 중이던 내용은 그대로 있어요.
                         </p>
                     )}
@@ -242,7 +242,7 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
                         value={pinInput}
                         onChange={e => { setPinInput(e.target.value); setError(''); }}
                         placeholder="••••"
-                        className="w-full text-center tracking-[0.5em] text-lg font-bold px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        className="w-full text-center tracking-[0.5em] text-lg font-bold px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-accent-400"
                     />
                     <button
                         type="button"
@@ -261,7 +261,7 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
                         type="checkbox"
                         checked={remember}
                         onChange={e => setRemember(e.target.checked)}
-                        className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-400"
+                        className="w-3.5 h-3.5 rounded border-slate-300 text-accent-600 focus:ring-accent-400"
                     />
                     이 기기 기억하기 (다음부터 PIN 생략)
                 </label>
@@ -269,7 +269,7 @@ const PinGate: React.FC<PinGateProps> = ({ children }) => {
                 <button
                     type="submit"
                     disabled={!pinInput}
-                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm py-3 rounded-xl transition-colors active:scale-95"
+                    className="w-full bg-accent-600 hover:bg-accent-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold text-sm py-3 rounded-xl transition-colors active:scale-95"
                 >
                     확인
                 </button>

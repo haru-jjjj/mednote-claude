@@ -71,11 +71,11 @@ const Intro: React.FC<{ children: React.ReactNode; cost?: string }> = ({ childre
     </div>
 );
 
-const primaryBtn = 'flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors';
-const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-800 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 placeholder:text-slate-300';
+const primaryBtn = 'flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-600 hover:bg-accent-700 text-white text-sm font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors';
+const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-sm text-slate-800 outline-none focus:border-accent-300 focus:ring-2 focus:ring-accent-50 placeholder:text-slate-300';
 
 const NoteLink = ({ note, onSelect, extra }: { key?: string; note: Note; onSelect: (id: string) => void; extra?: React.ReactNode }) => (
-    <button onClick={() => onSelect(note.id)} className="w-full flex items-center gap-2 text-left text-sm text-slate-700 hover:text-indigo-600 py-0.5">
+    <button onClick={() => onSelect(note.id)} className="w-full flex items-center gap-2 text-left text-sm text-slate-700 hover:text-accent-600 py-0.5">
         <span className="truncate flex-1 min-w-0">{note.title || '(제목 없음)'}</span>
         {extra}
     </button>
@@ -151,8 +151,8 @@ const WeeklyTab: React.FC<Props> = ({ notes, reviewDueCount, onSelectNote, onSav
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {stat('새 메모', newCount)}
                 {stat('수정·작성한 메모', weekNotes.length)}
-                {stat('오늘 복습', reviewDueCount, reviewDueCount > 0 ? 'text-amber-600' : 'text-slate-800')}
-                {stat('이번 주 틀린 문제', weekWrong.length, weekWrong.length > 0 ? 'text-rose-500' : 'text-slate-800')}
+                {stat('오늘 복습', reviewDueCount, reviewDueCount > 0 ? 'text-warn-600' : 'text-slate-800')}
+                {stat('이번 주 틀린 문제', weekWrong.length, weekWrong.length > 0 ? 'text-clay-500' : 'text-slate-800')}
             </div>
 
             <div className="bg-white border border-slate-200 rounded-xl p-4">
@@ -457,9 +457,9 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
     const hasWork = pending.length > 0 || removedIds.length > 0;
     const statusBadge = (st: HandoverStatus) =>
         st === 'done' ? <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded shrink-0">반영됨</span>
-        : st === 'new' ? <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded shrink-0">새 메모</span>
-        : st === 'truncated' ? <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded shrink-0">잘려서 반영됨</span>
-        : <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded shrink-0">수정됨</span>;
+        : st === 'new' ? <span className="text-[10px] font-bold text-accent-700 bg-accent-50 px-1.5 py-0.5 rounded shrink-0">새 메모</span>
+        : st === 'truncated' ? <span className="text-[10px] font-bold text-clay-600 bg-clay-50 px-1.5 py-0.5 rounded shrink-0">잘려서 반영됨</span>
+        : <span className="text-[10px] font-bold text-warn-700 bg-warn-50 px-1.5 py-0.5 rounded shrink-0">수정됨</span>;
 
     return (
         <div className="space-y-4">
@@ -477,10 +477,10 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
                             <span className="font-bold text-slate-600">업무 메모 {workNotes.length}개</span>
                             <span className="text-slate-400">반영됨 {withStatus.length - pending.length}</span>
-                            {newCount > 0 && <span className="font-bold text-emerald-700">새 메모 {newCount}</span>}
-                            {changedCount > 0 && <span className="font-bold text-amber-700">수정됨 {changedCount}</span>}
-                            {truncatedCount > 0 && <span className="font-bold text-rose-600">잘려서 반영됨 {truncatedCount}</span>}
-                            {removedIds.length > 0 && <span className="font-bold text-rose-600">삭제·분류 해제 {removedIds.length}</span>}
+                            {newCount > 0 && <span className="font-bold text-accent-700">새 메모 {newCount}</span>}
+                            {changedCount > 0 && <span className="font-bold text-warn-700">수정됨 {changedCount}</span>}
+                            {truncatedCount > 0 && <span className="font-bold text-clay-600">잘려서 반영됨 {truncatedCount}</span>}
+                            {removedIds.length > 0 && <span className="font-bold text-clay-600">삭제·분류 해제 {removedIds.length}</span>}
                             <button onClick={() => setShowList(v => !v)} className="ml-auto flex items-center gap-1 font-bold text-slate-500 hover:text-slate-700">
                                 목록 {showList ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                             </button>
@@ -488,7 +488,7 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
                         {showList && (
                             <div className="space-y-1 max-h-72 overflow-y-auto border-t border-slate-100 pt-2">
                                 {withStatus.map(({ n, status }) => (
-                                    <button key={n.id} onClick={() => onSelectNote(n.id)} className="w-full flex items-center gap-2 text-left text-sm hover:text-emerald-700">
+                                    <button key={n.id} onClick={() => onSelectNote(n.id)} className="w-full flex items-center gap-2 text-left text-sm hover:text-accent-700">
                                         {statusBadge(status)}
                                         <span className="flex-1 min-w-0 truncate text-slate-700">{n.title || '(제목 없음)'}</span>
                                         <span className="text-[11px] text-slate-400 shrink-0">{new Date(handoverVersion(n)).toLocaleDateString()}</span>
@@ -506,7 +506,7 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
                             <button
                                 onClick={() => run(handoverDoc ? 'update' : 'rebuild')}
                                 disabled={!!busy || !!isFetchingAll || (handoverDoc ? !hasWork && purpose.trim() === (meta.purpose || '') : workNotes.length === 0)}
-                                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-accent-600 hover:bg-accent-700 text-white text-sm font-bold whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                             >
                                 {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ClipboardCheck className="w-4 h-4" />}
                                 {busy ? busy
@@ -531,14 +531,14 @@ const HandoverTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote, onUp
                     {handoverDoc && (
                         <div className="bg-white border border-slate-200 rounded-xl p-4 md:p-5 shadow-sm">
                             <div className="flex flex-wrap items-center gap-2 mb-3">
-                                <span className="text-xs font-bold text-emerald-700">
+                                <span className="text-xs font-bold text-accent-700">
                                     인계장 · {meta.updatedAt ? `${new Date(meta.updatedAt).toLocaleString()} 정리` : ''} · 업무 메모 {Object.keys(meta.sources).length}개 반영
                                 </span>
                                 <div className="ml-auto flex items-center gap-3 text-[11px] font-bold text-slate-400">
                                     <button onClick={() => setAllSections(true)} className="hover:text-slate-600">모두 펼치기</button>
                                     <button onClick={() => setAllSections(false)} className="hover:text-slate-600">모두 접기</button>
                                     <button onClick={handleCopy} className="flex items-center gap-1 hover:text-slate-600">
-                                        {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />} {copied ? '복사됨' : '복사'}
+                                        {copied ? <Check className="w-3.5 h-3.5 text-accent-600" /> : <Copy className="w-3.5 h-3.5" />} {copied ? '복사됨' : '복사'}
                                     </button>
                                     <button onClick={() => onSelectNote(handoverDoc.id)} className="hover:text-slate-600">메모로 열기·고치기</button>
                                 </div>
@@ -655,19 +655,19 @@ const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFol
             </Intro>
 
             {dupGroups.length > 0 && (
-                <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-3 space-y-2">
-                    <div className="text-sm font-bold text-amber-800">⚠️ 같은 번호의 환자 메모 {dupGroups.length}건</div>
-                    <p className="text-xs text-amber-700">제목 맨 앞 번호가 같은 메모들이에요. 합치면 가장 오래된 메모에 작성 날짜 소제목(## 날짜)으로 이어 붙이고 나머지는 지웁니다(합치기 전 확인 창).</p>
+                <div className="bg-warn-50/70 border border-warn-200 rounded-xl p-3 space-y-2">
+                    <div className="text-sm font-bold text-warn-800">같은 번호의 환자 메모 {dupGroups.length}건</div>
+                    <p className="text-xs text-warn-700">제목 맨 앞 번호가 같은 메모들이에요. 합치면 가장 오래된 메모에 작성 날짜 소제목(## 날짜)으로 이어 붙이고 나머지는 지웁니다(합치기 전 확인 창).</p>
                     {dupGroups.map(g => (
-                        <div key={g.id} className="bg-white border border-amber-100 rounded-lg p-2">
+                        <div key={g.id} className="bg-white border border-warn-100 rounded-lg p-2">
                             <div className="flex items-center gap-2">
-                                <span className="text-xs font-bold text-amber-800">{g.id}</span>
+                                <span className="text-xs font-bold text-warn-800">{g.id}</span>
                                 <span className="text-[11px] text-slate-400">메모 {g.notes.length}개</span>
                                 {onMergePatient && (
                                     <button
                                         onClick={async () => { setMergingId(g.id); try { await onMergePatient(g.notes.map(n => n.id)); } finally { setMergingId(null); } }}
                                         disabled={!!mergingId}
-                                        className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold disabled:opacity-50"
+                                        className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-lg bg-warn-600 hover:bg-warn-700 text-white text-xs font-bold disabled:opacity-50"
                                     >
                                         {mergingId === g.id && <Loader2 className="w-3.5 h-3.5 animate-spin" />} 하나로 합치기
                                     </button>
@@ -676,7 +676,7 @@ const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFol
                             <ul className="mt-1 space-y-0.5">
                                 {g.notes.map(n => (
                                     <li key={n.id}>
-                                        <button onClick={() => onSelectNote(n.id)} className="text-xs text-slate-600 hover:text-indigo-600 text-left truncate max-w-full">
+                                        <button onClick={() => onSelectNote(n.id)} className="text-xs text-slate-600 hover:text-accent-600 text-left truncate max-w-full">
                                             · {n.title || '(제목 없음)'} <span className="text-slate-400">({new Date(n.createdAt).toLocaleDateString()})</span>
                                         </button>
                                     </li>
@@ -688,23 +688,23 @@ const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFol
             )}
 
             <div className="flex flex-wrap items-center gap-1.5">
-                {chip('due', '확인할 차례', counts.due, 'bg-amber-50 border-amber-200 text-amber-700')}
-                {chip('updated', '새 기록', counts.updated, 'bg-rose-50 border-rose-200 text-rose-600')}
+                {chip('due', '확인할 차례', counts.due, 'bg-warn-50 border-warn-200 text-warn-700')}
+                {chip('updated', '새 기록', counts.updated, 'bg-clay-50 border-clay-200 text-clay-600')}
                 {chip('all', '전체', counts.all, 'bg-slate-100 border-slate-300 text-slate-700')}
                 {studyItems.length > 0 && (
                     <button onClick={() => setShowStudy(v => !v)}
-                        className={`ml-auto flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold border whitespace-nowrap ${showStudy ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-700'}`}>
+                        className={`ml-auto flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold border whitespace-nowrap ${showStudy ? 'bg-accent-50 border-accent-200 text-accent-600' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-700'}`}>
                         <Lightbulb className="w-3.5 h-3.5" /> 공부할 것 모아보기 {studyItems.length}
                     </button>
                 )}
             </div>
 
             {showStudy && (
-                <div className="bg-white border border-indigo-100 rounded-xl p-4 space-y-4">
+                <div className="bg-white border border-accent-100 rounded-xl p-4 space-y-4">
                     <p className="text-xs text-slate-400">각 환자 메모의 케이스 분석 중 "추가 공부" 부분을 모았습니다.</p>
                     {studyItems.map(({ n, text }) => (
                         <div key={n.id}>
-                            <button onClick={() => onSelectNote(n.id)} className="text-sm font-bold text-slate-800 hover:text-indigo-600 mb-1 text-left">{n.title || '(제목 없음)'}</button>
+                            <button onClick={() => onSelectNote(n.id)} className="text-sm font-bold text-slate-800 hover:text-accent-600 mb-1 text-left">{n.title || '(제목 없음)'}</button>
                             <MiniMarkdown markdown={text} />
                         </div>
                     ))}
@@ -732,9 +732,9 @@ const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFol
                                 <div className="flex items-start gap-2">
                                     <button onClick={() => onSelectNote(n.id)} className="flex-1 min-w-0 text-left">
                                         <div className="flex items-center gap-1.5">
-                                            <span className="text-sm font-bold text-slate-800 truncate hover:text-indigo-600">{n.title || '(제목 없음)'}</span>
-                                            {status === 'due' && <span className="shrink-0 text-[10px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">확인할 차례</span>}
-                                            {status === 'updated' && <span className="shrink-0 text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.5 rounded">새 기록</span>}
+                                            <span className="text-sm font-bold text-slate-800 truncate hover:text-accent-600">{n.title || '(제목 없음)'}</span>
+                                            {status === 'due' && <span className="shrink-0 text-[10px] font-bold text-warn-700 bg-warn-50 px-1.5 py-0.5 rounded">확인할 차례</span>}
+                                            {status === 'updated' && <span className="shrink-0 text-[10px] font-bold text-clay-600 bg-clay-50 px-1.5 py-0.5 rounded">새 기록</span>}
                                         </div>
                                         <div className="text-[11px] text-slate-400 mt-0.5">
                                             마지막 기록 {daysAgo(n.updatedAt || n.createdAt, now)}
@@ -756,7 +756,7 @@ const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFol
                                         </select>
                                         <button
                                             onClick={() => onFollowUpCheck(n.id, interval)}
-                                            className="flex items-center gap-1 px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"
+                                            className="flex items-center gap-1 px-3 py-1 rounded-lg bg-accent-600 hover:bg-accent-700 text-white text-xs font-bold"
                                         >
                                             <Check className="w-3.5 h-3.5" /> 확인함
                                         </button>
@@ -764,8 +764,8 @@ const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFol
                                     <button
                                         onClick={() => handleAnalyze(n)}
                                         disabled={analyzing}
-                                        className="flex items-center gap-1 px-3 py-1 rounded-lg bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-bold disabled:opacity-50"
-                                        title="✨ 케이스 분석(추정·감별 진단, 추가로 확인할 것, 추가 공부)을 지금 기록 기준으로 새로 만들기"
+                                        className="flex items-center gap-1 px-3 py-1 rounded-lg bg-white border border-clay-200 text-clay-600 hover:bg-clay-50 text-xs font-bold disabled:opacity-50"
+                                        title="케이스 분석(추정·감별 진단, 추가로 확인할 것, 추가 공부)을 지금 기록 기준으로 새로 만들기"
                                     >
                                         {analyzing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
                                         {analyzing ? '분석 중…' : !analysis ? '케이스 분석' : outdated ? '분석 갱신 (기록 추가됨)' : '분석 다시 하기'}
@@ -780,10 +780,10 @@ const PatientsTab: React.FC<Props> = ({ notes, onSelectNote, onUpdateNote, onFol
                                 {isOpen && analysis && (
                                     <div className="mt-3 pt-3 border-t border-slate-100 space-y-3">
                                         {dx && <div><div className="text-xs font-bold text-slate-500 mb-1">추정 진단</div><MiniMarkdown markdown={dx} /></div>}
-                                        {toCheck && <div><div className="text-xs font-bold text-amber-600 mb-1">추가로 확인할 것</div><MiniMarkdown markdown={toCheck} /></div>}
-                                        {toStudy && <div><div className="text-xs font-bold text-indigo-600 mb-1">추가 공부</div><MiniMarkdown markdown={toStudy} /></div>}
+                                        {toCheck && <div><div className="text-xs font-bold text-warn-600 mb-1">추가로 확인할 것</div><MiniMarkdown markdown={toCheck} /></div>}
+                                        {toStudy && <div><div className="text-xs font-bold text-accent-600 mb-1">추가 공부</div><MiniMarkdown markdown={toStudy} /></div>}
                                         {!dx && !toCheck && !toStudy && <MiniMarkdown markdown={analysis} />}
-                                        {outdated && <p className="text-[11px] text-amber-600">분석한 뒤 기록이 추가됐어요. "분석 갱신"으로 최신 기록 기준으로 다시 정리할 수 있습니다.</p>}
+                                        {outdated && <p className="text-[11px] text-warn-600">분석한 뒤 기록이 추가됐어요. "분석 갱신"으로 최신 기록 기준으로 다시 정리할 수 있습니다.</p>}
                                     </div>
                                 )}
                             </div>
@@ -879,7 +879,7 @@ const SimilarTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote }) => 
                 <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">
                     {STRICTNESS.map(s => (
                         <button key={s.key} onClick={() => setStrictness(s.key)} disabled={scanning}
-                            className={`px-3 py-1 rounded-md text-xs font-bold ${strictness === s.key ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                            className={`px-3 py-1 rounded-md text-xs font-bold ${strictness === s.key ? 'bg-white text-accent-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
                             {s.label}
                         </button>
                     ))}
@@ -919,7 +919,7 @@ const SimilarTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote }) => 
                                         </div>
                                         <div className="flex items-center gap-2 mt-2">
                                             <button onClick={() => handleSynthesize(g)} disabled={!!generatingKey}
-                                                className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 text-xs font-bold disabled:opacity-50">
+                                                className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-accent-50 text-accent-600 hover:bg-accent-100 text-xs font-bold disabled:opacity-50">
                                                 {generatingKey === g.key ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
                                                 {generatingKey === g.key ? '정리 중…' : res ? '정리본 다시 만들기' : '정리본 만들기'}
                                             </button>
@@ -983,7 +983,7 @@ const GapTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote }) => {
     return (
         <div className="space-y-4">
             <Intro cost="웹 검색 포함, 1회 약 100~200원.">
-                주제나 가이드라인을 입력하면 표준 목차(가이드라인 섹션 구조)와 내 메모를 비교해 <b>✅ 충분 / 🟡 일부 / ❌ 없음</b>으로 표시하고, 먼저 채울 곳을 알려줍니다.
+                주제나 가이드라인을 입력하면 표준 목차(가이드라인 섹션 구조)와 내 메모를 비교해 <b>충분 / 일부 / 없음</b>으로 표시하고, 먼저 채울 곳을 알려줍니다.
             </Intro>
             <div className="flex flex-col sm:flex-row gap-2">
                 <input
@@ -1106,7 +1106,7 @@ const TemplateTab: React.FC<Props & { active: boolean }> = ({ notes, onSelectNot
                     placeholder="예: severe AS TTE 판독 · AF ablation 시술기록 · CIED interrogation (비우면 기록 많은 메모부터)"
                     className={inputCls}
                 />
-                <button onClick={handleFind} disabled={!!busy} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 text-sm font-bold whitespace-nowrap disabled:opacity-40">
+                <button onClick={handleFind} disabled={!!busy} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-white border border-accent-200 text-accent-600 hover:bg-accent-50 text-sm font-bold whitespace-nowrap disabled:opacity-40">
                     {busy === 'search' ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />} 기록 메모 찾기
                 </button>
             </div>
@@ -1121,12 +1121,12 @@ const TemplateTab: React.FC<Props & { active: boolean }> = ({ notes, onSelectNot
                             {candidates.map(n => (
                                 <label key={n.id} className="flex items-center gap-2 text-sm">
                                     <input type="checkbox" checked={checked.has(n.id)} onChange={() => toggle(n.id)} disabled={!!busy}
-                                        className="w-4 h-4 shrink-0 rounded border-slate-300 text-indigo-600" />
+                                        className="w-4 h-4 shrink-0 rounded border-slate-300 text-accent-600" />
                                     <span className="flex-1 min-w-0 truncate text-slate-700">{n.title || '(제목 없음)'}</span>
                                     {recordCounts.has(n.id) && (
-                                        <span className="text-[11px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded shrink-0">기록 {recordCounts.get(n.id)}건</span>
+                                        <span className="text-[11px] font-bold text-accent-500 bg-accent-50 px-1.5 py-0.5 rounded shrink-0">기록 {recordCounts.get(n.id)}건</span>
                                     )}
-                                    <button type="button" onClick={() => onSelectNote(n.id)} className="text-[11px] text-slate-400 hover:text-indigo-600 shrink-0">열기</button>
+                                    <button type="button" onClick={() => onSelectNote(n.id)} className="text-[11px] text-slate-400 hover:text-accent-600 shrink-0">열기</button>
                                 </label>
                             ))}
                         </div>
@@ -1139,7 +1139,7 @@ const TemplateTab: React.FC<Props & { active: boolean }> = ({ notes, onSelectNot
                     </div>
                 )
             )}
-            {error && !busy && (result ? <p className="text-xs text-amber-600 px-1">{error}</p> : <ErrorBox message={error} />)}
+            {error && !busy && (result ? <p className="text-xs text-warn-600 px-1">{error}</p> : <ErrorBox message={error} />)}
             {result && busy !== 'gen' && (
                 <NoteResultCard
                     label="작성 템플릿"
@@ -1210,7 +1210,7 @@ const CasesTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote }) => {
             if (failed === batches.length) throw new Error('AI 호출이 모두 실패했습니다. 잠시 후 다시 시도해주세요.');
             const refIndex = new Map(target.map((n, i) => [n.id, i + 1]));
             let markdown = buildCaseLogMarkdown(extracts, refIndex, p.label, patientNotes.length, target.length);
-            if (failed > 0) markdown = `> ⚠️ ${failed}개 묶음(최대 ${failed * CASE_BATCH}개 메모)은 분석하지 못해 빠졌습니다.\n\n` + markdown;
+            if (failed > 0) markdown = `> 참고: ${failed}개 묶음(최대 ${failed * CASE_BATCH}개 메모)은 분석하지 못해 빠졌습니다.\n\n` + markdown;
             setResult({ markdown, refNotes: target, periodLabel: p.label });
         } catch (e: any) {
             setError(e?.message || '기록을 정리하지 못했습니다.');
@@ -1229,7 +1229,7 @@ const CasesTab: React.FC<Props> = ({ notes, onSelectNote, onSaveNewNote }) => {
                 <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">
                     {PERIODS.map(x => (
                         <button key={x.key} onClick={() => setPeriod(x.key)} disabled={busy}
-                            className={`px-3 py-1 rounded-md text-xs font-bold ${period === x.key ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+                            className={`px-3 py-1 rounded-md text-xs font-bold ${period === x.key ? 'bg-white text-accent-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
                             {x.label}
                         </button>
                     ))}
@@ -1281,7 +1281,7 @@ const InsightsView: React.FC<Props> = (rawProps) => {
                 <button onClick={props.onBack} className="p-2 hover:bg-slate-100 rounded-full text-slate-500 transition-colors shrink-0" title="메인으로">
                     <ArrowLeft className="w-5 h-5" />
                 </button>
-                <span className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md bg-teal-100 text-teal-700">
+                <span className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-md bg-accent-100 text-accent-700">
                     <Lightbulb className="w-4 h-4" />
                 </span>
                 <h2 className="font-bold text-slate-800 text-sm md:text-base whitespace-nowrap truncate">메모 활용</h2>
@@ -1295,7 +1295,7 @@ const InsightsView: React.FC<Props> = (rawProps) => {
                     {TABS.map(t => (
                         <button key={t.key} onClick={() => setTab(t.key)}
                             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border whitespace-nowrap transition-colors ${
-                                tab === t.key ? 'bg-teal-50 border-teal-200 text-teal-700' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-700'
+                                tab === t.key ? 'bg-accent-50 border-accent-200 text-accent-700' : 'bg-white border-slate-200 text-slate-500 hover:text-slate-700'
                             }`}>
                             {t.icon}{t.label}
                         </button>

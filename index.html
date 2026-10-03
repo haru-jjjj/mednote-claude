@@ -18,6 +18,22 @@
     <!-- Polyfill for importmap support in older Safari versions -->
     <script async src="https://ga.jspm.io/npm:es-module-shims@1.10.0/dist/es-module-shims.js"></script>
     <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <!-- 차분한 단일 톤: 기본 강조색(accent, 차분한 청회색) 하나 + 의미가 있을 때만 쓰는 저채도 보조색
+         (sage = 업무·일치/정답, warn = 주의, clay = 환자). 오류·삭제만 red. -->
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              accent: { 50: '#f3f6f9', 100: '#e4ebf2', 200: '#c9d6e3', 300: '#a3b9cf', 400: '#7795b3', 500: '#567896', 600: '#43617d', 700: '#374f66', 800: '#2f4254', 900: '#293746' },
+              sage:   { 50: '#f3f6f3', 100: '#e3ebe4', 200: '#c7d7c9', 300: '#a3bda7', 400: '#7d9e82', 500: '#5f8165', 600: '#4c6a52', 700: '#3e5643', 800: '#344638', 900: '#2c3a2f' },
+              warn:   { 50: '#faf6ee', 100: '#f2e9d6', 200: '#e5d3ae', 300: '#d3b77f', 400: '#bf9a55', 500: '#a8803d', 600: '#8c6a31', 700: '#70552a', 800: '#5a4525', 900: '#4a3a21' },
+              clay:   { 50: '#faf5f4', 100: '#f1e4e2', 200: '#e2c7c3', 300: '#cfa49e', 400: '#b8807a', 500: '#9f655f', 600: '#86524d', 700: '#6d4340', 800: '#5a3836', 900: '#4b302f' }
+            }
+          }
+        }
+      };
+    </script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=Noto+Sans+JP:wght@300;400;500;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
       body {
@@ -117,14 +133,14 @@
       }
       /* 날짜 구역은 왼쪽 선으로 경과(타임라인)처럼 */
       .prose details.md-section.md-date > .md-section-body {
-        border-left: 2px solid #fecdd3;
+        border-left: 2px solid #c9d6e3;
         padding-left: 0.9em;
         margin-left: 0.25em;
       }
       .prose details.md-section.md-date > summary > h1,
       .prose details.md-section.md-date > summary > h2,
       .prose details.md-section.md-date > summary > h3 {
-        color: #be123c;
+        color: #374f66;
       }
       /* Custom Scrollbar */
       ::-webkit-scrollbar {
