@@ -150,3 +150,26 @@ export const threadPlainText = (content: string): string =>
         }
         return `A. ${m.text}`;
     }).join('\n\n');
+
+// 근거 번호([n]) 없이 쓰인 "사실 진술" 찾기 — 수치·단위·권고 등급·금기·시험·용량 같은 말이 들어간 문장/항목
+const FACT_RE = /(\d+(?:\.\d+)?\s*(?:%|mg|mcg|μg|ng|pg|g\/dL|mmol|mEq|mmHg|ms|mm|cm|bpm|kg|IU|U\/L|mL|ml|배|시간|일|주|개월|년)\b|\d+(?:\.\d+)?\s*(?:%|배|시간|일|주|개월|년)|\b(?:COR|LOE|Class\s*(?:I{1,3}|IIa|IIb|1|2a|2b|3)|HR|OR|RR|NNT|CI|RCT|trial|meta-analysis|guideline|FDA|label)\b|가이드라인|권고|금기|임상시험|연구에서|보고|용량|농도|목표치|역치|발생률|사망률)/i;
+const CITE_RE = /\[\d{1,2}\]/;
+
+export const uncitedClaims = (text: string): string[] => {
+    const out: string[] = [];
+    let inCode = false;
+    (text || '').split('\n').forEach(raw => {
+        const line = raw.trim();
+        if (/^```/.test(line)) { inCode = !inCode; return; }
+        if (inCode || !line || /^#{1,6}\s/.test(line) || /^>\s*참고:/.test(line) || /^\|?\s*-{3,}/.test(line)) return;
+        // 긴 문단은 문장 단위로 (번호는 보통 문장 끝에 붙음)
+        const units = line.length > 160 ? line.split(/(?<=[.!?]|다\.)\s+/) : [line];
+        units.forEach(u => {
+            const t = u.replace(/^[-*]\s+|^\d+\.\s+/, '').trim();
+            if (t.length < 12) return;
+            // AI가 스스로 "(출처 미확인)"이라고 표시한 문장은 항상 포함
+            if (t.includes('출처 미확인') || (FACT_RE.test(t) && !CITE_RE.test(t))) out.push(t);
+        });
+    });
+    return out;
+};

@@ -4,8 +4,8 @@ import { ArrowLeft, ArrowUp, Clock, Loader2, Trash2, X, Plus, Search, Globe, Edi
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import type { Note, ThreadPending, Source } from '../types';
-import { formatMedicalMarkdown, streamThreadAnswer } from '../services/claudeService';
-import { encodeThread, parseThread, threadTitleFrom, countQuestions, lastQuestionUnanswered, pendingOf, THREAD_SOFT_LIMIT_CHARS, ThreadMessage } from '../services/threadFormat';
+import { formatMedicalMarkdown, streamThreadAnswer, THREAD_REINFORCE_INSTRUCTION } from '../services/claudeService';
+import { encodeThread, parseThread, threadTitleFrom, countQuestions, lastQuestionUnanswered, pendingOf, THREAD_SOFT_LIMIT_CHARS, ThreadMessage, uncitedClaims } from '../services/threadFormat';
 import { getNoteFromDB } from '../services/storage';
 import AutoTextarea from './AutoTextarea';
 import { resizeAndCompressImage, imageSrc } from '../services/imageUtils';
@@ -27,6 +27,7 @@ interface StreamState {
     text: string;
     status: 'thinking' | 'searching' | 'writing';
     sources?: Source[];
+    reinforceAt?: number; // "근거 보강"으로 다시 쓰는 답변(그 답변의 시각)
 }
 
 const renderMd = (md: string): string => {
@@ -78,8 +79,10 @@ const linkCitations = (html: string, sources: Source[]): string => {
 };
 
 // 답변 하나 (마크다운 렌더링은 내용이 바뀔 때만)
-const AnswerBlock: React.FC<{ text: string; sources?: Source[] }> = React.memo(({ text, sources }) => {
+const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: () => void; reinforceDisabled?: boolean }> = React.memo(({ text, sources, onReinforce, reinforceDisabled }) => {
     const list = sources || [];
+    // 수치·권고·시험 등이 들어갔는데 근거 번호가 없는 문장
+    const uncited = useMemo(() => (onReinforce ? uncitedClaims(text) : []), [text, onReinforce]);
     const html = useMemo(
         () => linkCitations(renderMd(text), list).replace(/<a href="(https?:)/g, '<a target="_blank" rel="noopener noreferrer" href="$1'),
         [text, sources]
@@ -107,6 +110,29 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[] }> = React.memo((
                             </li>
                         ))}
                     </ol>
+                </div>
+            )}
+            {uncited.length > 0 && onReinforce && (
+                <div className="mt-3 pt-2.5 border-t border-slate-100">
+                    <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold text-warn-700">근거 번호가 없는 내용 {uncited.length}곳</span>
+                        <button
+                            onClick={onReinforce}
+                            disabled={reinforceDisabled}
+                            className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-md border border-slate-200 bg-white text-[11px] font-bold text-slate-600 hover:border-accent-300 hover:text-accent-700 disabled:opacity-40"
+                            title="출처가 없는 내용을 하나씩 검색해 근거를 붙여 답변을 다시 씀"
+                        >
+                            <Search className="w-3.5 h-3.5" /> 근거 찾아 보강
+                        </button>
+                    </div>
+                    <details className="mt-1">
+                        <summary className="text-[11px] text-slate-400 cursor-pointer">어떤 내용인지 보기</summary>
+                        <ul className="mt-1 space-y-0.5">
+                            {uncited.map((u, i) => (
+                                <li key={i} className="text-[11px] text-slate-500 line-clamp-2">· {u.replace(/\*\*/g, '')}</li>
+                            ))}
+                        </ul>
+                    </details>
                 </div>
             )}
         </div>
@@ -217,12 +243,13 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
 
     // 질문에 대한 답 받기: history = 이 질문 앞의 대화
     // allImages: 대화 메모의 images 배열 (메시지의 사진 번호를 실제 사진으로 바꿀 때 씀)
-    const runAnswer = async (threadId: string, history: ThreadMessage[], question: ThreadMessage, allImages: string[] = []) => {
+    // opts.replaceAt: "근거 보강" — 새 답을 붙이지 않고 그 시각의 답변을 바꿔 씀
+    const runAnswer = async (threadId: string, history: ThreadMessage[], question: ThreadMessage, allImages: string[] = [], opts?: { replaceAt?: number }) => {
         const imgsOf = (m: ThreadMessage) => (m.images || []).map(i => allImages[i]).filter((x): x is string => !!x && !x.startsWith('http'));
         const controller = new AbortController();
         controllersRef.current.set(threadId, controller);
         setErrors(prev => { const n = { ...prev }; delete n[threadId]; return n; });
-        setStreams(prev => ({ ...prev, [threadId]: { question: question.text, quote: question.quote, text: '', status: 'thinking' } }));
+        setStreams(prev => ({ ...prev, [threadId]: { question: question.text, quote: question.quote, text: '', status: 'thinking', ...(opts?.replaceAt ? { reinforceAt: opts.replaceAt } : {}) } }));
         try {
             const result = await streamThreadAnswer({
                 history: history.map(m => ({ role: m.role, text: m.text, quote: m.quote, images: imgsOf(m) })),
@@ -238,12 +265,19 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                 if (!latest) return null;
                 const msgs = parseThread(latest.content || '');
                 const now = Date.now();
-                msgs.push({ role: 'assistant', at: now, text: result.text, sources: result.sources });
+                if (opts?.replaceAt) {
+                    const i = msgs.findIndex(m => m.role === 'assistant' && m.at === opts.replaceAt);
+                    if (i < 0) return null; // 그 사이 지워졌거나 바뀐 경우
+                    msgs[i] = { ...msgs[i], text: result.text, sources: result.sources };
+                } else {
+                    msgs.push({ role: 'assistant', at: now, text: result.text, sources: result.sources });
+                }
                 return { ...latest, content: encodeThread(msgs), updatedAt: now };
             });
         } catch (e: any) {
             console.error(e);
-            setErrors(prev => ({ ...prev, [threadId]: errText(e) }));
+            if (opts?.replaceAt) { if (e?.name !== 'AbortError') alert(`근거 보강에 실패했습니다: ${errText(e)}\n원래 답변은 그대로 있어요.`); }
+            else setErrors(prev => ({ ...prev, [threadId]: errText(e) }));
         } finally {
             controllersRef.current.delete(threadId);
             inFlightRef.current.delete(threadId);
@@ -310,6 +344,19 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
         const msgs = latest ? parseThread(latest.content || '') : [];
         if (!lastQuestionUnanswered(msgs)) { inFlightRef.current.delete(threadId); return; }
         runAnswer(threadId, msgs.slice(0, -1), msgs[msgs.length - 1], latest?.images || []);
+    };
+
+    // 근거 보강: 그 답변의 질문까지를 앞 대화로, "출처 없는 진술을 검색해 근거를 붙여 다시 써줘"를 요청
+    const reinforce = async (threadId: string, answerAt: number) => {
+        if (inFlightRef.current.has(threadId)) return;
+        inFlightRef.current.add(threadId);
+        const latest = await getNoteFromDB(threadId).catch(() => undefined);
+        const msgs = latest ? parseThread(latest.content || '') : [];
+        const i = msgs.findIndex(m => m.role === 'assistant' && m.at === answerAt);
+        if (i < 1) { inFlightRef.current.delete(threadId); return; }
+        const request: ThreadMessage = { role: 'user', at: Date.now(), text: THREAD_REINFORCE_INSTRUCTION(msgs[i].text) };
+        stickToBottomRef.current = true;
+        runAnswer(threadId, msgs.slice(0, i), request, latest?.images || [], { replaceAt: answerAt });
     };
 
     // 나중에 물어볼 질문으로 적어두기 (threadId 없으면 질문만 있는 새 대화)
@@ -642,7 +689,15 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                         </div>
                     ) : (
                         <div key={i} className="bg-white border border-slate-200 rounded-2xl rounded-bl-md px-4 py-3 shadow-sm">
-                            <AnswerBlock text={m.text} sources={m.sources} />
+                            <AnswerBlock
+                                text={m.text}
+                                sources={m.sources}
+                                onReinforce={stream?.reinforceAt === m.at ? undefined : () => reinforce(active.id, m.at)}
+                                reinforceDisabled={busy}
+                            />
+                            {stream?.reinforceAt === m.at && (
+                                <p className="mt-2 text-[11px] font-bold text-accent-600 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 이 답변의 근거를 찾아 다시 쓰는 중… 아래에 진행 상황이 보여요</p>
+                            )}
                         </div>
                     ))}
 
@@ -650,7 +705,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                         <div className="bg-white border border-accent-100 rounded-2xl rounded-bl-md px-4 py-3 shadow-sm">
                             <p className="text-[11px] font-bold text-accent-500 flex items-center gap-1.5 mb-2">
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                {stream.status === 'searching' ? '근거 찾는 중…' : stream.status === 'writing' ? '답변 쓰는 중…' : '생각하는 중…'}
+                                {stream.reinforceAt ? '근거 보강 — ' : ''}{stream.status === 'searching' ? '근거 찾는 중…' : stream.status === 'writing' ? '답변 쓰는 중…' : '생각하는 중…'}
                                 <button onClick={() => controllersRef.current.get(active.id)?.abort()} className="ml-auto text-slate-400 hover:text-red-500 font-bold">멈추기</button>
                             </p>
                             {stream.text && <AnswerBlock text={stream.text} sources={stream.sources} />}
