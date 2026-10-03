@@ -139,7 +139,8 @@ const StudyGuideView: React.FC<StudyGuideViewProps> = ({ notes, onBack }) => {
           let selected: Note[] = pickSemanticCluster(excludeList);
 
           if (selected.length === 0) {
-              selected = await fetchRandomNotesBatch(3, excludeList, notes);
+              // 질문 노트(대화)는 주제 탐구 재료에서 제외
+              selected = (await fetchRandomNotesBatch(3, excludeList, notes)).filter(n => n.kind !== 'thread');
           }
 
           if (selected.length === 0 && notes.length > 0) {

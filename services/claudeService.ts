@@ -568,6 +568,166 @@ export const refineNoteSummary = async (
 };
 
 // ----------------------------------------------------------------------------
+// 질문 노트: 대화형 질문·답변 (스트리밍으로 답변이 써지는 대로 보여줌)
+// - 이전 대화는 최근 것부터 THREAD_HISTORY_CHARS까지만 보냄 (긴 대화도 비용·속도 유지)
+// - 근거가 필요한 질문은 웹 검색(최대 3회) 후 출처를 붙임
+// 참고: https://docs.claude.com/en/docs/build-with-claude/streaming
+// ----------------------------------------------------------------------------
+export interface ThreadTurn { role: 'user' | 'assistant'; text: string; quote?: string }
+
+const THREAD_HISTORY_CHARS = 40000;
+
+const turnText = (t: ThreadTurn) =>
+    t.role === 'user' && t.quote
+        ? `(이전 답변에서 이 부분을 짚어서 묻는 질문)\n"""${t.quote}"""\n\n${t.text}`
+        : t.text;
+
+// 최근 대화부터 거꾸로 담고, user로 시작하도록 맞춤 (API는 user/assistant가 번갈아 와야 함)
+const buildThreadMessages = (history: ThreadTurn[], question: ThreadTurn): { role: 'user' | 'assistant'; content: string }[] => {
+    const picked: ThreadTurn[] = [];
+    let used = turnText(question).length;
+    let omitted = false;
+    for (let i = history.length - 1; i >= 0; i--) {
+        const len = turnText(history[i]).length;
+        if (used + len > THREAD_HISTORY_CHARS) { omitted = true; break; }
+        picked.unshift(history[i]);
+        used += len;
+    }
+    // 번갈아 오도록 정리: 같은 역할이 연달아 오면 합치고(답이 없던 질문 등), 맨 앞은 user
+    const merged: { role: 'user' | 'assistant'; content: string }[] = [];
+    [...picked, question].forEach(t => {
+        const last = merged[merged.length - 1];
+        if (last && last.role === t.role) last.content += `\n\n${turnText(t)}`;
+        else merged.push({ role: t.role, content: turnText(t) });
+    });
+    while (merged.length && merged[0].role !== 'user') merged.shift();
+    if (omitted && merged.length) merged[0].content = `(앞부분 대화는 길어서 생략됨)\n\n${merged[0].content}`;
+    return merged;
+};
+
+const THREAD_SYSTEM = `
+    You are the reader's study partner for clinical questions, in an ongoing conversation they keep as study notes.
+    ${READER_PROFILE}
+    HOW TO ANSWER:
+    - Answer the question directly first (1~2 sentences), then the supporting detail the reader would need —
+      mechanism, thresholds/doses with units, guideline class (COR/LOE) and year, landmark trials, practical pitfalls.
+      Depth of a fellow-level discussion, but no padding; skip basics they obviously know.
+    - When the question quotes part of an earlier answer, focus on exactly that part.
+    - For anything that depends on current guidelines, recent trials or numbers, use web search (up to 3) and rely on
+      what you find; say so when evidence is weak, conflicting or you are unsure. Never invent numbers or citations.
+    - Format: Markdown. Use "###" for any headings (never "#" or "##"), bullets "- " with the full sentence on the same
+      line, ≥/≤ instead of LaTeX. Tables are fine for comparisons (plain text cells).
+    - Write in Korean with standard English medical terms/abbreviations, unless the reader writes in another language.
+    - Output only the answer — no narration of your process ("검색해보겠습니다" etc.).
+`;
+
+export const streamThreadAnswer = async (params: {
+    history: ThreadTurn[];
+    question: ThreadTurn;
+    onText?: (textSoFar: string) => void;
+    onStatus?: (status: 'searching' | 'writing') => void;
+    signal?: AbortSignal;
+}): Promise<{ text: string; sources: Source[]; truncated: boolean }> => {
+    const apiKey = getApiKey();
+    const body = {
+        model: MODEL_SMART,
+        max_tokens: SMART_MIN_MAX_TOKENS,
+        system: THREAD_SYSTEM,
+        messages: buildThreadMessages(params.history, params.question),
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
+        output_config: { effort: 'medium' },
+        stream: true
+    };
+    const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+            'x-api-key': apiKey,
+            'anthropic-version': ANTHROPIC_VERSION,
+            'content-type': 'application/json',
+            'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify(body),
+        signal: params.signal
+    });
+    if (!response.ok || !response.body) {
+        let errBody: any = null;
+        try { errBody = await response.json(); } catch { /* ignore */ }
+        const errType = errBody?.error?.type || '';
+        const errMsg = errBody?.error?.message || response.statusText;
+        if (response.status === 429 || errType === 'rate_limit_error') throw new Error(`Quota exceeded (429): ${errMsg}`);
+        throw new Error(`Claude API error (${response.status} ${errType}): ${errMsg}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const blockTypes = new Map<number, string>();
+    const sources = new Map<string, Source>();
+    let text = '';
+    let stopReason = '';
+    let buf = '';
+    let lastStartedType = '';
+
+    const handle = (evt: any) => {
+        switch (evt?.type) {
+            case 'content_block_start': {
+                const type = evt.content_block?.type || '';
+                blockTypes.set(evt.index, type);
+                if (type === 'server_tool_use') params.onStatus?.('searching');
+                if (type === 'text') {
+                    // 검색 앞뒤로 나뉜 글은 문단을 띄워 이어 붙임 (인용 때문에 쪼개진 글 조각은 그대로 붙임)
+                    if (text && lastStartedType && lastStartedType !== 'text' && !text.endsWith('\n\n')) text += '\n\n';
+                    params.onStatus?.('writing');
+                }
+                lastStartedType = type;
+                break;
+            }
+            case 'content_block_delta': {
+                const d = evt.delta || {};
+                if (d.type === 'text_delta' && blockTypes.get(evt.index) === 'text') {
+                    text += d.text || '';
+                    params.onText?.(text);
+                } else if (d.type === 'citations_delta' && d.citation?.url && !sources.has(d.citation.url)) {
+                    sources.set(d.citation.url, { title: d.citation.title || d.citation.url, uri: d.citation.url });
+                }
+                break;
+            }
+            case 'message_delta':
+                if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
+                break;
+            case 'error':
+                throw new Error(`Claude API error (stream): ${evt.error?.message || evt.error?.type || 'unknown'}`);
+        }
+    };
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let sep: number;
+        while ((sep = buf.indexOf('\n\n')) >= 0) {
+            const raw = buf.slice(0, sep);
+            buf = buf.slice(sep + 2);
+            const data = raw.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim()).join('');
+            if (!data) continue;
+            let evt: any;
+            try { evt = JSON.parse(data); } catch { continue; }
+            handle(evt);
+        }
+    }
+
+    if (stopReason === 'refusal') throw new Error('Safety: content blocked by the model (refusal)');
+    text = text.trim();
+    if (!text) {
+        throw new Error(stopReason === 'max_tokens'
+            ? '답변을 쓰기 전에 분량 한도에 걸렸습니다. 질문을 조금 좁혀서 다시 시도해주세요.'
+            : 'AI가 답변을 돌려주지 않았습니다. 잠시 후 다시 시도해주세요.');
+    }
+    const truncated = stopReason === 'max_tokens' || stopReason === 'pause_turn';
+    if (truncated) text += '\n\n> ⚠️ 답변이 중간에 끊겼습니다. "이어서 설명해줘"라고 물어보면 이어집니다.';
+    return { text, sources: Array.from(sources.values()).slice(0, 8), truncated };
+};
+
+// ----------------------------------------------------------------------------
 // AI 주제 탐구 (Study Guide) — 유지 결정된 부가 기능
 // ----------------------------------------------------------------------------
 export const generateStudySuggestions = async (notes: Note[], language: string = 'Korean'): Promise<string[]> => {

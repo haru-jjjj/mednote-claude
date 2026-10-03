@@ -1,0 +1,590 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { v4 as uuidv4 } from 'uuid';
+import { ArrowLeft, ArrowUp, Clock, Loader2, Trash2, X, Plus, Search, Globe, Edit, RotateCw, Sparkles, BrainCircuit, ChevronRight, MessageSquareText } from 'lucide-react';
+import DOMPurify from 'dompurify';
+import { marked } from 'marked';
+import type { Note, ThreadPending } from '../types';
+import { formatMedicalMarkdown, streamThreadAnswer } from '../services/claudeService';
+import { encodeThread, parseThread, threadTitleFrom, countQuestions, lastQuestionUnanswered, pendingOf, THREAD_SOFT_LIMIT_CHARS, ThreadMessage } from '../services/threadFormat';
+import { getNoteFromDB } from '../services/storage';
+
+interface Props {
+    threads: Note[]; // kind === 'thread'
+    // 같은 대화에 대한 저장을 순서대로 처리하고, 저장 직전 최신 대화(없으면 null)를 받아 바꾼 대화를 돌려줌
+    onUpdate: (id: string, mutate: (latest: Note | null) => Note | null) => Promise<Note | null>;
+    onPatchMeta: (id: string, makePatch: (latest: Note) => Partial<Note> | null) => Promise<Note | null>;
+    onDelete: (id: string) => Promise<void>;
+    onBack: () => void;
+    openThreadId?: string | null; // 퀴즈 등에서 열 대화
+    onOpened?: () => void;
+}
+
+interface StreamState {
+    question: string;
+    quote?: string;
+    text: string;
+    status: 'thinking' | 'searching' | 'writing';
+}
+
+const renderMd = (md: string): string => {
+    try {
+        return DOMPurify.sanitize(marked.parse(formatMedicalMarkdown(md || ''), { breaks: false, gfm: true }) as string);
+    } catch {
+        return DOMPurify.sanitize(md || '');
+    }
+};
+
+const fmtTime = (t: number) => {
+    if (!t) return '';
+    const d = new Date(t);
+    const today = new Date();
+    return d.toDateString() === today.toDateString()
+        ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : d.toLocaleDateString();
+};
+
+const errText = (e: any): string => {
+    const msg = e?.message || '';
+    if (e?.name === 'AbortError') return '답변을 멈췄습니다.';
+    if (msg.includes('429') || msg.includes('Quota')) return 'AI 사용량이 많아 잠시 제한되었습니다. 잠시 후 다시 시도해주세요.';
+    if (msg.includes('API Key')) return 'API 설정에 문제가 있습니다.';
+    if (msg.includes('Failed to fetch') || msg.includes('network')) return '네트워크 연결이 불안정합니다. 다시 시도해주세요.';
+    return msg || '답변을 받지 못했습니다.';
+};
+
+// 답변 하나 (마크다운 렌더링은 내용이 바뀔 때만)
+const AnswerBlock: React.FC<{ text: string; sources?: { title: string; uri: string }[] }> = React.memo(({ text, sources }) => {
+    const html = useMemo(() => renderMd(text), [text]);
+    return (
+        <div data-answer="1">
+            <div
+                className="prose prose-sm prose-slate max-w-none text-slate-700 leading-relaxed break-words [&_code]:break-all [&_code]:whitespace-pre-wrap"
+                dangerouslySetInnerHTML={{ __html: html }}
+            />
+            {sources && sources.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                    {sources.map((s, i) => (
+                        <a key={i} href={s.uri} target="_blank" rel="noopener noreferrer"
+                           className="flex items-center gap-1 px-2 py-1 bg-white text-slate-600 rounded-md text-[11px] border border-slate-200 hover:border-violet-300">
+                            <Globe className="w-3 h-3" />
+                            <span className="truncate max-w-[180px]">{s.title}</span>
+                        </a>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+});
+
+const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete, onBack, openThreadId, onOpened }) => {
+    const [activeId, setActiveId] = useState<string | null>(null);
+    const [listDraft, setListDraft] = useState('');
+    const [draft, setDraft] = useState('');
+    const [quote, setQuote] = useState<string | null>(null);
+    const [filter, setFilter] = useState('');
+    const [streams, setStreams] = useState<Record<string, StreamState>>({});
+    const [errors, setErrors] = useState<Record<string, string>>({});
+    const [selection, setSelection] = useState('');
+    const controllersRef = useRef<Map<string, AbortController>>(new Map());
+    // 답변 중인 대화 (state는 화면 갱신 뒤에야 바뀌어서, 두 번 눌러 같은 질문이 두 번 가는 것을 막는 데는 ref를 씀)
+    const inFlightRef = useRef<Set<string>>(new Set());
+    const submittingRef = useRef(false);
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const messagesRef = useRef<HTMLDivElement>(null);
+    const stickToBottomRef = useRef(true);
+
+    // 퀴즈 등에서 특정 대화 열기
+    useEffect(() => {
+        if (openThreadId) { setActiveId(openThreadId); onOpened?.(); }
+    }, [openThreadId]);
+
+    useEffect(() => { setDraft(''); setQuote(null); setSelection(''); stickToBottomRef.current = true; }, [activeId]);
+
+    const sorted = useMemo(
+        () => [...threads].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0)),
+        [threads]
+    );
+    const visible = useMemo(() => {
+        const q = filter.trim().toLowerCase();
+        if (!q) return sorted;
+        return sorted.filter(t => `${t.title} ${t.content}`.toLowerCase().includes(q));
+    }, [sorted, filter]);
+    const allPending = useMemo(
+        () => sorted.flatMap(t => pendingOf(t).map(p => ({ p, thread: t }))).sort((a, b) => b.p.at - a.p.at),
+        [sorted]
+    );
+
+    const active = threads.find(t => t.id === activeId) || null;
+    const messages: ThreadMessage[] = useMemo(() => (active ? parseThread(active.content || '') : []), [active?.content]);
+    const stream = activeId ? streams[activeId] : undefined;
+
+    // 새 메시지·스트리밍 중에는 맨 아래를 따라감 (위로 스크롤해서 읽는 중이면 그대로)
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight;
+    }, [messages.length, stream?.text, activeId]);
+    const onScroll = () => {
+        const el = scrollRef.current;
+        if (el) stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    };
+
+    // 답변에서 글자를 고르면 "이 부분 질문하기" 표시 (모바일에서도 동작하도록 selectionchange 사용)
+    useEffect(() => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        let clearTimer: ReturnType<typeof setTimeout> | null = null;
+        const onSel = () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => {
+                const sel = window.getSelection();
+                const text = sel ? sel.toString().trim() : '';
+                const node = sel?.anchorNode ? (sel.anchorNode.nodeType === 1 ? sel.anchorNode as Element : sel.anchorNode.parentElement) : null;
+                const inAnswer = !!node && !!messagesRef.current?.contains(node) && !!node.closest('[data-answer]');
+                if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
+                if (text && inAnswer) setSelection(text.slice(0, 600));
+                else if (text) setSelection(''); // 답변 밖(입력칸 등)을 고른 경우
+                else clearTimer = setTimeout(() => setSelection(''), 400); // 버튼을 누르는 순간 선택이 풀려도 눌리도록 잠깐 유지
+            }, 150);
+        };
+        document.addEventListener('selectionchange', onSel);
+        return () => {
+            document.removeEventListener('selectionchange', onSel);
+            if (timer) clearTimeout(timer);
+            if (clearTimer) clearTimeout(clearTimer);
+        };
+    }, []);
+
+    const newThreadNote = (title: string, now: number): Note => ({
+        id: uuidv4(),
+        title: threadTitleFrom(title),
+        content: '',
+        summary: '',
+        sources: [],
+        createdAt: now,
+        updatedAt: now,
+        isEnhancing: false,
+        kind: 'thread'
+    });
+
+    // 질문에 대한 답 받기: history = 이 질문 앞의 대화
+    const runAnswer = async (threadId: string, history: ThreadMessage[], question: ThreadMessage) => {
+        const controller = new AbortController();
+        controllersRef.current.set(threadId, controller);
+        setErrors(prev => { const n = { ...prev }; delete n[threadId]; return n; });
+        setStreams(prev => ({ ...prev, [threadId]: { question: question.text, quote: question.quote, text: '', status: 'thinking' } }));
+        try {
+            const result = await streamThreadAnswer({
+                history: history.map(m => ({ role: m.role, text: m.text, quote: m.quote })),
+                question: { role: 'user', text: question.text, quote: question.quote },
+                onText: t => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], text: t, status: 'writing' } } : prev),
+                onStatus: st => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], status: st } } : prev),
+                signal: controller.signal
+            });
+            // 그 사이 바뀐 내용(제목·적어둔 질문 등)을 덮지 않도록 저장 직전 최신 대화에 답만 붙임.
+            // 그 사이 대화가 지워졌으면(이 기기·다른 기기) 저장하지 않음 → 되살아나지 않게
+            await onUpdate(threadId, latest => {
+                if (!latest) return null;
+                const msgs = parseThread(latest.content || '');
+                const now = Date.now();
+                msgs.push({ role: 'assistant', at: now, text: result.text, sources: result.sources });
+                return { ...latest, content: encodeThread(msgs), updatedAt: now };
+            });
+        } catch (e: any) {
+            console.error(e);
+            setErrors(prev => ({ ...prev, [threadId]: errText(e) }));
+        } finally {
+            controllersRef.current.delete(threadId);
+            inFlightRef.current.delete(threadId);
+            setStreams(prev => { const n = { ...prev }; delete n[threadId]; return n; });
+        }
+    };
+
+    // 질문 보내기 (threadId 없으면 새 대화). opts.removePendingId: 적어둔 질문을 물어볼 때 같은 저장에서 지움
+    const ask = async (threadId: string | null, text: string, q?: string | null, opts?: { removePendingId?: string }): Promise<string | null> => {
+        const question = text.trim();
+        if (!question) return null;
+        if (threadId && inFlightRef.current.has(threadId)) return null;
+        const id = threadId || uuidv4();
+        inFlightRef.current.add(id);
+        const now = Date.now();
+        const qMsg: ThreadMessage = { role: 'user', at: now, text: question, ...(q ? { quote: q } : {}) };
+        let history: ThreadMessage[] = [];
+        try {
+            // 질문부터 저장 → 답변 중에 앱을 닫아도 질문은 남음
+            const saved = await onUpdate(id, latest => {
+                if (!latest && threadId) return null; // 그 사이 지워진 대화
+                const base = latest || { ...newThreadNote(question, now), id };
+                const msgs = parseThread(base.content || '');
+                // 답을 못 받은 채 남은 질문이 있으면 이번 질문과 함께 보냄 (기록은 그대로)
+                history = [...msgs];
+                msgs.push(qMsg);
+                const rest = opts?.removePendingId ? pendingOf(base).filter(p => p.id !== opts.removePendingId) : pendingOf(base);
+                return {
+                    ...base, content: encodeThread(msgs), updatedAt: now, threadPending: rest.length ? rest : undefined,
+                    // 적어둔 질문 목록이 바뀌면 부가정보 시각도 올려 다른 기기에 이 변경이 이기도록
+                    ...(opts?.removePendingId ? { metaUpdatedAt: now } : {})
+                };
+            });
+            if (!saved) { inFlightRef.current.delete(id); return null; }
+        } catch (e) {
+            console.error(e);
+            inFlightRef.current.delete(id);
+            return null;
+        }
+        runAnswer(id, history, qMsg);
+        return id;
+    };
+
+    const retryLast = async (threadId: string) => {
+        if (inFlightRef.current.has(threadId)) return;
+        inFlightRef.current.add(threadId);
+        const latest = await getNoteFromDB(threadId).catch(() => undefined);
+        const msgs = latest ? parseThread(latest.content || '') : [];
+        if (!lastQuestionUnanswered(msgs)) { inFlightRef.current.delete(threadId); return; }
+        runAnswer(threadId, msgs.slice(0, -1), msgs[msgs.length - 1]);
+    };
+
+    // 나중에 물어볼 질문으로 적어두기 (threadId 없으면 질문만 있는 새 대화)
+    const addPending = async (threadId: string | null, text: string): Promise<boolean> => {
+        const t = text.trim();
+        if (!t) return false;
+        const item: ThreadPending = { id: uuidv4(), text: t, at: Date.now() };
+        try {
+            if (!threadId) {
+                const note = { ...newThreadNote(t, item.at), threadPending: [item] };
+                return !!(await onUpdate(note.id, () => note));
+            }
+            return !!(await onPatchMeta(threadId, latest => ({ threadPending: [...pendingOf(latest), item] })));
+        } catch (e) {
+            console.error(e);
+            return false;
+        }
+    };
+
+    const removePending = (threadId: string, pid: string) =>
+        onPatchMeta(threadId, latest => {
+            const rest = pendingOf(latest).filter(p => p.id !== pid);
+            return { threadPending: rest.length ? rest : undefined };
+        });
+
+    // 적어둔 질문 물어보기: 질문 저장과 같은 저장에서 목록에서 지움 (실패하면 그대로 남음)
+    const askPending = async (thread: Note, p: ThreadPending) => {
+        if (inFlightRef.current.has(thread.id)) return;
+        setActiveId(thread.id);
+        const id = await ask(thread.id, p.text, null, { removePendingId: p.id });
+        if (!id) alert('질문을 보내지 못했습니다. 적어둔 질문은 그대로 남아 있어요.');
+    };
+
+    const handleDelete = async (t: Note) => {
+        if (!window.confirm(`"${t.title}" 대화를 지울까요? 이 대화로 나온 퀴즈 오답도 함께 사라집니다.`)) return;
+        controllersRef.current.get(t.id)?.abort();
+        await onDelete(t.id);
+        if (activeId === t.id) setActiveId(null);
+    };
+
+    const handleRename = async (t: Note) => {
+        const name = window.prompt('대화 제목', t.title);
+        if (name === null || !name.trim() || name.trim() === t.title) return;
+        await onUpdate(t.id, latest => latest ? { ...latest, title: name.trim().slice(0, 80), updatedAt: Date.now() } : null);
+    };
+
+    const toggleQuiz = (t: Note) => onPatchMeta(t.id, latest => ({ quizExcluded: latest.quizExcluded ? undefined : true }));
+
+    // 목록에서 새 질문 (두 번 눌러도 대화가 두 개 생기지 않게)
+    const submitNew = async () => {
+        const t = listDraft;
+        if (submittingRef.current || !t.trim()) return;
+        submittingRef.current = true;
+        setListDraft('');
+        const id = await ask(null, t);
+        submittingRef.current = false;
+        if (id) setActiveId(id);
+        else { setListDraft(t); alert('질문을 보내지 못했습니다. 다시 시도해주세요.'); }
+    };
+
+    // ------------------------------------------------------------------ 목록
+    if (!active) {
+        return (
+            <div className="h-full flex flex-col bg-white">
+                <div className="h-12 px-3 border-b border-slate-100 flex items-center gap-2 flex-none">
+                    <button onClick={onBack} className="p-2 text-slate-500 hover:text-slate-800"><ArrowLeft className="w-5 h-5" /></button>
+                    <Sparkles className="w-4 h-4 text-violet-500" />
+                    <h2 className="font-bold text-slate-800">질문 노트</h2>
+                    <span className="text-[11px] text-slate-400 ml-1">묻고 이어 묻기 · 퀴즈에도 출제</span>
+                </div>
+                <div className="flex-1 overflow-y-auto bg-slate-50/30">
+                    <div className="max-w-3xl mx-auto p-4 md:p-6 pb-24 space-y-6">
+                        {/* 새 질문 */}
+                        <div className="bg-white border border-violet-100 rounded-2xl p-3 shadow-sm">
+                            <textarea
+                                value={listDraft}
+                                onChange={e => setListDraft(e.target.value)}
+                                onKeyDown={e => {
+                                    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+                                        e.preventDefault();
+                                        submitNew();
+                                    }
+                                }}
+                                rows={Math.min(6, Math.max(2, listDraft.split('\n').length))}
+                                placeholder="궁금한 것을 물어보세요 (예: AVNRT와 AVRT를 12유도에서 감별하는 포인트는?)"
+                                className="w-full resize-none bg-transparent text-sm text-slate-700 placeholder:text-slate-400 outline-none"
+                            />
+                            <div className="flex items-center justify-end gap-2 mt-1">
+                                <button
+                                    onClick={async () => {
+                                        const t = listDraft;
+                                        if (submittingRef.current || !t.trim()) return;
+                                        submittingRef.current = true;
+                                        setListDraft('');
+                                        const ok = await addPending(null, t);
+                                        submittingRef.current = false;
+                                        if (!ok) { setListDraft(t); alert('적어두지 못했습니다. 다시 시도해주세요.'); }
+                                    }}
+                                    disabled={!listDraft.trim()}
+                                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-40"
+                                    title="지금 묻지 않고 적어두기"
+                                >
+                                    <Clock className="w-3.5 h-3.5" /> 나중에 물어보기
+                                </button>
+                                <button
+                                    onClick={submitNew}
+                                    disabled={!listDraft.trim()}
+                                    className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-bold disabled:opacity-40"
+                                >
+                                    <ArrowUp className="w-3.5 h-3.5" /> 질문하기
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* 적어둔 질문 */}
+                        {allPending.length > 0 && (
+                            <div>
+                                <p className="text-xs font-bold text-slate-400 mb-2 flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" /> 적어둔 질문 {allPending.length}</p>
+                                <ul className="space-y-1.5">
+                                    {allPending.map(({ p, thread }) => (
+                                        <li key={p.id} className="flex items-start gap-2 bg-amber-50/60 border border-amber-100 rounded-xl px-3 py-2">
+                                            <div className="min-w-0 flex-1">
+                                                <p className="text-sm text-slate-700 whitespace-pre-wrap break-words">{p.text}</p>
+                                                {countQuestions(thread.content) > 0 && (
+                                                    <p className="text-[11px] text-amber-600 mt-0.5 truncate">대화: {thread.title}</p>
+                                                )}
+                                            </div>
+                                            <button
+                                                onClick={() => askPending(thread, p)}
+                                                disabled={!!streams[thread.id]}
+                                                className="shrink-0 px-2.5 py-1 rounded-md bg-violet-600 hover:bg-violet-700 text-white text-[11px] font-bold disabled:opacity-40"
+                                            >
+                                                물어보기
+                                            </button>
+                                            <button
+                                                onClick={async () => {
+                                                    await removePending(thread.id, p.id);
+                                                    // 질문만 적어둔 빈 대화였다면 대화도 정리
+                                                    if (countQuestions(thread.content) === 0 && pendingOf(thread).length <= 1) await onDelete(thread.id);
+                                                }}
+                                                className="shrink-0 p-1 text-slate-400 hover:text-red-500" title="지우기"
+                                            >
+                                                <X className="w-4 h-4" />
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+
+                        {/* 대화 목록 */}
+                        <div>
+                            <div className="flex items-center gap-2 mb-2">
+                                <p className="text-xs font-bold text-slate-400 flex items-center gap-1.5"><MessageSquareText className="w-3.5 h-3.5" /> 대화 {threads.filter(t => countQuestions(t.content) > 0).length}</p>
+                                <div className="ml-auto flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-2 py-1">
+                                    <Search className="w-3.5 h-3.5 text-slate-400" />
+                                    <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="대화 검색" className="text-xs outline-none w-28 bg-transparent" />
+                                </div>
+                            </div>
+                            {visible.filter(t => countQuestions(t.content) > 0 || streams[t.id]).length === 0 ? (
+                                <p className="text-sm text-slate-400 py-6 text-center">{filter ? '찾는 대화가 없어요.' : '아직 대화가 없어요. 위에서 첫 질문을 해보세요.'}</p>
+                            ) : (
+                                <ul className="space-y-1.5">
+                                    {visible.filter(t => countQuestions(t.content) > 0 || streams[t.id]).map(t => {
+                                        const n = countQuestions(t.content);
+                                        const pend = pendingOf(t).length;
+                                        return (
+                                            <li key={t.id}>
+                                                <button
+                                                    onClick={() => setActiveId(t.id)}
+                                                    className="w-full text-left bg-white border border-slate-200 rounded-xl px-3.5 py-3 hover:border-violet-300 hover:shadow-sm transition-all flex items-center gap-3"
+                                                >
+                                                    <div className="min-w-0 flex-1">
+                                                        <p className="text-sm font-bold text-slate-800 truncate">{t.title || '(제목 없음)'}</p>
+                                                        <p className="text-[11px] text-slate-400 mt-0.5 flex flex-wrap items-center gap-x-2">
+                                                            <span>{fmtTime(t.updatedAt || t.createdAt)}</span>
+                                                            <span>질문 {n}</span>
+                                                            {pend > 0 && <span className="text-amber-600">적어둔 질문 {pend}</span>}
+                                                            {t.quizExcluded && <span>퀴즈 제외</span>}
+                                                            {streams[t.id] && <span className="text-violet-600 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> 답변 중</span>}
+                                                            {errors[t.id] && !streams[t.id] && <span className="text-red-500">답변 실패</span>}
+                                                        </p>
+                                                    </div>
+                                                    <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+                                                </button>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // ------------------------------------------------------------------ 대화
+    const pending = pendingOf(active);
+    const unanswered = lastQuestionUnanswered(messages) && !stream;
+    const tooLong = (active.content || '').length > THREAD_SOFT_LIMIT_CHARS;
+    const busy = !!stream;
+
+    const send = async () => {
+        const text = draft;
+        const q = quote;
+        if (!text.trim() || busy) return;
+        setDraft(''); setQuote(null); setSelection('');
+        stickToBottomRef.current = true;
+        const id = await ask(active.id, text, q);
+        if (!id) { setDraft(text); setQuote(q); }
+    };
+
+    return (
+        <div className="h-full flex flex-col bg-white">
+            <div className="h-12 px-2 border-b border-slate-100 flex items-center gap-1 flex-none">
+                <button onClick={() => setActiveId(null)} className="p-2 text-slate-500 hover:text-slate-800" title="목록"><ArrowLeft className="w-5 h-5" /></button>
+                <button onClick={() => handleRename(active)} className="min-w-0 flex-1 text-left flex items-center gap-1.5 group" title="제목 바꾸기">
+                    <span className="font-bold text-slate-800 truncate">{active.title}</span>
+                    <Edit className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-500 shrink-0" />
+                </button>
+                <button
+                    onClick={() => toggleQuiz(active)}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold whitespace-nowrap ${active.quizExcluded ? 'text-slate-400 bg-slate-100' : 'text-blue-600 bg-blue-50'}`}
+                    title={active.quizExcluded ? '퀴즈에 다시 포함' : '이 대화는 퀴즈에서 빼기'}
+                >
+                    <BrainCircuit className="w-3.5 h-3.5" /> {active.quizExcluded ? '퀴즈 제외됨' : '퀴즈 포함'}
+                </button>
+                <button onClick={() => handleDelete(active)} className="p-2 text-slate-400 hover:text-red-500" title="대화 삭제"><Trash2 className="w-4 h-4" /></button>
+            </div>
+
+            <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto bg-slate-50/30">
+                <div ref={messagesRef} className="max-w-3xl mx-auto p-4 md:p-6 pb-6 space-y-5">
+                    {messages.length === 0 && !stream && (
+                        <p className="text-sm text-slate-400 text-center py-8">아래에서 질문을 시작하세요.{pending.length > 0 ? ' 적어둔 질문도 있어요.' : ''}</p>
+                    )}
+                    {messages.map((m, i) => m.role === 'user' ? (
+                        <div key={i} className="flex justify-end">
+                            <div className="max-w-[85%] bg-violet-600 text-white rounded-2xl rounded-br-md px-4 py-2.5 shadow-sm">
+                                {m.quote && (
+                                    <div className="text-[12px] text-violet-100 border-l-2 border-violet-300 pl-2 mb-1.5 line-clamp-3 whitespace-pre-wrap">{m.quote}</div>
+                                )}
+                                <p className="text-sm whitespace-pre-wrap break-words">{m.text}</p>
+                                <p className="text-[10px] text-violet-200 mt-1 text-right">{fmtTime(m.at)}</p>
+                            </div>
+                        </div>
+                    ) : (
+                        <div key={i} className="bg-white border border-slate-200 rounded-2xl rounded-bl-md px-4 py-3 shadow-sm">
+                            <AnswerBlock text={m.text} sources={m.sources} />
+                        </div>
+                    ))}
+
+                    {stream && (
+                        <div className="bg-white border border-violet-100 rounded-2xl rounded-bl-md px-4 py-3 shadow-sm">
+                            <p className="text-[11px] font-bold text-violet-500 flex items-center gap-1.5 mb-2">
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                {stream.status === 'searching' ? '근거 찾는 중…' : stream.status === 'writing' ? '답변 쓰는 중…' : '생각하는 중…'}
+                                <button onClick={() => controllersRef.current.get(active.id)?.abort()} className="ml-auto text-slate-400 hover:text-red-500 font-bold">멈추기</button>
+                            </p>
+                            {stream.text && <AnswerBlock text={stream.text} />}
+                        </div>
+                    )}
+
+                    {unanswered && (
+                        <div className="flex items-center gap-2 text-xs bg-red-50 border border-red-100 text-red-600 rounded-xl px-3 py-2">
+                            <span className="flex-1">{errors[active.id] || '마지막 질문에 아직 답이 없어요.'}</span>
+                            <button onClick={() => retryLast(active.id)} className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-white border border-red-200 font-bold hover:bg-red-50">
+                                <RotateCw className="w-3.5 h-3.5" /> 다시 답변 받기
+                            </button>
+                        </div>
+                    )}
+                    {tooLong && (
+                        <p className="text-[11px] text-amber-600 text-center">대화가 많이 길어졌어요. 새 주제는 목록에서 새 질문으로 시작하면 더 빠르고 저렴해요.</p>
+                    )}
+                </div>
+            </div>
+
+            {/* 입력 */}
+            <div className="flex-none border-t border-slate-100 bg-white px-3 pt-2 pb-3" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 0.75rem)' }}>
+                <div className="max-w-3xl mx-auto space-y-2">
+                    {selection && !quote && (
+                        <button
+                            onPointerDown={e => { e.preventDefault(); setQuote(selection); setSelection(''); window.getSelection()?.removeAllRanges(); }}
+                            className="w-full flex items-center gap-2 text-left text-xs bg-violet-50 border border-violet-200 text-violet-700 rounded-lg px-3 py-2"
+                        >
+                            <MessageSquareText className="w-4 h-4 shrink-0" />
+                            <span className="truncate flex-1">“{selection}”</span>
+                            <span className="font-bold shrink-0">이 부분 질문하기</span>
+                        </button>
+                    )}
+                    {pending.length > 0 && (
+                        <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+                            {pending.map(p => (
+                                <span key={p.id} className="shrink-0 flex items-center gap-1 max-w-[260px] bg-amber-50 border border-amber-200 rounded-full pl-2.5 pr-1 py-1 text-[11px] text-amber-800">
+                                    <button onClick={() => askPending(active, p)} disabled={busy} className="truncate disabled:opacity-50" title="지금 물어보기">
+                                        <Clock className="w-3 h-3 inline mr-1" />{p.text}
+                                    </button>
+                                    <button onClick={() => removePending(active.id, p.id)} className="p-0.5 text-amber-400 hover:text-red-500" title="지우기"><X className="w-3 h-3" /></button>
+                                </span>
+                            ))}
+                        </div>
+                    )}
+                    {quote && (
+                        <div className="flex items-start gap-2 text-xs bg-slate-50 border-l-2 border-violet-400 rounded px-2.5 py-1.5 text-slate-600">
+                            <span className="flex-1 line-clamp-2 whitespace-pre-wrap">{quote}</span>
+                            <button onClick={() => setQuote(null)} className="text-slate-400 hover:text-slate-600"><X className="w-3.5 h-3.5" /></button>
+                        </div>
+                    )}
+                    <div className="flex items-end gap-2 bg-slate-50 border border-slate-200 rounded-2xl px-3 py-2 focus-within:border-violet-300">
+                        <textarea
+                            value={draft}
+                            onChange={e => setDraft(e.target.value)}
+                            onKeyDown={e => {
+                                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
+                            }}
+                            rows={Math.min(6, Math.max(1, draft.split('\n').length))}
+                            placeholder={quote ? '고른 부분에 대해 물어보세요' : '이어서 질문하기'}
+                            className="flex-1 resize-none bg-transparent text-sm text-slate-700 placeholder:text-slate-400 outline-none py-1"
+                        />
+                        <button
+                            onClick={async () => {
+                                const t = draft;
+                                setDraft('');
+                                if (!(await addPending(active.id, t))) { setDraft(t); alert('적어두지 못했습니다. 다시 시도해주세요.'); }
+                            }}
+                            disabled={!draft.trim()}
+                            className="shrink-0 w-8 h-8 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 flex items-center justify-center disabled:opacity-30"
+                            title="나중에 물어보기 (적어두기)"
+                        >
+                            <Clock className="w-4 h-4" />
+                        </button>
+                        <button
+                            onClick={send}
+                            disabled={!draft.trim() || busy}
+                            className="shrink-0 w-8 h-8 rounded-lg bg-violet-600 hover:bg-violet-700 text-white flex items-center justify-center disabled:opacity-40"
+                            title="질문하기 (Ctrl/⌘+Enter)"
+                        >
+                            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowUp className="w-4 h-4" />}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default ThreadsView;

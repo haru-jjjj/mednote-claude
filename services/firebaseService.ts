@@ -415,7 +415,7 @@ const withTimeout = <T>(p: Promise<T>, ms: number): Promise<T> =>
 
 // 복습 일정·오답 노트·가이드라인 점검처럼 "내용 밖" 정보. 다른 기기에서 더 최근에 바뀌었으면
 // 이 기기에서 메모 전체를 저장할 때 클라우드 쪽 값을 유지합니다(오래된 사본으로 덮지 않도록).
-const META_FIELDS: (keyof Note)[] = ['quizMasteryCount', 'reviewDueAt', 'reviewIntervalDays', 'lastReviewedAt', 'wrongAnswers', 'guidelineCheck', 'followUpCheckedAt', 'followUpIntervalDays', 'followUpDueAt', 'tag', 'work', 'summary', 'sources', 'summarizedAt', 'summaryKind', 'summaryHistory', 'quizCoverage'];
+const META_FIELDS: (keyof Note)[] = ['quizMasteryCount', 'reviewDueAt', 'reviewIntervalDays', 'lastReviewedAt', 'wrongAnswers', 'guidelineCheck', 'followUpCheckedAt', 'followUpIntervalDays', 'followUpDueAt', 'tag', 'work', 'summary', 'sources', 'summarizedAt', 'summaryKind', 'summaryHistory', 'quizCoverage', 'threadPending', 'quizExcluded'];
 
 // Save a note to Firestore (Add/Update)
 // opts.replay: 지난번에 못 올린 변경을 다시 올리는 경우 — 클라우드 확인이 안 되면 이번엔 올리지 않음(다음에 재시도)

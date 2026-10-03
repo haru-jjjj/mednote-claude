@@ -47,6 +47,16 @@ export interface Note {
   followUpDueAt?: number; // 다음 확인일(그날 0시)
   // 이 메모가 "인계장" 문서일 때: 어떤 업무 메모를 어느 버전까지 반영했는지
   handover?: HandoverMeta;
+  // --- 질문 노트 (대화). kind === 'thread'인 메모는 메모 목록·메모 활용에는 안 보이고 퀴즈에는 출제됨 ---
+  kind?: 'thread';
+  threadPending?: ThreadPending[]; // 적어 두고 아직 안 물어본 질문
+  quizExcluded?: boolean; // 퀴즈에서 빼기 (질문 노트에서 설정)
+}
+
+export interface ThreadPending {
+  id: string;
+  text: string;
+  at: number;
 }
 
 export interface SummaryVersion {
@@ -140,7 +150,8 @@ export enum ViewMode {
   STUDY_GUIDE = 'STUDY_GUIDE',
   ASK_NOTES = 'ASK_NOTES',
   GUIDELINE_CHECK = 'GUIDELINE_CHECK',
-  INSIGHTS = 'INSIGHTS'
+  INSIGHTS = 'INSIGHTS',
+  THREADS = 'THREADS'
 }
 
 export type QuizType = 'MULTIPLE_CHOICE' | 'OX';

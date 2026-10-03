@@ -42,6 +42,8 @@ const cleanContent = (content: string): string =>
     (content || '')
         // 예전에 옮겼다가 새 요약으로 바뀐 "이전 요약" 블록은 출제하지 않음 (지금은 맞지 않을 수 있음)
         .replace(/<!-- medinote:prev -->[\s\S]*?<!-- \/medinote:prev -->/g, '')
+        // 질문 노트 답변의 출처 링크 목록은 출제 대상이 아님
+        .replace(/<!-- mt:src -->[\s\S]*?<!-- \/mt:src -->/g, '')
         .replace(/<!--[\s\S]*?-->/g, '')
         .replace(/<summary>[\s\S]*?<\/summary>/g, '')
         .replace(/<\/?details[^>]*>/g, '')

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers, Sparkles } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList, { TagFilter } from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
@@ -9,6 +9,7 @@ import StudyGuideView from './components/StudyGuideView';
 import AskNotesView from './components/AskNotesView';
 import GuidelineCheckView from './components/GuidelineCheckView';
 import InsightsView from './components/InsightsView';
+import ThreadsView from './components/ThreadsView';
 import { followUpStatus, contentForAnalysis } from './services/insightUtils';
 import { buildPatientIndex, patientIdOf, buildMergedPatientContent, buildAppendedContent } from './services/patientId';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
@@ -21,6 +22,7 @@ import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestor
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 import { sanitizeHistory, historyKey, archiveCurrentSummary, trimHistory } from './services/summaryHistory';
 import { splitNoteParts, textPartsCached, coverageProgress, pickQuizPart, askedTopicsOf, recordQuizCoverage, sanitizeCoverage } from './services/quizCoverage';
+import { isThread, sanitizePending } from './services/threadFormat';
 
 const sanitizeNotes = (rawNotes: any[]): Note[] => {
     if (!Array.isArray(rawNotes)) return [];
@@ -52,6 +54,9 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
             summaryKind: n.summaryKind === 'journal' ? 'journal' : undefined,
             summaryHistory: sanitizeHistory(n.summaryHistory),
             quizCoverage: sanitizeCoverage(n.quizCoverage),
+            kind: n.kind === 'thread' ? 'thread' : undefined,
+            threadPending: sanitizePending(n.threadPending),
+            quizExcluded: n.quizExcluded === true ? true : undefined,
             reviewDueAt: typeof n.reviewDueAt === 'number' ? n.reviewDueAt : undefined,
             reviewIntervalDays: typeof n.reviewIntervalDays === 'number' ? n.reviewIntervalDays : undefined,
             lastReviewedAt: typeof n.lastReviewedAt === 'number' ? n.lastReviewedAt : undefined,
@@ -77,6 +82,9 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
         };
     });
 };
+
+// 퀴즈에 낼 수 있는 메모: 퀴즈에서 빼지 않았고, 질문 노트라면 답이 하나라도 있는 것
+const isQuizEligible = (n: Note) => !n.quizExcluded && (!isThread(n) || /<!-- mt:a \d+ -->/.test(n.content || ''));
 
 // 두 사본 중 a가 더 최신인지: 내용 수정 시각(updatedAt)이 우선, 같으면 부가정보 수정 시각(metaUpdatedAt)
 const isNewerCopy = (a: Note, b: Note) => {
@@ -104,6 +112,12 @@ const App: React.FC = () => {
   
   // Use ref for notes to prevent re-triggering quiz generation on note updates
   const notesRef = useRef<Note[]>(notes);
+  // 질문 노트(대화)는 메모 목록·메모 도구에서 빼고 따로 보여줌 (퀴즈·동기화는 함께)
+  const memoNotes = React.useMemo(() => notes.filter(n => !isThread(n)), [notes]);
+  const threadNotes = React.useMemo(() => notes.filter(isThread), [notes]);
+  const [threadsMounted, setThreadsMounted] = useState(false);
+  const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  const threadPendingCount = React.useMemo(() => threadNotes.reduce((c, t) => c + (t.threadPending?.length || 0), 0), [threadNotes]);
   useEffect(() => { notesRef.current = notes; }, [notes]);
   // 실시간 동기화 콜백(처음 한 번 만든 함수)에서 현재 화면·열린 메모를 알기 위한 참조
   const viewRef = useRef(view);
@@ -348,7 +362,7 @@ const App: React.FC = () => {
       // 항상 무작위 폴백만 타게 됩니다. 화면을 열자마자 전체 메모를 불러와 임베딩
       // 백필 대상과 클러스터링 후보 풀을 넓혀줍니다.
       // 퀴즈(오늘 복습 수·오답 노트)와 오래된 메모 점검도 전체 메모 기준이라 함께 불러옴
-      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES || view === ViewMode.QUIZ || view === ViewMode.GUIDELINE_CHECK || view === ViewMode.INSIGHTS) triggerAutoFetchAllOnce();
+      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES || view === ViewMode.QUIZ || view === ViewMode.GUIDELINE_CHECK || view === ViewMode.INSIGHTS || view === ViewMode.THREADS) triggerAutoFetchAllOnce();
   }, [view]);
 
   // "내 메모에 물어보기" 화면에서 인용된 메모를 열었다가 뒤로 가면, 목록이 아니라 방금 보던
@@ -371,6 +385,7 @@ const App: React.FC = () => {
   useEffect(() => {
       if (view === ViewMode.ASK_NOTES) setAskViewMounted(true);
       if (view === ViewMode.INSIGHTS) setInsightsMounted(true);
+      if (view === ViewMode.THREADS) setThreadsMounted(true);
       // (답변 화면 → 메모 → 편집 → 저장 → 뒤로 에서도 답변 화면으로 돌아오도록 EDIT도 유지)
       if (view !== ViewMode.DETAIL && view !== ViewMode.ASK_NOTES && view !== ViewMode.EDIT) setReturnToAsk(false);
       if (view !== ViewMode.DETAIL && view !== ViewMode.EDIT && view !== detailReturnView) setDetailReturnView(null);
@@ -383,14 +398,16 @@ const App: React.FC = () => {
   const [embeddingBackfillProgress, setEmbeddingBackfillProgress] = useState<{ done: number; total: number } | null>(null);
   const isBackfillingEmbeddingsRef = useRef(false);
 
+  // 질문 노트(대화)는 임베딩을 쓰는 곳(검색·관련 메모 등)이 모두 메모 전용이라 계산하지 않음
   const noteNeedsEmbedding = (n: Note) =>
-      !n.embedding || !n.embeddingUpdatedAt || n.embeddingUpdatedAt < (n.updatedAt || 0);
+      !isThread(n) && (!n.embedding || !n.embeddingUpdatedAt || n.embeddingUpdatedAt < (n.updatedAt || 0));
 
   // targets에 대해 임베딩을 계산하고 로컬DB/Firestore/화면 상태에 반영합니다.
   // opts.silent가 없으면 실패 시 alert을 띄웁니다(수동 재시도용으로 남겨둠 — 현재는 항상 silent로 호출).
   // 반환값: 성공 여부 (백필 스윕이 키 누락 등 지속적인 실패를 만났을 때 무한 재시도하지 않고
   // 멈추도록 판단하는 용도).
-  const embedAndPersistNotes = async (targets: Note[], opts?: { silent?: boolean }): Promise<boolean> => {
+  const embedAndPersistNotes = async (allTargets: Note[], opts?: { silent?: boolean }): Promise<boolean> => {
+      const targets = allTargets.filter(n => !isThread(n));
       if (targets.length === 0) return true;
       try {
           const texts = targets.map(buildNoteEmbeddingText);
@@ -479,7 +496,10 @@ const App: React.FC = () => {
   }, []);
 
   const pickLocalRandomNote = (currentNotes: Note[], excludeIds: string[]): Note | null => {
-      if (currentNotes.length === 0) return null;
+      // 퀴즈에서 뺀 메모·질문 노트, 아직 답이 하나도 없는 질문 노트는 제외
+      const eligible = currentNotes.filter(isQuizEligible);
+      if (eligible.length === 0) return null;
+      currentNotes = eligible;
       let candidates = currentNotes.filter(n => !excludeIds.includes(n.id));
       
       if (candidates.length === 0) {
@@ -555,7 +575,7 @@ const App: React.FC = () => {
                     // 오늘의 복습: 복습일이 된 메모를 가장 오래 밀린 것부터 한 개씩 (메모 1개 = 문제 1개)
                     const now = Date.now();
                     const due = notesRef.current
-                        .filter(n => isReviewDue(n, now) && !reviewUsed.has(n.id))
+                        .filter(n => isReviewDue(n, now) && !reviewUsed.has(n.id) && isQuizEligible(n))
                         .sort((a, b) => (a.reviewDueAt || 0) - (b.reviewDueAt || 0));
                     if (due.length === 0) {
                         setIfCurrent(prev => ({ ...prev, isGenerating: false, noMoreQuestions: true }));
@@ -571,7 +591,7 @@ const App: React.FC = () => {
                     }
                     // 기기에 메모가 없으면(새 기기 등) 클라우드에서
                     if (!focusNote) {
-                         const cloudNotes = await fetchRandomNotesBatch(1, exclude, notesRef.current);
+                         const cloudNotes = (await fetchRandomNotesBatch(1, exclude, notesRef.current)).filter(isQuizEligible);
                          focusNote = cloudNotes[0] || null;
                     }
                 }
@@ -832,7 +852,7 @@ const App: React.FC = () => {
       document.addEventListener('visibilitychange', onVisible);
       return () => { clearInterval(t); document.removeEventListener('visibilitychange', onVisible); };
   }, []);
-  const reviewDueCount = React.useMemo(() => countDueNotes(notes, nowTick), [notes, nowTick]);
+  const reviewDueCount = React.useMemo(() => countDueNotes(notes.filter(n => !n.quizExcluded), nowTick), [notes, nowTick]);
 
   // --- 오래된 메모 가이드라인 점검 (화면을 벗어나도 계속 진행되도록 여기서 관리) ---
   const [guidelineCheckingIds, setGuidelineCheckingIds] = useState<string[]>([]);
@@ -1012,14 +1032,14 @@ const App: React.FC = () => {
         // PRIORITY 1: LOCAL NOTES (Truly random selection)
         // If the user has notes synced locally, picking from here is mathematically better for randomness
         // than querying cloud cursors which might fail or repeat in sparse datasets.
-        if (notes.length > 0) {
-            randomNote = pickLocalRandomNote(notes, recentRandomIds);
+        if (memoNotes.length > 0) {
+            randomNote = pickLocalRandomNote(memoNotes, recentRandomIds);
         }
 
         // PRIORITY 2: CLOUD FALLBACK
         // Only if local notes are empty (e.g., initial load not finished, or truly empty device)
         if (!randomNote) {
-             const randomNotes = await fetchRandomNotesBatch(1, recentRandomIds, notes);
+             const randomNotes = (await fetchRandomNotesBatch(1, recentRandomIds, notes)).filter(n => !isThread(n));
              if (randomNotes.length > 0) randomNote = randomNotes[0];
         }
         
@@ -1144,7 +1164,8 @@ const App: React.FC = () => {
     }
   };
 
-  const handleUpdateNote = async (incoming: Note): Promise<boolean> => {
+  // opts.insert: 새로 만든 질문 노트처럼 아직 목록에 없는 메모면 목록에 추가
+  const handleUpdateNote = async (incoming: Note, opts?: { insert?: boolean }): Promise<boolean> => {
     try {
         // 복습·확인 기록 같은 부가정보 저장(patchNoteMeta)과 순서를 맞추고, 그 사이 더 최신 부가정보가
         // 저장돼 있으면 그것을 유지 (요약 저장이 "확인함" 기록 등을 덮지 않도록)
@@ -1162,6 +1183,7 @@ const App: React.FC = () => {
                         followUpIntervalDays: latest.followUpIntervalDays, followUpDueAt: latest.followUpDueAt,
                         followUpCheckedAt: Math.max(latest.followUpCheckedAt || 0, incoming.followUpCheckedAt || 0) || undefined,
                         quizCoverage: latest.quizCoverage, // 퀴즈 출제 범위도 더 최신 쪽 유지
+                        threadPending: latest.threadPending, quizExcluded: latest.quizExcluded,
                         metaUpdatedAt: latest.metaUpdatedAt
                     };
                 }
@@ -1173,6 +1195,8 @@ const App: React.FC = () => {
                 if (summaryChanged) {
                     merged = { ...merged, metaUpdatedAt: Date.now() };
                 }
+                // 그 사이 이 기기에서 지운 메모면 저장하지 않음 (되살아나지 않게)
+                if (isDeletedNoteId(merged.id)) throw new Error('deleted');
                 await saveNoteToDB(merged);
                 return merged;
             });
@@ -1182,7 +1206,9 @@ const App: React.FC = () => {
             run.then(resolve, reject);
         });
         saveNoteToFirestore(updatedNote);
-        setNotes(prev => prev.map(n => n.id === updatedNote.id ? updatedNote : n));
+        setNotes(prev => prev.some(n => n.id === updatedNote.id)
+            ? prev.map(n => n.id === updatedNote.id ? updatedNote : n)
+            : (opts?.insert && !isDeletedNoteId(updatedNote.id) ? [updatedNote, ...prev] : prev));
         if (updatedNote.images && updatedNote.images.length > 0 && !updatedNote.isProcessed) {
             extractTextFromImages(updatedNote.images).then(async text => {
                 if (text) {
@@ -1200,7 +1226,8 @@ const App: React.FC = () => {
         }
         embedAndPersistNotes([updatedNote], { silent: true });
         return true;
-    } catch(e) {
+    } catch(e: any) {
+        if (e?.message === 'deleted') return false; // 지운 메모에 늦게 도착한 저장은 조용히 버림
         console.error("Update Error", e);
         alert("메모 수정 저장 실패");
         return false;
@@ -1319,6 +1346,46 @@ const App: React.FC = () => {
     }
   };
 
+  // 질문 노트 저장: 같은 대화에 대한 저장(질문·답변·제목·적어둔 질문)을 순서대로 처리하고,
+  // 매번 저장 직전의 최신 대화를 읽어 그 위에 바꿈 → 답변이 오는 사이 제목을 바꿔도 서로 덮지 않음.
+  // mutate(null)은 "아직 없는 대화"(새 대화이거나, 다른 기기에서 지워짐) — null을 돌려주면 저장 안 함.
+  const updateThread = (id: string, mutate: (latest: Note | null) => Note | null): Promise<Note | null> => {
+      const prev = metaQueueRef.current.get(id) || Promise.resolve();
+      const run: Promise<Note | null> = prev.catch(() => undefined).then(async () => {
+          if (isDeletedNoteId(id)) return null;
+          const latest = (await getNoteFromDB(id).catch(() => undefined)) || null;
+          const next = mutate(latest);
+          if (!next) return null;
+          await saveNoteToDB(next);
+          saveNoteToFirestore(next);
+          setNotes(p => p.some(n => n.id === id) ? p.map(n => n.id === id ? next : n) : (isDeletedNoteId(id) ? p : [next, ...p]));
+          return next;
+      });
+      metaQueueRef.current.set(id, run);
+      const cleanup = () => { if (metaQueueRef.current.get(id) === run) metaQueueRef.current.delete(id); };
+      run.then(cleanup, cleanup);
+      return run;
+  };
+
+  // 질문 노트 삭제 (확인은 질문 노트 화면에서)
+  const handleDeleteThread = async (id: string) => {
+      await deleteNoteFromDB(id).catch(console.error);
+      deleteNoteFromFirestore(id);
+      setNotes(prev => prev.filter(n => n.id !== id));
+  };
+
+  // 퀴즈에서 출처 열기: 질문 노트면 대화 화면으로
+  const openNoteFromQuiz = (id: string) => {
+      const n = notes.find(x => x.id === id);
+      if (n && isThread(n)) {
+          setOpenThreadId(id);
+          setView(ViewMode.THREADS);
+          return;
+      }
+      setDetailReturnView(ViewMode.QUIZ);
+      handleFetchAndSelectNote(id);
+  };
+
   const handleUpdateNotes = async (updatedNotes: Note[]) => {
     try {
         for (const note of updatedNotes) {
@@ -1380,6 +1447,21 @@ const App: React.FC = () => {
           >
             {isRandomLoading ? <Loader2 className="w-3.5 h-3.5 mr-3 shrink-0 animate-spin" /> : <Shuffle className="w-3.5 h-3.5 mr-3 shrink-0" />}
             무작위 공부하기
+          </button>
+
+          <button
+            onClick={() => { setView(ViewMode.THREADS); if (isMobile) setShowSidebar(false); }}
+            className={`w-full flex items-center px-3 py-2.5 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${view === ViewMode.THREADS ? 'bg-violet-50 text-violet-700' : 'text-slate-600 hover:bg-violet-50/60 hover:text-violet-700'}`}
+          >
+            <span className="mr-3 shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-md bg-violet-100 text-violet-600">
+                <Sparkles className="w-3.5 h-3.5" />
+            </span>
+            질문 노트
+            {threadPendingCount > 0 && (
+                <span className="ml-auto shrink-0 bg-amber-50 text-amber-700 text-[10px] px-1.5 py-0.5 rounded-full" title="적어두고 아직 안 물어본 질문">
+                    적어둔 {threadPendingCount}
+                </span>
+            )}
           </button>
 
           <button
@@ -1507,7 +1589,7 @@ const App: React.FC = () => {
                     다른 화면으로 가도 없애지 않고 숨겨만 둡니다. */}
                 <div className={view === ViewMode.LIST ? 'h-full flex flex-col' : 'hidden'}>
                     <NoteList 
-                        notes={notes} 
+                        notes={memoNotes} 
                         onDelete={handleDeleteNote} 
                         onUpdateNote={handleUpdateNote} 
                         onImportBackup={handleOpenFilePicker}
@@ -1532,7 +1614,7 @@ const App: React.FC = () => {
                 {view === ViewMode.DETAIL && activeNote && (
                     <NoteDetail 
                         note={activeNote} 
-                        allNotes={notes} 
+                        allNotes={memoNotes} 
                         onBack={() => setView(returnToAsk ? ViewMode.ASK_NOTES : (detailReturnView || ViewMode.LIST))} 
                         onDelete={handleDeleteNote} 
                         onSelectNote={handleFetchAndSelectNote} 
@@ -1559,19 +1641,19 @@ const App: React.FC = () => {
                         reviewDueCount={reviewDueCount}
                         onStartWrongReview={handleStartWrongReview}
                         onDeleteWrongAnswer={handleDeleteWrongAnswer}
-                        onOpenNote={(id) => { setDetailReturnView(ViewMode.QUIZ); handleFetchAndSelectNote(id); }}
+                        onOpenNote={openNoteFromQuiz}
                         isFetchingAll={isFetchingAll}
                     />
                 )}
                  {view === ViewMode.STUDY_GUIDE && (
                     <StudyGuideView
-                        notes={notes}
+                        notes={memoNotes}
                         onBack={() => setView(ViewMode.LIST)}
                     />
                 )}
                 {view === ViewMode.GUIDELINE_CHECK && (
                     <GuidelineCheckView
-                        notes={notes}
+                        notes={memoNotes}
                         checkingIds={guidelineCheckingIds}
                         filter={guidelineFilter}
                         onFilterChange={setGuidelineFilter}
@@ -1584,7 +1666,7 @@ const App: React.FC = () => {
                 {(insightsMounted || view === ViewMode.INSIGHTS) && (
                     <div className={view === ViewMode.INSIGHTS ? 'h-full flex flex-col' : 'hidden'}>
                         <InsightsView
-                            notes={notes}
+                            notes={memoNotes}
                             reviewDueCount={reviewDueCount}
                             isFetchingAll={isFetchingAll}
                             onBack={() => setView(ViewMode.LIST)}
@@ -1605,7 +1687,7 @@ const App: React.FC = () => {
                 {(askViewMounted || view === ViewMode.ASK_NOTES) && (
                     <div className={view === ViewMode.ASK_NOTES ? 'h-full flex flex-col' : 'hidden'}>
                         <AskNotesView
-                            notes={notes}
+                            notes={memoNotes}
                             onBack={() => setView(ViewMode.LIST)}
                             onSelectNote={(id) => { setReturnToAsk(true); handleFetchAndSelectNote(id); }}
                             onSaveNewNote={async (note) => {
@@ -1614,6 +1696,20 @@ const App: React.FC = () => {
                                 // 새 메모 저장은 기본적으로 목록으로 가므로, 정리본은 저장 후 답변 화면에 그대로 머무름
                                 setView(ViewMode.ASK_NOTES);
                             }}
+                        />
+                    </div>
+                )}
+                {/* 질문 노트: 답변을 받는 중에 다른 화면에 가도 계속되도록 한 번 열면 계속 띄워 둠 */}
+                {(threadsMounted || view === ViewMode.THREADS) && (
+                    <div className={view === ViewMode.THREADS ? 'h-full flex flex-col' : 'hidden'}>
+                        <ThreadsView
+                            threads={threadNotes}
+                            onUpdate={updateThread}
+                            onPatchMeta={(id, makePatch) => patchNoteMeta(id, makePatch)}
+                            onDelete={handleDeleteThread}
+                            onBack={() => setView(ViewMode.LIST)}
+                            openThreadId={openThreadId}
+                            onOpened={() => setOpenThreadId(null)}
                         />
                     </div>
                 )}
