@@ -117,6 +117,8 @@ const App: React.FC = () => {
   const threadNotes = React.useMemo(() => notes.filter(isThread), [notes]);
   const [threadsMounted, setThreadsMounted] = useState(false);
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  // 메모 활용·퀴즈에서 질문 노트를 열었으면, 질문 노트 목록의 뒤로 가기는 그 화면으로
+  const [threadsReturnView, setThreadsReturnView] = useState<ViewMode | null>(null);
   const threadPendingCount = React.useMemo(() => threadNotes.reduce((c, t) => c + (t.threadPending?.length || 0), 0), [threadNotes]);
   useEffect(() => { notesRef.current = notes; }, [notes]);
   // 실시간 동기화 콜백(처음 한 번 만든 함수)에서 현재 화면·열린 메모를 알기 위한 참조
@@ -398,16 +400,18 @@ const App: React.FC = () => {
   const [embeddingBackfillProgress, setEmbeddingBackfillProgress] = useState<{ done: number; total: number } | null>(null);
   const isBackfillingEmbeddingsRef = useRef(false);
 
-  // 질문 노트(대화)는 임베딩을 쓰는 곳(검색·관련 메모 등)이 모두 메모 전용이라 계산하지 않음
+  // 질문 노트(대화)도 계산 — 메모 활용 > 비슷한 메모 묶기에서 메모와 함께 묶음.
+  // 대화는 질문·답변마다 저장되므로 저장 직후가 아니라 백필 때 한 번에 계산(답 없는 질문만 있는 대화는 건너뜀)
   const noteNeedsEmbedding = (n: Note) =>
-      !isThread(n) && (!n.embedding || !n.embeddingUpdatedAt || n.embeddingUpdatedAt < (n.updatedAt || 0));
+      !(isThread(n) && !/<!-- mt:a \d+ -->/.test(n.content || ''))
+      && (!n.embedding || !n.embeddingUpdatedAt || n.embeddingUpdatedAt < (n.updatedAt || 0));
 
   // targets에 대해 임베딩을 계산하고 로컬DB/Firestore/화면 상태에 반영합니다.
   // opts.silent가 없으면 실패 시 alert을 띄웁니다(수동 재시도용으로 남겨둠 — 현재는 항상 silent로 호출).
   // 반환값: 성공 여부 (백필 스윕이 키 누락 등 지속적인 실패를 만났을 때 무한 재시도하지 않고
   // 멈추도록 판단하는 용도).
   const embedAndPersistNotes = async (allTargets: Note[], opts?: { silent?: boolean }): Promise<boolean> => {
-      const targets = allTargets.filter(n => !isThread(n));
+      const targets = allTargets.filter(n => !isThread(n) || /<!-- mt:a \d+ -->/.test(n.content || ''));
       if (targets.length === 0) return true;
       try {
           const texts = targets.map(buildNoteEmbeddingText);
@@ -1374,17 +1378,19 @@ const App: React.FC = () => {
       setNotes(prev => prev.filter(n => n.id !== id));
   };
 
-  // 퀴즈에서 출처 열기: 질문 노트면 대화 화면으로
-  const openNoteFromQuiz = (id: string) => {
+  // 다른 화면(퀴즈·메모 활용)에서 메모 열기: 질문 노트면 대화 화면으로
+  const openNoteFrom = (from: ViewMode) => (id: string) => {
       const n = notes.find(x => x.id === id);
       if (n && isThread(n)) {
           setOpenThreadId(id);
+          setThreadsReturnView(from);
           setView(ViewMode.THREADS);
           return;
       }
-      setDetailReturnView(ViewMode.QUIZ);
+      setDetailReturnView(from);
       handleFetchAndSelectNote(id);
   };
+  const openNoteFromQuiz = openNoteFrom(ViewMode.QUIZ);
 
   const handleUpdateNotes = async (updatedNotes: Note[]) => {
     try {
@@ -1440,7 +1446,7 @@ const App: React.FC = () => {
           {([
             { key: 'list', view: ViewMode.LIST, label: '내 메모장', icon: LayoutGrid, onClick: () => { setView(ViewMode.LIST); setSearchTerm(''); } },
             { key: 'random', label: '무작위 공부하기', icon: Shuffle, onClick: handleRandomNote, busy: isRandomLoading, disabled: isRandomLoading, keepSidebar: false },
-            { key: 'threads', view: ViewMode.THREADS, label: '질문 노트', icon: MessageSquareText, badge: threadPendingCount > 0 ? `적어둔 ${threadPendingCount}` : null, badgeTitle: '적어두고 아직 안 물어본 질문' },
+            { key: 'threads', view: ViewMode.THREADS, onClick: () => { setThreadsReturnView(null); setView(ViewMode.THREADS); }, label: '질문 노트', icon: MessageSquareText, badge: threadPendingCount > 0 ? `적어둔 ${threadPendingCount}` : null, badgeTitle: '적어두고 아직 안 물어본 질문' },
             { key: 'quiz', view: ViewMode.QUIZ, label: 'AI 퀴즈 복습', icon: BrainCircuit, busy: quizState.isGenerating && quizState.isActive,
               badge: reviewDueCount > 0 ? `오늘 ${reviewDueCount}` : (quizState.questionQueue.length > 0 ? String(quizState.questionQueue.length) : null), badgeTitle: '오늘 복습할 메모' },
             { key: 'study', view: ViewMode.STUDY_GUIDE, label: 'AI 주제 탐구', icon: Lightbulb },
@@ -1617,10 +1623,11 @@ const App: React.FC = () => {
                     <div className={view === ViewMode.INSIGHTS ? 'h-full flex flex-col' : 'hidden'}>
                         <InsightsView
                             notes={memoNotes}
+                            threads={threadNotes}
                             reviewDueCount={reviewDueCount}
                             isFetchingAll={isFetchingAll}
                             onBack={() => setView(ViewMode.LIST)}
-                            onSelectNote={(id) => { setDetailReturnView(ViewMode.INSIGHTS); handleFetchAndSelectNote(id); }}
+                            onSelectNote={openNoteFrom(ViewMode.INSIGHTS)}
                             onSaveNewNote={async (note) => {
                                 const ok = await handleSaveNote(note);
                                 if (!ok) throw new Error('메모 저장에 실패했습니다.');
@@ -1657,7 +1664,7 @@ const App: React.FC = () => {
                             onUpdate={updateThread}
                             onPatchMeta={(id, makePatch) => patchNoteMeta(id, makePatch)}
                             onDelete={handleDeleteThread}
-                            onBack={() => setView(ViewMode.LIST)}
+                            onBack={() => { setView(threadsReturnView || ViewMode.LIST); setThreadsReturnView(null); }}
                             openThreadId={openThreadId}
                             onOpened={() => setOpenThreadId(null)}
                         />

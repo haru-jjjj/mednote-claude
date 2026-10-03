@@ -30,6 +30,7 @@ import { estimateDataRecordCount } from '../services/pasteUtils';
 
 interface Props {
     notes: Note[]; // (AI 결과를 저장한 메모는 InsightsView에서 미리 걸러서 넘김)
+    threads?: Note[]; // 질문 노트 대화 — 이번 주·비슷한 메모 묶기·빈 곳 찾기에만 함께 씀
     reviewDueCount: number;
     isFetchingAll?: boolean;
     onBack: () => void;
@@ -76,6 +77,7 @@ const inputCls = 'w-full px-3 py-2 bg-white border border-slate-200 rounded-lg t
 
 const NoteLink = ({ note, onSelect, extra }: { key?: string; note: Note; onSelect: (id: string) => void; extra?: React.ReactNode }) => (
     <button onClick={() => onSelect(note.id)} className="w-full flex items-center gap-2 text-left text-sm text-slate-700 hover:text-accent-600 py-0.5">
+        {note.kind === 'thread' && <span className="shrink-0 text-[10px] font-bold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">질문 노트</span>}
         <span className="truncate flex-1 min-w-0">{note.title || '(제목 없음)'}</span>
         {extra}
     </button>
@@ -93,7 +95,8 @@ const WeeklyTab: React.FC<Props> = ({ notes, reviewDueCount, onSelectNote, onSav
         () => notesInLastDays(notes, WEEK_DAYS, Date.now()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)),
         [notes]
     );
-    const newCount = weekNotes.filter(n => (n.createdAt || 0) >= now - WEEK_DAYS * DAY_MS).length;
+    const newCount = weekNotes.filter(n => n.kind !== 'thread' && (n.createdAt || 0) >= now - WEEK_DAYS * DAY_MS).length;
+    const weekThreadCount = weekNotes.filter(n => n.kind === 'thread').length;
     const weekWrong = useMemo(
         () => collectWrongAnswers(notes).filter(w => (w.wrongAt || 0) >= Date.now() - WEEK_DAYS * DAY_MS),
         [notes]
@@ -150,14 +153,14 @@ const WeeklyTab: React.FC<Props> = ({ notes, reviewDueCount, onSelectNote, onSav
         <div className="space-y-4">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 {stat('새 메모', newCount)}
-                {stat('수정·작성한 메모', weekNotes.length)}
+                {stat('질문 노트 대화', weekThreadCount)}
                 {stat('오늘 복습', reviewDueCount, reviewDueCount > 0 ? 'text-warn-600' : 'text-slate-800')}
                 {stat('이번 주 틀린 문제', weekWrong.length, weekWrong.length > 0 ? 'text-clay-500' : 'text-slate-800')}
             </div>
 
             <div className="bg-white border border-slate-200 rounded-xl p-4">
                 <div className="flex items-center justify-between gap-2 mb-2">
-                    <span className="text-xs font-bold text-slate-500">최근 {WEEK_DAYS}일 동안 쓰거나 고친 메모</span>
+                    <span className="text-xs font-bold text-slate-500">최근 {WEEK_DAYS}일 동안 쓰거나 고친 메모 · 질문 노트</span>
                     {weekNotes.length > 8 && (
                         <button onClick={() => setShowAll(v => !v)} className="text-xs font-bold text-slate-400 hover:text-slate-600">
                             {showAll ? '접기' : `모두 보기 (${weekNotes.length})`}
@@ -165,7 +168,7 @@ const WeeklyTab: React.FC<Props> = ({ notes, reviewDueCount, onSelectNote, onSav
                     )}
                 </div>
                 {weekNotes.length === 0 ? (
-                    <p className="text-sm text-slate-400">이번 주에 쓴 메모가 없어요.</p>
+                    <p className="text-sm text-slate-400">이번 주에 쓴 메모나 질문이 없어요.</p>
                 ) : (
                     <div className="divide-y divide-slate-50">
                         {(showAll ? weekNotes : weekNotes.slice(0, 8)).map(n => (
@@ -1269,6 +1272,12 @@ const InsightsView: React.FC<Props> = (rawProps) => {
         .filter(n => n.handover)
         .sort((a, b) => (b.handover?.updatedAt || 0) - (a.handover?.updatedAt || 0))[0], [rawProps.notes]);
     const props: Props = { ...rawProps, notes: sourceNotes, handoverDoc };
+    // 이번 주·비슷한 메모 묶기·빈 곳 찾기에는 질문 노트 대화(답이 하나라도 있는 것)도 함께
+    const withThreads = useMemo(
+        () => [...sourceNotes, ...(rawProps.threads || []).filter(t => /<!-- mt:a \d+ -->/.test(t.content || ''))],
+        [sourceNotes, rawProps.threads]
+    );
+    const studyProps: Props = { ...props, notes: withThreads };
     const [tab, setTab] = useState<Tab>(() => {
         const saved = safeGet(TAB_KEY) as Tab | null;
         return saved && TABS.some(t => t.key === saved) ? saved : 'weekly';
@@ -1306,11 +1315,11 @@ const InsightsView: React.FC<Props> = (rawProps) => {
             <div className="flex-1 overflow-y-auto">
                 <div className="max-w-3xl mx-auto p-4 md:p-6 pb-24">
                     {/* 탭은 숨기기만 해서 결과가 유지되게 함 */}
-                    <div className={tab === 'weekly' ? '' : 'hidden'}><WeeklyTab {...props} /></div>
+                    <div className={tab === 'weekly' ? '' : 'hidden'}><WeeklyTab {...studyProps} /></div>
                     <div className={tab === 'handover' ? '' : 'hidden'}><HandoverTab {...props} /></div>
                     <div className={tab === 'patients' ? '' : 'hidden'}><PatientsTab {...props} /></div>
-                    <div className={tab === 'similar' ? '' : 'hidden'}><SimilarTab {...props} /></div>
-                    <div className={tab === 'gap' ? '' : 'hidden'}><GapTab {...props} /></div>
+                    <div className={tab === 'similar' ? '' : 'hidden'}><SimilarTab {...studyProps} /></div>
+                    <div className={tab === 'gap' ? '' : 'hidden'}><GapTab {...studyProps} /></div>
                     <div className={tab === 'template' ? '' : 'hidden'}><TemplateTab {...props} active={tab === 'template'} /></div>
                     <div className={tab === 'cases' ? '' : 'hidden'}><CasesTab {...props} /></div>
                 </div>

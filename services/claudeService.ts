@@ -22,6 +22,7 @@
 
 import { Note, Source, QuizQuestion, QuizLanguage, GuidelineCheck } from "../types";
 import { applySectionPatch } from "./handoverPatch";
+import { threadPlainText } from "./threadFormat";
 import { v4 as uuidv4 } from 'uuid';
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -926,6 +927,13 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
 // ----------------------------------------------------------------------------
 // dateMode 'updated': 각 메모에 마지막 수정 날짜를 붙임(인계장처럼 최신 내용을 가려야 할 때)
 // labelNumbers: [메모N]의 N을 순서대로가 아니라 지정한 번호로 붙일 때 (인계장처럼 번호가 계속 유지돼야 할 때)
+// 여러 메모를 AI에 보낼 때 메모 하나의 본문 (질문 노트는 표시 주석을 빼고 "Q. / A." 글로)
+const noteBodyForAI = (n: Note): string => n.kind === 'thread' ? threadPlainText(n.content || '') : [
+    n.content || '',
+    n.transcription ? `(사진에서 추출한 텍스트: ${n.transcription})` : '',
+    n.summary ? `(이전에 만든 AI 요약: ${n.summary})` : ''
+].filter(Boolean).join('\n');
+
 const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: number, dateMode: 'created' | 'updated' = 'created', labelNumbers?: number[]): string => {
     let used = 0;
     const parts: string[] = [];
@@ -934,16 +942,13 @@ const buildNotesContext = (notes: Note[], perNoteChars: number, totalChars: numb
         const date = dateMode === 'updated'
             ? `마지막 수정 ${new Date(n.updatedAt || n.createdAt).toLocaleDateString('ko-KR')}`
             : new Date(n.createdAt).toLocaleDateString('ko-KR');
-        const body = [
-            n.content || '',
-            n.transcription ? `(사진에서 추출한 텍스트: ${n.transcription})` : '',
-            n.summary ? `(이전에 만든 AI 요약: ${n.summary})` : ''
-        ].filter(Boolean).join('\n');
+        const isThreadNote = n.kind === 'thread';
+        const body = noteBodyForAI(n);
         const budget = Math.min(perNoteChars, totalChars - used);
         // 앱이 분량 때문에 자른 것임을 분명히 해서, AI가 "메모가 중간에 끊겼다"고 지적하지 않게 함
         const clipped = body.length > budget ? body.slice(0, budget) + '\n…(앱이 분량 제한으로 여기까지만 보냄 — 원래 메모에는 내용이 더 있음. 메모가 끊겼다고 지적하지 말 것)' : body;
         used += clipped.length;
-        parts.push(`[메모${labelNumbers?.[i] ?? i + 1}] ${n.title || '제목 없음'} (${date})\n${clipped}`);
+        parts.push(`[메모${labelNumbers?.[i] ?? i + 1}] ${isThreadNote ? '(질문 노트 — 독자가 묻고 AI가 답한 대화) ' : ''}${n.title || '제목 없음'} (${date})\n${clipped}`);
     });
     return parts.join('\n\n=====\n\n');
 };
@@ -954,8 +959,7 @@ export const notesWithinContextBudget = (notes: Note[], perNoteChars: number, to
     const out: Note[] = [];
     for (const n of notes) {
         if (used >= totalChars) break;
-        const len = [n.content || '', n.transcription ? `(사진에서 추출한 텍스트: ${n.transcription})` : '', n.summary ? `(이전에 만든 AI 요약: ${n.summary})` : '']
-            .filter(Boolean).join('\n').length;
+        const len = noteBodyForAI(n).length;
         const budget = Math.min(perNoteChars, totalChars - used);
         used += len > budget ? budget + 80 : len;
         out.push(n);
@@ -1532,6 +1536,8 @@ export const generateWeeklyDigest = async (
         ${wrongText || '(none)'}
         """
         Notes due for spaced review today: ${extra.dueCount}
+        Items marked "(질문 노트 …)" are Q&A conversations: the questions show what the reader was curious about this
+        week; treat the answers' key points as what they learned, and note open questions worth following up.
 
         Write in Korean (standard English terms as usual) with these "###" sections:
         ### 이번 주 한눈에

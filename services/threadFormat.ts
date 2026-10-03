@@ -138,3 +138,14 @@ export const sanitizePending = (raw: any): ThreadPending[] | undefined => {
 
 // Firestore 한 문서 1MB 한도 (한국어 글자당 약 3바이트) — 이보다 길어지면 새 대화로 이어가기를 권함
 export const THREAD_SOFT_LIMIT_CHARS = 250000;
+
+// AI에게 보낼 때·검색용: 표시 주석 없이 "Q. / A." 형태의 읽기 쉬운 글로
+export const threadPlainText = (content: string): string =>
+    parseThread(content || '').map(m => {
+        if (m.role === 'user') {
+            const head = m.quote ? `(앞 답변의 "${m.quote.replace(/\s+/g, ' ').slice(0, 200)}" 부분에 대해)\n` : '';
+            const img = m.images && m.images.length ? `[사진 ${m.images.length}장 첨부]\n` : '';
+            return `Q. ${head}${img}${m.text}`;
+        }
+        return `A. ${m.text}`;
+    }).join('\n\n');

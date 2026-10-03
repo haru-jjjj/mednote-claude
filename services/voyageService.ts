@@ -1,3 +1,4 @@
+import { threadPlainText } from './threadFormat';
 
 // ============================================================================
 // Voyage AI 임베딩 서비스 (의미 기반 검색 지원)
@@ -139,8 +140,11 @@ export const buildNoteEmbeddingText = (note: {
     content?: string;
     summary?: string;
     transcription?: string;
+    kind?: 'thread';
 }): string => {
-    return [note.title, note.content, note.summary, note.transcription]
+    // 질문 노트(대화)는 표시 주석을 빼고 Q/A 글로
+    const content = note.kind === 'thread' ? threadPlainText(note.content || '') : note.content;
+    return [note.title, content, note.summary, note.transcription]
         .filter(Boolean)
         .join('\n')
         .trim();
