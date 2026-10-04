@@ -23,6 +23,7 @@ interface NoteListProps {
   tagFilter: TagFilter;
   onTagFilterChange: (filter: TagFilter) => void;
   isFetchingAll?: boolean;
+  fetchAllMessage?: string | null; // "모두 불러오기" 결과 (잠깐 표시)
   reviewDueCount?: number;
   onOpenReview?: () => void;
 }
@@ -110,6 +111,7 @@ const NoteList: React.FC<NoteListProps> = ({
     tagFilter,
     onTagFilterChange,
     isFetchingAll,
+    fetchAllMessage,
     reviewDueCount = 0,
     onOpenReview
 }) => {
@@ -354,16 +356,35 @@ const NoteList: React.FC<NoteListProps> = ({
                     </button>
                 );
             })}
-            {reviewDueCount > 0 && onOpenReview && (
-                <button
-                    type="button"
-                    onClick={onOpenReview}
-                    className="ml-auto px-3 py-1 rounded-full text-xs font-bold border border-accent-200 bg-accent-50 text-accent-700 hover:bg-accent-100 transition-colors whitespace-nowrap"
-                    title="복습일이 된 메모로 퀴즈 풀기"
-                >
-                    오늘 복습 {reviewDueCount}개 →
-                </button>
-            )}
+            <div className="ml-auto flex items-center gap-1.5">
+                {reviewDueCount > 0 && onOpenReview && (
+                    <button
+                        type="button"
+                        onClick={onOpenReview}
+                        className="px-3 py-1 rounded-full text-xs font-bold border border-accent-200 bg-accent-50 text-accent-700 hover:bg-accent-100 transition-colors whitespace-nowrap"
+                        title="복습일이 된 메모로 퀴즈 풀기"
+                    >
+                        오늘 복습 {reviewDueCount}개 →
+                    </button>
+                )}
+                {/* 클라우드의 모든 메모 불러오기 — 목록 맨 아래까지 내리지 않아도 바로 누를 수 있게 */}
+                {onFetchAll && (
+                    fetchAllMessage && !isFetchingAll ? (
+                        <span className="px-2 py-1 text-xs font-bold text-slate-500 whitespace-nowrap">{fetchAllMessage}</span>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={onFetchAll}
+                            disabled={isFetchingAll}
+                            className="flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold border border-slate-200 bg-white text-slate-500 hover:text-accent-700 hover:border-accent-200 transition-colors whitespace-nowrap disabled:opacity-60"
+                            title="클라우드에 있는 모든 메모를 이 기기로 불러오기 (다른 기기에서 쓴 예전 메모 포함)"
+                        >
+                            {isFetchingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CloudDownload className="w-3.5 h-3.5" />}
+                            {isFetchingAll ? '불러오는 중…' : '모두 불러오기'}
+                        </button>
+                    )
+                )}
+            </div>
         </div>
         {/* 검색 상태: 무엇을, 어디까지 찾았는지 */}
         {isSearching && (
@@ -453,7 +474,7 @@ const NoteList: React.FC<NoteListProps> = ({
                                 {onFetchAll && (
                                     <button
                                         onClick={onFetchAll}
-                                        disabled={isLoadingMore}
+                                        disabled={isLoadingMore || isFetchingAll}
                                         className="flex items-center gap-2 px-5 py-2.5 bg-accent-50 border border-accent-100 rounded-full text-accent-600 text-sm font-bold hover:bg-accent-100 transition-all shadow-sm active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full max-w-[280px] justify-center"
                                     >
                                         {isLoadingMore ? <Loader2 className="w-4 h-4 animate-spin" /> : <CloudDownload className="w-4 h-4" />}

@@ -283,7 +283,18 @@ const App: React.FC = () => {
   // - 화면(메모리)에는 사진을 뺀 가벼운 버전만 올려서, 첫 검색이 무거워지지 않게 합니다.
   //   (사진은 메모를 열 때 로컬DB에서 다시 읽음)
   const [isFetchingAll, setIsFetchingAll] = useState(false);
+  const isFetchingAllRef = useRef(false);
+  // 직접 누른 "모두 불러오기"의 결과를 목록 위 버튼 자리에 잠깐 보여줌 (팝업 대신)
+  const [fetchAllMessage, setFetchAllMessage] = useState<string | null>(null);
+  const fetchAllMsgTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showFetchAllMessage = (msg: string) => {
+      setFetchAllMessage(msg);
+      if (fetchAllMsgTimer.current) clearTimeout(fetchAllMsgTimer.current);
+      fetchAllMsgTimer.current = setTimeout(() => setFetchAllMessage(null), 4000);
+  };
   const handleFetchAllNotes = async (opts?: { silent?: boolean }) => {
+      if (isFetchingAllRef.current) return; // 이미 불러오는 중이면 겹쳐 실행하지 않음
+      isFetchingAllRef.current = true;
       setIsCloudLoading(true);
       setIsFetchingAll(true);
       try {
@@ -328,16 +339,17 @@ const App: React.FC = () => {
                   merged.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
                   return merged;
               });
-              if (!opts?.silent) alert(`${allNotes.length}개의 메모를 모두 불러왔습니다.`);
+              if (!opts?.silent) showFetchAllMessage(`${allNotes.length}개 모두 불러옴`);
               // 새로 들어온 예전 메모들도 연관(의미) 검색에 바로 쓰이도록 임베딩 준비
               setTimeout(() => runEmbeddingBackfill(), 500);
           } else if (!opts?.silent) {
-              alert("불러올 메모가 없습니다.");
+              showFetchAllMessage('불러올 메모가 없어요');
           }
       } catch (e) {
           console.error("Fetch all notes failed", e);
           if (!opts?.silent) alert("메모를 불러오는 중 오류가 발생했습니다.");
       } finally {
+          isFetchingAllRef.current = false;
           setIsCloudLoading(false);
           setIsFetchingAll(false);
       }
@@ -1563,6 +1575,7 @@ const App: React.FC = () => {
                         tagFilter={tagFilter}
                         onTagFilterChange={setTagFilter}
                         isFetchingAll={isFetchingAll}
+                        fetchAllMessage={fetchAllMessage}
                         reviewDueCount={reviewDueCount}
                         onOpenReview={() => setView(ViewMode.QUIZ)}
                     />
