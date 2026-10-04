@@ -13,6 +13,7 @@ export interface ThreadMessage {
     quote?: string; // 답변에서 골라 물어본 부분
     sources?: Source[];
     images?: number[]; // 이 질문에 첨부한 사진 = 대화 메모의 images 배열 번호 (사진은 메모와 같은 곳에 저장)
+    fast?: boolean; // 빠른 모드로 받은 답변
 }
 
 const Q_RE = /<!-- mt:q (\d+) -->/;
@@ -55,7 +56,7 @@ export const encodeThread = (messages: ThreadMessage[]): string => {
         } else {
             // 답변 속 #·## 제목은 ###로 낮춤 — "## Q." 질문 제목만 큰 구역이 되게 (퀴즈 구역이 질문 단위로 나뉨)
             const body = demoteHeadings(scrub(m.text));
-            const block = [`<!-- mt:a ${m.at} -->`, body];
+            const block = [`<!-- mt:a ${m.at} -->`, ...(m.fast ? ['<!-- mt:fast -->'] : []), body];
             const src = (m.sources || []).filter(s => s && s.uri);
             if (src.length) {
                 block.push('<!-- mt:src -->');
@@ -96,6 +97,8 @@ export const parseThread = (content: string): ThreadMessage[] => {
             msgs.push({ role: 'user', at, text: [first, rest].filter(Boolean).join('\n'), ...(quote ? { quote } : {}), ...(images && images.length ? { images } : {}) });
         } else {
             let text = body;
+            const fast = /^<!-- mt:fast -->\n?/.test(text);
+            if (fast) text = text.replace(/^<!-- mt:fast -->\n?/, '');
             const sources: Source[] = [];
             const sm = /<!-- mt:src -->\n?([\s\S]*?)\n?<!-- \/mt:src -->/.exec(text);
             if (sm) {
@@ -107,7 +110,7 @@ export const parseThread = (content: string): ThreadMessage[] => {
                 });
                 text = text.replace(sm[0], '');
             }
-            msgs.push({ role: 'assistant', at, text: text.trim(), ...(sources.length ? { sources } : {}) });
+            msgs.push({ role: 'assistant', at, text: text.trim(), ...(sources.length ? { sources } : {}), ...(fast ? { fast: true } : {}) });
         }
     }
     return msgs;

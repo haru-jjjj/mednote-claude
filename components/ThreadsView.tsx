@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowUp, Clock, Loader2, Trash2, X, Plus, Search, Globe, Edi
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import type { Note, ThreadPending, Source } from '../types';
-import { formatMedicalMarkdown, streamThreadAnswer, THREAD_REINFORCE_INSTRUCTION } from '../services/claudeService';
+import { formatMedicalMarkdown, streamThreadAnswer, THREAD_REINFORCE_INSTRUCTION, ThreadAnswerMode } from '../services/claudeService';
 import { encodeThread, parseThread, threadTitleFrom, countQuestions, lastQuestionUnanswered, pendingOf, THREAD_SOFT_LIMIT_CHARS, ThreadMessage, uncitedClaims } from '../services/threadFormat';
 import { getNoteFromDB } from '../services/storage';
 import AutoTextarea from './AutoTextarea';
@@ -79,7 +79,7 @@ const linkCitations = (html: string, sources: Source[]): string => {
 };
 
 // 답변 하나 (마크다운 렌더링은 내용이 바뀔 때만)
-const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: () => void; reinforceDisabled?: boolean }> = React.memo(({ text, sources, onReinforce, reinforceDisabled }) => {
+const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: () => void; reinforceDisabled?: boolean; fast?: boolean }> = React.memo(({ text, sources, onReinforce, reinforceDisabled, fast }) => {
     const list = sources || [];
     // 수치·권고·시험 등이 들어갔는데 근거 번호가 없는 문장
     const uncited = useMemo(() => (onReinforce ? uncitedClaims(text) : []), [text, onReinforce]);
@@ -89,6 +89,7 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: ()
     );
     return (
         <div data-answer="1">
+            {fast && <p className="mb-1.5 text-[10px] font-bold text-slate-400">빠른 답변 · 검색을 줄여 짧게 답함</p>}
             <div
                 className="prose prose-sm prose-slate max-w-none text-slate-700 leading-relaxed break-words [&_code]:break-all [&_code]:whitespace-pre-wrap [&_sup.cite]:ml-0.5 [&_sup.cite_a]:no-underline [&_sup.cite_a]:text-accent-600 [&_sup.cite_a]:font-bold [&_sup.cite_a]:text-[10px] [&_sup.cite_a]:px-1 [&_sup.cite_a]:rounded [&_sup.cite_a]:bg-accent-50"
                 dangerouslySetInnerHTML={{ __html: html }}
@@ -139,6 +140,27 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: ()
     );
 });
 
+const MODE_KEY = 'medinote_thread_mode';
+const readMode = (): ThreadAnswerMode => { try { return localStorage.getItem(MODE_KEY) === 'fast' ? 'fast' : 'full'; } catch { return 'full'; } };
+
+// 답변 방식: 근거 중심(검색 최대 8회·깊게) / 빠르게(검색 최대 2회·짧게, 비용 적음)
+const ModeToggle: React.FC<{ mode: ThreadAnswerMode; onChange: (m: ThreadAnswerMode) => void }> = ({ mode, onChange }) => (
+    <div className="flex items-center gap-2">
+        <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">
+            {([['full', '근거 중심'], ['fast', '빠르게']] as [ThreadAnswerMode, string][]).map(([k, label]) => (
+                <button
+                    key={k}
+                    onClick={() => onChange(k)}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors ${mode === k ? 'bg-white shadow-sm text-accent-700' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                    {label}
+                </button>
+            ))}
+        </div>
+        <span className="text-[10px] text-slate-400">{mode === 'fast' ? '검색 최대 2회·짧게 — 비용이 적음' : '근거를 충분히 검색 — 정확도 우선'}</span>
+    </div>
+);
+
 const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete, onBack, openThreadId, onOpened }) => {
     const [activeId, setActiveId] = useState<string | null>(null);
     const [listDraft, setListDraft] = useState('');
@@ -148,6 +170,8 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
     const [streams, setStreams] = useState<Record<string, StreamState>>({});
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [selection, setSelection] = useState('');
+    const [mode, setModeState] = useState<ThreadAnswerMode>(readMode);
+    const setMode = (m: ThreadAnswerMode) => { setModeState(m); try { localStorage.setItem(MODE_KEY, m); } catch { /* 저장 못 해도 이번엔 적용 */ } };
     const [attachments, setAttachments] = useState<string[]>([]); // 보낼 사진 (base64)
     const [attaching, setAttaching] = useState(false);
     const [activeImages, setActiveImages] = useState<string[]>([]); // 열린 대화의 사진 (목록용 메모에는 사진이 빠져 있어 따로 읽음)
@@ -244,7 +268,8 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
     // 질문에 대한 답 받기: history = 이 질문 앞의 대화
     // allImages: 대화 메모의 images 배열 (메시지의 사진 번호를 실제 사진으로 바꿀 때 씀)
     // opts.replaceAt: "근거 보강" — 새 답을 붙이지 않고 그 시각의 답변을 바꿔 씀
-    const runAnswer = async (threadId: string, history: ThreadMessage[], question: ThreadMessage, allImages: string[] = [], opts?: { replaceAt?: number }) => {
+    const runAnswer = async (threadId: string, history: ThreadMessage[], question: ThreadMessage, allImages: string[] = [], opts?: { replaceAt?: number; mode?: ThreadAnswerMode }) => {
+        const answerMode: ThreadAnswerMode = opts?.replaceAt ? 'full' : (opts?.mode || 'full'); // 근거 보강은 항상 근거 중심
         const imgsOf = (m: ThreadMessage) => (m.images || []).map(i => allImages[i]).filter((x): x is string => !!x && !x.startsWith('http'));
         const controller = new AbortController();
         controllersRef.current.set(threadId, controller);
@@ -254,6 +279,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
             const result = await streamThreadAnswer({
                 history: history.map(m => ({ role: m.role, text: m.text, quote: m.quote, images: imgsOf(m) })),
                 question: { role: 'user', text: question.text, quote: question.quote, images: imgsOf(question) },
+                mode: answerMode,
                 onText: t => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], text: t, status: 'writing' } } : prev),
                 onStatus: st => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], status: st } } : prev),
                 onSources: list => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], sources: list } } : prev),
@@ -268,9 +294,9 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                 if (opts?.replaceAt) {
                     const i = msgs.findIndex(m => m.role === 'assistant' && m.at === opts.replaceAt);
                     if (i < 0) return null; // 그 사이 지워졌거나 바뀐 경우
-                    msgs[i] = { ...msgs[i], text: result.text, sources: result.sources };
+                    msgs[i] = { ...msgs[i], text: result.text, sources: result.sources, fast: undefined };
                 } else {
-                    msgs.push({ role: 'assistant', at: now, text: result.text, sources: result.sources });
+                    msgs.push({ role: 'assistant', at: now, text: result.text, sources: result.sources, ...(answerMode === 'fast' ? { fast: true } : {}) });
                 }
                 return { ...latest, content: encodeThread(msgs), updatedAt: now };
             });
@@ -333,7 +359,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
             inFlightRef.current.delete(id);
             return null;
         }
-        runAnswer(id, history, qMsg, allImages);
+        runAnswer(id, history, qMsg, allImages, { mode });
         return id;
     };
 
@@ -343,7 +369,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
         const latest = await getNoteFromDB(threadId).catch(() => undefined);
         const msgs = latest ? parseThread(latest.content || '') : [];
         if (!lastQuestionUnanswered(msgs)) { inFlightRef.current.delete(threadId); return; }
-        runAnswer(threadId, msgs.slice(0, -1), msgs[msgs.length - 1], latest?.images || []);
+        runAnswer(threadId, msgs.slice(0, -1), msgs[msgs.length - 1], latest?.images || [], { mode });
     };
 
     // 근거 보강: 그 답변의 질문까지를 앞 대화로, "출처 없는 진술을 검색해 근거를 붙여 다시 써줘"를 요청
@@ -515,6 +541,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                             />
                             {attachBar && <div className="mt-2">{attachBar}</div>}
                             {fileInput}
+                            <div className="mt-2"><ModeToggle mode={mode} onChange={setMode} /></div>
                             <div className="flex items-center justify-end gap-2 mt-1">
                                 <span className="mr-auto">{attachButton}</span>
                                 <button
@@ -692,6 +719,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                             <AnswerBlock
                                 text={m.text}
                                 sources={m.sources}
+                                fast={m.fast}
                                 onReinforce={stream?.reinforceAt === m.at ? undefined : () => reinforce(active.id, m.at)}
                                 reinforceDisabled={busy}
                             />
@@ -760,6 +788,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                             ))}
                         </div>
                     )}
+                    <ModeToggle mode={mode} onChange={setMode} />
                     {attachBar}
                     {fileInput}
                     {quote && (

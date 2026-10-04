@@ -579,7 +579,11 @@ export const refineNoteSummary = async (
 // ----------------------------------------------------------------------------
 export interface ThreadTurn { role: 'user' | 'assistant'; text: string; quote?: string; images?: string[] }
 
-const THREAD_HISTORY_CHARS = 40000;
+// 매번 함께 보내는 앞 대화 분량 (길수록 맥락은 좋지만 비용이 늘어남)
+const THREAD_HISTORY_CHARS = 20000;
+// 앞 대화를 줄일 때는 메시지 6개(약 3번의 질문·답) 단위로 잘라냄 — 한 개씩 밀어내면 매번 맨 앞이 바뀌어
+// 프롬프트 캐시가 계속 깨짐. 이렇게 하면 몇 번의 질문 동안 앞부분이 그대로라 캐시를 다시 씀
+const THREAD_TRIM_STEP = 6;
 // 이전 대화의 사진은 최근 것만 다시 보냄 (매번 모든 사진을 보내면 비용·속도가 커짐)
 const THREAD_MAX_IMAGES = 6;
 
@@ -590,20 +594,27 @@ const turnText = (t: ThreadTurn) => {
     return base;
 };
 
-type ApiContent = string | any[];
-const toBlocks = (c: ApiContent): any[] => (typeof c === 'string' ? [{ type: 'text', text: c }] : c);
+// 1시간 캐시: 답변을 읽고(5분은 금방 지남) 이어서 물어도 앞부분을 다시 0.1배로 읽음. 쓰기는 2배지만 질문마다 새로 붙는 부분에만 듦
+const CACHE = { type: 'ephemeral', ttl: '1h' } as const;
 
-// 최근 대화부터 거꾸로 담고, user로 시작하도록 맞춤 (API는 user/assistant가 번갈아 와야 함)
-const buildThreadMessages = (history: ThreadTurn[], question: ThreadTurn): { role: 'user' | 'assistant'; content: ApiContent }[] => {
-    const picked: ThreadTurn[] = [];
+// 대화 → API 메시지. 프롬프트 캐싱(같은 앞부분은 다음 질문 때 입력 요금의 0.1배로 읽음)을 위해
+// - 모든 내용은 블록 배열로, 같은 대화면 요청마다 앞부분이 글자 하나까지 같게 만듦
+// - 캐시 지점: 앞 대화의 마지막 메시지, 이번 질문(다음 요청에서는 앞 대화가 됨)
+// - extraInstruction(빠른 모드 안내 등)은 이번 질문 뒤 별도 블록에 두고 캐시 지점 밖으로 (다음 요청의 앞부분과 달라지지 않게)
+const buildThreadMessages = (history: ThreadTurn[], question: ThreadTurn, extraInstruction?: string): { role: 'user' | 'assistant'; content: any[] }[] => {
+    // 넣을 수 있는 가장 앞 메시지(sMin)를 구한 뒤, 6개 단위로 올림해서 시작점을 고정
     let used = turnText(question).length;
-    let omitted = false;
+    let sMin = history.length;
     for (let i = history.length - 1; i >= 0; i--) {
         const len = turnText(history[i]).length;
-        if (used + len > THREAD_HISTORY_CHARS) { omitted = true; break; }
-        picked.unshift(history[i]);
+        if (used + len > THREAD_HISTORY_CHARS) break;
         used += len;
+        sMin = i;
     }
+    const start = sMin === 0 ? 0 : Math.min(history.length, Math.ceil(sMin / THREAD_TRIM_STEP) * THREAD_TRIM_STEP);
+    const picked = history.slice(start);
+    const omitted = start > 0;
+
     // 사진: 이번 질문 것을 먼저, 남은 자리만큼 최근 질문 것부터
     let imageBudget = THREAD_MAX_IMAGES;
     const withImages = [...picked, question].map(t => ({ ...t, images: [] as string[], allImages: t.images || [] }));
@@ -613,35 +624,48 @@ const buildThreadMessages = (history: ThreadTurn[], question: ThreadTurn): { rol
         t.images = t.allImages.slice(0, imageBudget);
         imageBudget -= t.images.length;
     }
-    const contentOf = (t: { role: string; text: string; quote?: string; images: string[]; allImages: string[] }): ApiContent => {
+    const blocksOf = (t: { role: string; text: string; quote?: string; images: string[]; allImages: string[] }): any[] => {
         let text = turnText(t as ThreadTurn);
         const dropped = t.allImages.length - t.images.length;
         if (dropped > 0) text = `(이 질문에 사진 ${t.allImages.length}장을 첨부했었음${t.images.length ? ` — 그중 ${t.images.length}장만 다시 보냄` : ''})\n${text}`;
-        if (!t.images.length) return text;
         return [...t.images.map(img => imageBlock(img)), { type: 'text', text }];
     };
     // 번갈아 오도록 정리: 같은 역할이 연달아 오면 합치고(답이 없던 질문 등), 맨 앞은 user
-    const merged: { role: 'user' | 'assistant'; content: ApiContent }[] = [];
-    withImages.forEach(t => {
+    const merged: { role: 'user' | 'assistant'; content: any[] }[] = [];
+    let questionMsg = -1, questionBlock = -1;
+    withImages.forEach((t, idx) => {
         const last = merged[merged.length - 1];
-        const c = contentOf(t);
-        if (last && last.role === t.role) {
-            last.content = (typeof last.content === 'string' && typeof c === 'string')
-                ? `${last.content}\n\n${c}`
-                : [...toBlocks(last.content), ...toBlocks(c)];
-        } else {
-            merged.push({ role: t.role, content: c });
+        const blocks = blocksOf(t);
+        if (last && last.role === t.role) last.content.push(...blocks);
+        else merged.push({ role: t.role, content: blocks });
+        if (idx === withImages.length - 1) {
+            questionMsg = merged.length - 1;
+            questionBlock = merged[questionMsg].content.length - 1;
         }
     });
-    while (merged.length && merged[0].role !== 'user') merged.shift();
-    if (omitted && merged.length) {
-        const note = '(앞부분 대화는 길어서 생략됨)\n\n';
-        const first = merged[0];
-        if (typeof first.content === 'string') first.content = note + first.content;
-        else first.content = [{ type: 'text', text: note.trim() }, ...first.content];
+    while (merged.length && merged[0].role !== 'user') { merged.shift(); questionMsg--; }
+    if (omitted && merged.length) merged[0].content.unshift({ type: 'text', text: '(앞부분 대화는 길어서 생략됨)' });
+
+    // 캐시 지점 표시 (복사본에만 — 위 블록 객체는 이 요청에서만 쓰임)
+    const mark = (mi: number, bi: number) => {
+        const m = merged[mi];
+        if (!m || bi < 0 || bi >= m.content.length) return;
+        m.content[bi] = { ...m.content[bi], cache_control: CACHE };
+    };
+    if (questionMsg >= 0) {
+        const qm = merged[questionMsg];
+        const qBlockIdx = questionBlock + (omitted && questionMsg === 0 ? 1 : 0);
+        mark(questionMsg, qBlockIdx);
+        if (questionMsg >= 1) mark(questionMsg - 1, merged[questionMsg - 1].content.length - 1);
+        if (extraInstruction) qm.content.push({ type: 'text', text: extraInstruction });
     }
     return merged;
 };
+
+export type ThreadAnswerMode = 'full' | 'fast';
+// 빠른 모드: 시스템 지시·검색 도구는 그대로 두고(캐시 유지) 이번 질문 뒤에만 붙이는 안내
+const FAST_MODE_NOTE = `(앱 설정 — 빠른 모드) 이번 답은 빠르고 짧게: 핵심만 5~8줄. 검색은 가장 중요한 수치·권고 1~2개에 대해서만, 최대 2회.
+근거 규칙은 그대로 — 출처를 붙이지 못한 수치·권고·시험 결과에는 "(출처 미확인)".`;
 
 const THREAD_SYSTEM = `
     You are an attending-level colleague in a specialist medical discussion with the reader. The conversation is kept
@@ -705,21 +729,26 @@ ${answer.replace(/\[(\d{1,2})\]/g, '')}
 export const streamThreadAnswer = async (params: {
     history: ThreadTurn[];
     question: ThreadTurn;
+    mode?: ThreadAnswerMode; // 기본 'full'(근거 중심)
     onText?: (textSoFar: string) => void;
     onStatus?: (status: 'searching' | 'writing') => void;
     onSources?: (sources: Source[]) => void;
     signal?: AbortSignal;
 }): Promise<{ text: string; sources: Source[]; truncated: boolean }> => {
     const apiKey = getApiKey();
-    const body = {
+    const fast = params.mode === 'fast';
+    const body: Record<string, any> = {
         model: MODEL_SMART,
-        max_tokens: 32000,
-        system: THREAD_SYSTEM,
-        messages: buildThreadMessages(params.history, params.question),
-        // 근거 찾기를 충분히 하도록: 검색 최대 8회, 생각 깊이는 기본값(high)
+        max_tokens: fast ? 16000 : 32000,
+        // 시스템 지시는 모든 질문에서 같으므로 캐시 (대화가 달라도 이 부분은 0.1배로 읽음)
+        system: [{ type: 'text', text: THREAD_SYSTEM, cache_control: CACHE }],
+        messages: buildThreadMessages(params.history, params.question, fast ? FAST_MODE_NOTE : undefined),
+        // 검색 도구 정의는 두 모드 모두 같게 (바뀌면 캐시 전체가 무효). 빠른 모드의 검색 횟수는 안내문으로 제한
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
         stream: true
     };
+    // 빠른 모드는 생각 깊이 low (근거 중심은 기본값 high). 모드를 바꾸면 그 대화의 캐시는 한 번 새로 씀
+    if (fast) body.output_config = { effort: 'low' };
     const response = await fetch(API_URL, {
         method: 'POST',
         headers: {
