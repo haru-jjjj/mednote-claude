@@ -24,6 +24,7 @@ import { Note, Source, QuizQuestion, QuizLanguage, GuidelineCheck } from "../typ
 import { applySectionPatch } from "./handoverPatch";
 import { threadPlainText, uncitedClaims } from "./threadFormat";
 import { v4 as uuidv4 } from 'uuid';
+import { marked } from 'marked';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -266,6 +267,22 @@ const callForJson = async (params: {
 // ----------------------------------------------------------------------------
 // Helper: Format Medical Markdown (LaTeX to HTML/Unicode) — 순수 텍스트 처리, API 호출 없음
 // ----------------------------------------------------------------------------
+// 마크다운 GFM은 물결표 하나(~a~)도 취소선으로 처리해 "40~60° … 10~30°"처럼 범위를 쓴 줄이 통째로 그어짐 (§5-66).
+// 앱 전체의 marked에 등록: 물결표 하나는 그냥 글자로, 취소선은 "~~글자~~"(두 개)만.
+// formatMedicalMarkdown을 쓰는 모든 화면이 이 파일을 불러오므로 여기서 한 번만 등록
+marked.use({
+    extensions: [{
+        name: 'singleTilde',
+        level: 'inline',
+        start(src: string) { const i = src.indexOf('~'); return i < 0 ? undefined : i; },
+        tokenizer(src: string) {
+            if (src[0] === '~' && src[1] !== '~') return { type: 'singleTilde', raw: '~' };
+            return undefined;
+        },
+        renderer() { return '~'; }
+    }]
+});
+
 export const formatMedicalMarkdown = (text: string): string => {
     if (!text) return "";
     // 코드 블록(\`\`\` ... \`\`\`, 예: 작성 템플릿) 안은 원문 그대로 두고 바깥만 변환
@@ -313,7 +330,7 @@ const formatMedicalMarkdownPlain = (text: string): string => {
     // 이전엔 모든 "~"를 HTML 엔티티(&#126;)로 바꿨는데, 이 문자열이 marked.js를
     // 거치면서 "&"가 다시 이스케이프되어(예: &amp;#126;) 화면에 "20&#126;30ms"처럼
     // 깨진 텍스트로 그대로 노출되는 버그가 있었습니다. "20~30ms"같은 단일 물결표는
-    // 마크다운에서 원래 특별한 의미가 없으므로 그대로 두고, 취소선 문법(~~text~~)으로
+    // 그대로 두되(GFM에선 ~a~도 취소선이라 위의 singleTilde 확장으로 글자로 처리, §5-66), 취소선 문법(~~text~~)으로
     // 잘못 해석될 수 있는 "~~" 연속 두 글자만 마크다운 이스케이프(\~\~)로 안전하게
     // 처리합니다(marked가 \~ 를 리터럴 ~ 문자로 올바르게 렌더링합니다).
     processed = processed.replace(/~~/g, '\\~\\~');

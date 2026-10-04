@@ -1210,6 +1210,17 @@
 - 바뀐 파일: `services/claudeService.ts`(`stripCiteNumbers`, `dropOrphanCites`, `FAST_MODE_NOTE`, `FAST_RETRY_NOTE`),
   `services/threadFormat.ts`(`uncitedClaims` maxCite), `components/ThreadsView.tsx`(`linkCitations`).
 
+## 5-66. "40~60° … 10~30°"가 취소선으로 나오던 문제 (요청)
+
+- 원인: 화면의 마크다운 변환기(marked, GFM)는 물결표 **하나**로 감싼 부분(`~글자~`)도 취소선으로 처리함.
+  한 줄에 범위 표기 "40~60", "10~30"처럼 물결표가 두 번 나오면 그 사이가 통째로 그어지고 물결표는 사라짐.
+  (기존 코드는 "물결표 하나는 마크다운에서 의미가 없다"고 보고 "~~"만 막고 있었음 — 잘못된 전제)
+- 고친 것: 앱 전체의 marked에 작은 확장(`singleTilde`)을 등록해 물결표 하나는 항상 그냥 글자로 표시.
+  질문 노트 답변뿐 아니라 메모 보기·AI 요약·퀴즈 해설·내 메모에 물어보기 등 마크다운을 보여주는 모든 화면에 적용,
+  이미 저장된 답변·메모도 다시 열면 바르게 보임(저장된 글은 원래 "40~60"으로 들어 있었고 표시만 잘못됐던 것).
+- AI 출력의 "~~" 처리(글자 그대로 표시)는 기존과 같음.
+- 바뀐 파일: `services/claudeService.ts`.
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.
