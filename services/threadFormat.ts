@@ -14,6 +14,8 @@ export interface ThreadMessage {
     sources?: Source[];
     images?: number[]; // 이 질문에 첨부한 사진 = 대화 메모의 images 배열 번호 (사진은 메모와 같은 곳에 저장)
     fast?: boolean; // 빠른 모드로 받은 답변
+    seen?: Source[]; // 답을 쓰며 검색해 본 자료 중 본문에 번호로 직접 인용되지 않은 것 (§5-62)
+    queries?: string[]; // 그 답을 쓰며 쓴 검색어
 }
 
 const Q_RE = /<!-- mt:q (\d+) -->/;
@@ -64,6 +66,16 @@ export const encodeThread = (messages: ThreadMessage[]): string => {
                 src.forEach(s => block.push(`- [${cleanTitle(s.title || s.uri)}](${cleanUri(s.uri)})${s.snippet ? ` :: ${scrub(s.snippet).replace(/\s+/g, ' ')}` : ''}`));
                 block.push('<!-- /mt:src -->');
             }
+            // 검색해 본 자료(직접 인용 안 된 것)와 검색어: "? 검색어" / "- [제목](주소)"
+            const cited = new Set(src.map(s => s.uri));
+            const seen = (m.seen || []).filter(s => s && s.uri && !cited.has(s.uri));
+            const queries = (m.queries || []).map(q => scrub(q).replace(/\s+/g, ' ')).filter(Boolean);
+            if (seen.length || queries.length) {
+                block.push('<!-- mt:seen -->');
+                queries.forEach(q => block.push(`? ${q}`));
+                seen.forEach(s => block.push(`- [${cleanTitle(s.title || s.uri)}](${cleanUri(s.uri)})`));
+                block.push('<!-- /mt:seen -->');
+            }
             out.push(block.join('\n'));
         }
     });
@@ -110,7 +122,26 @@ export const parseThread = (content: string): ThreadMessage[] => {
                 });
                 text = text.replace(sm[0], '');
             }
-            msgs.push({ role: 'assistant', at, text: text.trim(), ...(sources.length ? { sources } : {}), ...(fast ? { fast: true } : {}) });
+            const seen: Source[] = [];
+            const queries: string[] = [];
+            const vm = /<!-- mt:seen -->\n?([\s\S]*?)\n?<!-- \/mt:seen -->/.exec(text);
+            if (vm) {
+                vm[1].split('\n').forEach(line => {
+                    const l = line.trim();
+                    if (l.startsWith('? ')) { if (l.slice(2).trim()) queries.push(l.slice(2).trim()); return; }
+                    const m = /^- \[([^\]]*)\]\(([^)\s]+)\)$/.exec(l);
+                    if (!m) return;
+                    seen.push({ title: m[1], uri: m[2].replace(/%28/g, '(').replace(/%29/g, ')').replace(/%20/g, ' ') });
+                });
+                text = text.replace(vm[0], '');
+            }
+            msgs.push({
+                role: 'assistant', at, text: text.trim(),
+                ...(sources.length ? { sources } : {}),
+                ...(seen.length ? { seen } : {}),
+                ...(queries.length ? { queries } : {}),
+                ...(fast ? { fast: true } : {})
+            });
         }
     }
     return msgs;

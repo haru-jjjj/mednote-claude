@@ -28,6 +28,8 @@ interface StreamState {
     status: 'thinking' | 'searching' | 'writing';
     recheck?: boolean; // 빠른 답이 출처 없이 와서 검색을 요구하며 다시 받는 중
     sources?: Source[];
+    seen?: Source[]; // 검색해 본 자료(인용 여부 무관)
+    queries?: string[]; // 검색어
     reinforceAt?: number; // 다시 쓰는 답변(그 답변의 시각) — "근거 보강" 또는 "자세히"
     redoKind?: 'reinforce' | 'expand';
 }
@@ -81,8 +83,20 @@ const linkCitations = (html: string, sources: Source[]): string => {
 };
 
 // 답변 하나 (마크다운 렌더링은 내용이 바뀔 때만)
-const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: () => void; reinforceDisabled?: boolean; fast?: boolean; onExpand?: () => void }> = React.memo(({ text, sources, onReinforce, reinforceDisabled, fast, onExpand }) => {
+// 검색해 본 자료 목록 한 줄
+const seenItem = (s: Source, i: number) => (
+    <li key={i} className="text-[12px] leading-snug">
+        <a href={s.uri} target="_blank" rel="noopener noreferrer" className="text-slate-600 hover:text-accent-700 hover:underline break-words">{s.title}</a>
+        {hostOf(s.uri) && <span className="text-slate-400"> · {hostOf(s.uri)}</span>}
+    </li>
+);
+
+const AnswerBlock: React.FC<{ text: string; sources?: Source[]; seen?: Source[]; queries?: string[]; onReinforce?: () => void; reinforceDisabled?: boolean; fast?: boolean; onExpand?: () => void }> = React.memo(({ text, sources, seen, queries, onReinforce, reinforceDisabled, fast, onExpand }) => {
     const list = sources || [];
+    // 검색해 본 자료 중 본문에 번호로 인용되지 않은 것 (인용이 없어도 무엇을 찾아봤는지는 항상 보여줌)
+    const citedUris = new Set(list.map(s => s.uri));
+    const seenList = (seen || []).filter(s => !citedUris.has(s.uri));
+    const queryList = queries || [];
     // 수치·권고·시험 등이 들어갔는데 근거 번호가 없는 문장 (빠른 답변도 표시 — 근거 없는 내용을 그대로 두지 않게)
     const uncited = useMemo(() => (onReinforce ? uncitedClaims(text) : []), [text, onReinforce]);
     const html = useMemo(
@@ -95,7 +109,9 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: ()
                 <div className="mb-2 flex items-center gap-2">
                     {list.length > 0
                         ? <span className="text-[10px] font-bold text-slate-400">빠른 답변 · 짧게 답함</span>
-                        : <span className="text-[10px] font-bold text-warn-700">빠른 답변 · 출처 없음</span>}
+                        : seenList.length > 0
+                            ? <span className="text-[10px] font-bold text-warn-700">빠른 답변 · 번호 인용 없음</span>
+                            : <span className="text-[10px] font-bold text-warn-700">빠른 답변 · 검색 안 함 · 출처 없음</span>}
                     {onExpand && (
                         <button
                             onClick={onExpand}
@@ -130,6 +146,25 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: ()
                         ))}
                     </ol>
                 </div>
+            )}
+            {(seenList.length > 0 || queryList.length > 0) && (
+                list.length === 0 ? (
+                    // 인용 번호가 하나도 없을 때는 검색 자료를 펼쳐서 보여줌
+                    <div className="mt-3 pt-2.5 border-t border-slate-100">
+                        <p className="text-[11px] font-bold text-slate-400 mb-1">검색해 본 자료{seenList.length ? ` ${seenList.length}개` : ''}</p>
+                        <p className="text-[10px] text-slate-400 mb-1.5">문장에 번호로 직접 연결되지는 않았지만, 이 답을 쓰며 검색해서 받은 자료입니다.</p>
+                        {queryList.length > 0 && <p className="text-[11px] text-slate-500 mb-1.5 break-words">검색어: {queryList.join(' · ')}</p>}
+                        {seenList.length > 0 && <ul className="space-y-1">{seenList.map(seenItem)}</ul>}
+                    </div>
+                ) : (
+                    <details className="mt-2">
+                        <summary className="text-[11px] text-slate-400 cursor-pointer">검색해 본 다른 자료{seenList.length ? ` ${seenList.length}개` : ''}{queryList.length ? ` · 검색어 ${queryList.length}개` : ''}</summary>
+                        <div className="mt-1.5">
+                            {queryList.length > 0 && <p className="text-[11px] text-slate-500 mb-1.5 break-words">검색어: {queryList.join(' · ')}</p>}
+                            {seenList.length > 0 && <ul className="space-y-1">{seenList.map(seenItem)}</ul>}
+                        </div>
+                    </details>
+                )
             )}
             {uncited.length > 0 && onReinforce && (
                 <div className="mt-3 pt-2.5 border-t border-slate-100">
@@ -306,6 +341,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                         : { ...prev[threadId], status: st }
                 } : prev),
                 onSources: list => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], sources: list } } : prev),
+                onSearch: (queries, seen) => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], queries, seen } } : prev),
                 signal: controller.signal
             });
             // 그 사이 바뀐 내용(제목·적어둔 질문 등)을 덮지 않도록 저장 직전 최신 대화에 답만 붙임.
@@ -317,9 +353,9 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                 if (opts?.replaceAt) {
                     const i = msgs.findIndex(m => m.role === 'assistant' && m.at === opts.replaceAt);
                     if (i < 0) return null; // 그 사이 지워졌거나 바뀐 경우
-                    msgs[i] = { ...msgs[i], text: result.text, sources: result.sources, fast: undefined };
+                    msgs[i] = { ...msgs[i], text: result.text, sources: result.sources, seen: result.seen, queries: result.queries, fast: undefined };
                 } else {
-                    msgs.push({ role: 'assistant', at: now, text: result.text, sources: result.sources, ...(answerMode === 'fast' ? { fast: true } : {}) });
+                    msgs.push({ role: 'assistant', at: now, text: result.text, sources: result.sources, seen: result.seen, queries: result.queries, ...(answerMode === 'fast' ? { fast: true } : {}) });
                 }
                 return { ...latest, content: encodeThread(msgs), updatedAt: now };
             });
@@ -754,6 +790,8 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                             <AnswerBlock
                                 text={m.text}
                                 sources={m.sources}
+                                seen={m.seen}
+                                queries={m.queries}
                                 fast={m.fast}
                                 onReinforce={stream?.reinforceAt === m.at ? undefined : () => reinforce(active.id, m.at)}
                                 onExpand={stream?.reinforceAt === m.at ? undefined : () => expandAnswer(active.id, m.at)}
@@ -772,9 +810,15 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                             <p className="text-[11px] font-bold text-accent-500 flex items-center gap-1.5 mb-2">
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                                 {stream.reinforceAt ? (stream.redoKind === 'expand' ? '자세히 — ' : '근거 보강 — ') : ''}{stream.recheck ? '출처 없이 답해서 검색해 다시 받는 중 — ' : ''}{stream.status === 'searching' ? '근거 찾는 중…' : stream.status === 'writing' ? '답변 쓰는 중…' : '생각하는 중…'}
+                                {stream.status === 'searching' && stream.queries && stream.queries.length > 0 && (
+                                    <span className="font-normal text-slate-400 truncate max-w-[45%]">“{stream.queries[stream.queries.length - 1]}”</span>
+                                )}
                                 <button onClick={() => controllersRef.current.get(active.id)?.abort()} className="ml-auto text-slate-400 hover:text-red-500 font-bold">멈추기</button>
                             </p>
-                            {stream.text && <AnswerBlock text={stream.text} sources={stream.sources} />}
+                            {stream.text && <AnswerBlock text={stream.text} sources={stream.sources} seen={stream.seen} queries={stream.queries} />}
+                            {!stream.text && stream.queries && stream.queries.length > 0 && (
+                                <p className="text-[11px] text-slate-400 break-words">검색어: {stream.queries.join(' · ')}{stream.seen && stream.seen.length ? ` — 자료 ${stream.seen.length}개 받음` : ''}</p>
+                            )}
                         </div>
                     )}
 

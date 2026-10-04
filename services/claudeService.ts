@@ -740,20 +740,24 @@ type ThreadStreamParams = {
     onText?: (textSoFar: string) => void;
     onStatus?: (status: 'searching' | 'writing' | 'recheck') => void;
     onSources?: (sources: Source[]) => void;
+    // 검색어·검색 결과(인용 여부와 상관없이 검색해 본 모든 자료)가 들어올 때마다
+    onSearch?: (queries: string[], seen: Source[]) => void;
     signal?: AbortSignal;
 };
-type ThreadStreamResult = { text: string; sources: Source[]; truncated: boolean };
+// sources = 본문에 [n]으로 인용된 자료, seen = 검색해 본 자료 중 인용 안 된 것, queries = 검색어
+type ThreadStreamResult = { text: string; sources: Source[]; seen: Source[]; queries: string[]; truncated: boolean };
 
 export const streamThreadAnswer = async (params: ThreadStreamParams): Promise<ThreadStreamResult> => {
     const fast = params.mode === 'fast';
     const first = await streamThreadOnce(params, fast ? FAST_MODE_NOTE : undefined);
-    // 빠른 모드 안전장치: 수치·권고 같은 사실 진술이 있는데 출처가 하나도 없으면 검색을 요구하며 한 번만 다시 받음
-    // (앞 대화·질문은 캐시에서 읽으므로 추가 비용은 대부분 짧은 답 한 번 + 검색)
-    if (!fast || first.sources.length > 0 || first.truncated || params.signal?.aborted) return first;
+    // 빠른 모드 안전장치: 수치·권고 같은 사실 진술이 있는데 검색을 아예 안 했으면 검색을 요구하며 한 번만 다시 받음
+    // (검색은 했으면 그 자료 링크를 보여주므로 다시 받지 않음. 앞 대화·질문은 캐시에서 읽어 추가 비용은 짧은 답 한 번 + 검색)
+    if (!fast || first.sources.length > 0 || first.seen.length > 0 || first.truncated || params.signal?.aborted) return first;
     if (uncitedClaims(first.text).length === 0) return first;
     params.onStatus?.('recheck');
     params.onText?.('');
     params.onSources?.([]);
+    params.onSearch?.([], []);
     try {
         const second = await streamThreadOnce(params, `${FAST_MODE_NOTE}\n\n${FAST_RETRY_NOTE}`);
         return second; // 화면에 이미 다시 받은 답이 흐르고 있으므로 그대로 씀
@@ -806,6 +810,11 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
     // 출처 번호: 처음 인용된 순서대로 1, 2, 3 … (같은 주소는 같은 번호)
     const sources = new Map<string, Source & { n: number }>();
     const blockCites = new Map<number, Set<number>>(); // 글 조각 → 그 조각이 인용한 출처 번호들
+    // 검색해 본 자료 전부(인용 여부 무관)와 검색어 — 인용이 안 붙어도 무엇을 찾아봤는지는 보여주기 위해
+    const seen = new Map<string, Source>();
+    const queries: string[] = [];
+    const toolInput = new Map<number, string>(); // server_tool_use 블록 → 스트리밍으로 들어오는 입력(JSON) 조각
+    const emitSearch = () => params.onSearch?.([...queries], Array.from(seen.values()));
     let text = '';
     let stopReason = '';
     let buf = '';
@@ -817,6 +826,13 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
                 const type = evt.content_block?.type || '';
                 blockTypes.set(evt.index, type);
                 if (type === 'server_tool_use') params.onStatus?.('searching');
+                if (type === 'web_search_tool_result' && Array.isArray(evt.content_block?.content)) {
+                    evt.content_block.content.forEach((r: any) => {
+                        if (r?.type !== 'web_search_result' || typeof r.url !== 'string' || seen.has(r.url) || seen.size >= 40) return;
+                        seen.set(r.url, { title: (r.title || r.url).trim(), uri: r.url });
+                    });
+                    emitSearch();
+                }
                 if (type === 'text') {
                     // 검색 앞뒤로 나뉜 글은 문단을 띄워 이어 붙임 (인용 때문에 쪼개진 글 조각은 그대로 붙임)
                     if (text && lastStartedType && lastStartedType !== 'text' && !text.endsWith('\n\n')) text += '\n\n';
@@ -827,7 +843,9 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
             }
             case 'content_block_delta': {
                 const d = evt.delta || {};
-                if (d.type === 'text_delta' && blockTypes.get(evt.index) === 'text') {
+                if (d.type === 'input_json_delta' && blockTypes.get(evt.index) === 'server_tool_use') {
+                    toolInput.set(evt.index, (toolInput.get(evt.index) || '') + (d.partial_json || ''));
+                } else if (d.type === 'text_delta' && blockTypes.get(evt.index) === 'text') {
                     text += d.text || '';
                     params.onText?.(text);
                 } else if (d.type === 'citations_delta' && d.citation?.url) {
@@ -847,6 +865,12 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
                 break;
             }
             case 'content_block_stop': {
+                if (blockTypes.get(evt.index) === 'server_tool_use') {
+                    try {
+                        const q = JSON.parse(toolInput.get(evt.index) || '{}')?.query;
+                        if (typeof q === 'string' && q.trim()) { queries.push(q.trim()); emitSearch(); }
+                    } catch { /* 검색어를 못 읽어도 답변에는 지장 없음 */ }
+                }
                 // 인용이 붙은 글 조각이 끝나면 그 뒤에 출처 번호 [n]을 붙임 (끝의 줄바꿈 앞에)
                 const nums = blockCites.get(evt.index);
                 if (nums && nums.size) {
@@ -893,7 +917,8 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
     if (truncated) text += '\n\n> 참고: 답변이 중간에 끊겼습니다. "이어서 설명해줘"라고 물어보면 이어집니다.';
     // 번호 순서 그대로 (번호와 목록이 어긋나지 않게 자르지 않음)
     const list = Array.from(sources.values()).sort((a, b) => a.n - b.n).map(({ n, ...s }) => s);
-    return { text, sources: list, truncated };
+    const seenList = Array.from(seen.values()).filter(s => !sources.has(s.uri));
+    return { text, sources: list, seen: seenList, queries, truncated };
 };
 
 // ----------------------------------------------------------------------------
