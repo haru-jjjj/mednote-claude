@@ -27,7 +27,8 @@ interface StreamState {
     text: string;
     status: 'thinking' | 'searching' | 'writing';
     sources?: Source[];
-    reinforceAt?: number; // "근거 보강"으로 다시 쓰는 답변(그 답변의 시각)
+    reinforceAt?: number; // 다시 쓰는 답변(그 답변의 시각) — "근거 보강" 또는 "자세히"
+    redoKind?: 'reinforce' | 'expand';
 }
 
 const renderMd = (md: string): string => {
@@ -79,17 +80,31 @@ const linkCitations = (html: string, sources: Source[]): string => {
 };
 
 // 답변 하나 (마크다운 렌더링은 내용이 바뀔 때만)
-const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: () => void; reinforceDisabled?: boolean; fast?: boolean }> = React.memo(({ text, sources, onReinforce, reinforceDisabled, fast }) => {
+const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: () => void; reinforceDisabled?: boolean; fast?: boolean; onExpand?: () => void }> = React.memo(({ text, sources, onReinforce, reinforceDisabled, fast, onExpand }) => {
     const list = sources || [];
-    // 수치·권고·시험 등이 들어갔는데 근거 번호가 없는 문장
-    const uncited = useMemo(() => (onReinforce ? uncitedClaims(text) : []), [text, onReinforce]);
+    // 수치·권고·시험 등이 들어갔는데 근거 번호가 없는 문장 (빠른 답변은 "자세히"로 다시 받는 게 우선이라 표시 안 함)
+    const uncited = useMemo(() => (onReinforce && !fast ? uncitedClaims(text) : []), [text, onReinforce, fast]);
     const html = useMemo(
         () => linkCitations(renderMd(text), list).replace(/<a href="(https?:)/g, '<a target="_blank" rel="noopener noreferrer" href="$1'),
         [text, sources]
     );
     return (
         <div data-answer="1">
-            {fast && <p className="mb-1.5 text-[10px] font-bold text-slate-400">빠른 답변 · 검색을 줄여 짧게 답함</p>}
+            {fast && (
+                <div className="mb-2 flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-slate-400">빠른 답변 · 검색을 줄여 짧게 답함</span>
+                    {onExpand && (
+                        <button
+                            onClick={onExpand}
+                            disabled={reinforceDisabled}
+                            className="ml-auto flex items-center gap-1 px-2.5 py-1 rounded-md border border-accent-200 bg-accent-50 text-[11px] font-bold text-accent-700 hover:bg-accent-100 disabled:opacity-40 whitespace-nowrap"
+                            title="같은 질문을 근거 중심(검색 충분히·자세히)으로 다시 받아 이 답변을 바꿈"
+                        >
+                            <Search className="w-3.5 h-3.5" /> 근거 중심으로 자세히
+                        </button>
+                    )}
+                </div>
+            )}
             <div
                 className="prose prose-sm prose-slate max-w-none text-slate-700 leading-relaxed break-words [&_code]:break-all [&_code]:whitespace-pre-wrap [&_sup.cite]:ml-0.5 [&_sup.cite_a]:no-underline [&_sup.cite_a]:text-accent-600 [&_sup.cite_a]:font-bold [&_sup.cite_a]:text-[10px] [&_sup.cite_a]:px-1 [&_sup.cite_a]:rounded [&_sup.cite_a]:bg-accent-50"
                 dangerouslySetInnerHTML={{ __html: html }}
@@ -268,13 +283,13 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
     // 질문에 대한 답 받기: history = 이 질문 앞의 대화
     // allImages: 대화 메모의 images 배열 (메시지의 사진 번호를 실제 사진으로 바꿀 때 씀)
     // opts.replaceAt: "근거 보강" — 새 답을 붙이지 않고 그 시각의 답변을 바꿔 씀
-    const runAnswer = async (threadId: string, history: ThreadMessage[], question: ThreadMessage, allImages: string[] = [], opts?: { replaceAt?: number; mode?: ThreadAnswerMode }) => {
+    const runAnswer = async (threadId: string, history: ThreadMessage[], question: ThreadMessage, allImages: string[] = [], opts?: { replaceAt?: number; mode?: ThreadAnswerMode; redoKind?: 'reinforce' | 'expand' }) => {
         const answerMode: ThreadAnswerMode = opts?.replaceAt ? 'full' : (opts?.mode || 'full'); // 근거 보강은 항상 근거 중심
         const imgsOf = (m: ThreadMessage) => (m.images || []).map(i => allImages[i]).filter((x): x is string => !!x && !x.startsWith('http'));
         const controller = new AbortController();
         controllersRef.current.set(threadId, controller);
         setErrors(prev => { const n = { ...prev }; delete n[threadId]; return n; });
-        setStreams(prev => ({ ...prev, [threadId]: { question: question.text, quote: question.quote, text: '', status: 'thinking', ...(opts?.replaceAt ? { reinforceAt: opts.replaceAt } : {}) } }));
+        setStreams(prev => ({ ...prev, [threadId]: { question: question.text, quote: question.quote, text: '', status: 'thinking', ...(opts?.replaceAt ? { reinforceAt: opts.replaceAt, redoKind: opts.redoKind || 'reinforce' } : {}) } }));
         try {
             const result = await streamThreadAnswer({
                 history: history.map(m => ({ role: m.role, text: m.text, quote: m.quote, images: imgsOf(m) })),
@@ -302,7 +317,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
             });
         } catch (e: any) {
             console.error(e);
-            if (opts?.replaceAt) { if (e?.name !== 'AbortError') alert(`근거 보강에 실패했습니다: ${errText(e)}\n원래 답변은 그대로 있어요.`); }
+            if (opts?.replaceAt) { if (e?.name !== 'AbortError') alert(`${opts.redoKind === 'expand' ? '자세한 답변 받기' : '근거 보강'}에 실패했습니다: ${errText(e)}\n원래 답변은 그대로 있어요.`); }
             else setErrors(prev => ({ ...prev, [threadId]: errText(e) }));
         } finally {
             controllersRef.current.delete(threadId);
@@ -382,7 +397,19 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
         if (i < 1) { inFlightRef.current.delete(threadId); return; }
         const request: ThreadMessage = { role: 'user', at: Date.now(), text: THREAD_REINFORCE_INSTRUCTION(msgs[i].text) };
         stickToBottomRef.current = true;
-        runAnswer(threadId, msgs.slice(0, i), request, latest?.images || [], { replaceAt: answerAt });
+        runAnswer(threadId, msgs.slice(0, i), request, latest?.images || [], { replaceAt: answerAt, redoKind: 'reinforce' });
+    };
+
+    // 빠른 답변 → 같은 질문을 근거 중심으로 다시 받아 그 자리에서 바꿈 (질문의 인용·사진도 그대로)
+    const expandAnswer = async (threadId: string, answerAt: number) => {
+        if (inFlightRef.current.has(threadId)) return;
+        inFlightRef.current.add(threadId);
+        const latest = await getNoteFromDB(threadId).catch(() => undefined);
+        const msgs = latest ? parseThread(latest.content || '') : [];
+        const i = msgs.findIndex(m => m.role === 'assistant' && m.at === answerAt);
+        if (i < 1 || msgs[i - 1].role !== 'user') { inFlightRef.current.delete(threadId); return; }
+        stickToBottomRef.current = true;
+        runAnswer(threadId, msgs.slice(0, i - 1), msgs[i - 1], latest?.images || [], { replaceAt: answerAt, redoKind: 'expand' });
     };
 
     // 나중에 물어볼 질문으로 적어두기 (threadId 없으면 질문만 있는 새 대화)
@@ -721,10 +748,13 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                                 sources={m.sources}
                                 fast={m.fast}
                                 onReinforce={stream?.reinforceAt === m.at ? undefined : () => reinforce(active.id, m.at)}
+                                onExpand={stream?.reinforceAt === m.at ? undefined : () => expandAnswer(active.id, m.at)}
                                 reinforceDisabled={busy}
                             />
                             {stream?.reinforceAt === m.at && (
-                                <p className="mt-2 text-[11px] font-bold text-accent-600 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 이 답변의 근거를 찾아 다시 쓰는 중… 아래에 진행 상황이 보여요</p>
+                                <p className="mt-2 text-[11px] font-bold text-accent-600 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    {stream.redoKind === 'expand' ? '근거 중심으로 자세히 다시 쓰는 중…' : '이 답변의 근거를 찾아 다시 쓰는 중…'} 아래에 진행 상황이 보여요
+                                </p>
                             )}
                         </div>
                     ))}
@@ -733,7 +763,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                         <div className="bg-white border border-accent-100 rounded-2xl rounded-bl-md px-4 py-3 shadow-sm">
                             <p className="text-[11px] font-bold text-accent-500 flex items-center gap-1.5 mb-2">
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                {stream.reinforceAt ? '근거 보강 — ' : ''}{stream.status === 'searching' ? '근거 찾는 중…' : stream.status === 'writing' ? '답변 쓰는 중…' : '생각하는 중…'}
+                                {stream.reinforceAt ? (stream.redoKind === 'expand' ? '자세히 — ' : '근거 보강 — ') : ''}{stream.status === 'searching' ? '근거 찾는 중…' : stream.status === 'writing' ? '답변 쓰는 중…' : '생각하는 중…'}
                                 <button onClick={() => controllersRef.current.get(active.id)?.abort()} className="ml-auto text-slate-400 hover:text-red-500 font-bold">멈추기</button>
                             </p>
                             {stream.text && <AnswerBlock text={stream.text} sources={stream.sources} />}
