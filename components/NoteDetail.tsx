@@ -1,6 +1,6 @@
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Calendar, Trash2, Edit, X, Globe, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw, Link2, FileText, ShieldCheck, ChevronDown, ChevronUp, Clock, ArrowUp } from 'lucide-react';
+import { ArrowLeft, Calendar, Trash2, Edit, X, Loader2, Sparkles, ZoomIn, ZoomOut, RotateCcw, Link2, FileText, ShieldCheck, ChevronDown, ChevronUp, Clock, ArrowUp } from 'lucide-react';
 import DOMPurify from 'dompurify';
 import { Note, Source, NoteCategory, CATEGORIES, CATEGORY_LABELS, hasCategory, SummaryVersion } from '../types';
 import { marked } from 'marked';
@@ -14,6 +14,7 @@ import { buildContentWithSummary, splitMovedContent, contentForAnalysis } from '
 import { sectionizeHtml } from '../services/sectionize';
 import { estimateDataRecordCount } from '../services/pasteUtils';
 import { getNoteFromDB } from '../services/storage';
+import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/sourceKind';
 import AutoTextarea from './AutoTextarea';
 
 interface NoteDetailProps {
@@ -680,7 +681,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                     {note.guidelineCheck.sources.map((src, idx) => (
                                         <a key={idx} href={src.uri} target="_blank" rel="noopener noreferrer"
                                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-sage-700 rounded-lg text-sm font-medium border border-sage-100 hover:border-sage-300 transition-colors shadow-sm">
-                                            <Globe className="w-3 h-3" />
+                                            <span className={`shrink-0 px-1.5 rounded border text-[10px] font-bold ${sourceKindClass(sourceKindOf(src))}`}>{SOURCE_KIND_LABEL[sourceKindOf(src)]}</span>
                                             <span className="truncate max-w-[180px]">{src.title}</span>
                                         </a>
                                     ))}
@@ -817,7 +818,7 @@ const NoteDetail: React.FC<NoteDetailProps> = ({ note, allNotes, onBack, onDelet
                                             rel="noopener noreferrer"
                                             className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-accent-600 rounded-lg text-sm font-medium border border-accent-100 hover:border-accent-300 transition-colors shadow-sm"
                                         >
-                                            <Globe className="w-3 h-3" />
+                                            <span className={`shrink-0 px-1.5 rounded border text-[10px] font-bold ${sourceKindClass(sourceKindOf(src))}`}>{SOURCE_KIND_LABEL[sourceKindOf(src)]}</span>
                                             <span className="truncate max-w-[150px]">{src.title}</span>
                                         </a>
                                     ))}

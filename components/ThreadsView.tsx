@@ -8,6 +8,7 @@ import { formatMedicalMarkdown, streamThreadAnswer, THREAD_REINFORCE_INSTRUCTION
 import { encodeThread, parseThread, threadTitleFrom, countQuestions, lastQuestionUnanswered, pendingOf, THREAD_SOFT_LIMIT_CHARS, ThreadMessage, uncitedClaims } from '../services/threadFormat';
 import { getNoteFromDB } from '../services/storage';
 import AutoTextarea from './AutoTextarea';
+import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass, summarizeSourceKinds, isPrimaryKind } from '../services/sourceKind';
 import { resizeAndCompressImage, imageSrc } from '../services/imageUtils';
 
 interface Props {
@@ -84,8 +85,30 @@ const linkCitations = (html: string, sources: Source[]): string => {
 
 // 답변 하나 (마크다운 렌더링은 내용이 바뀔 때만)
 // 검색해 본 자료 목록 한 줄
+// 자료 종류 배지 (가이드라인·학술지·허가·규제 … / 기타 사이트) — 주소와 제목으로 자동 분류 (§5-67)
+const kindBadge = (s: Source) => {
+    const k = sourceKindOf(s);
+    return <span className={`inline-block align-[1px] mr-1 px-1.5 py-px rounded border text-[10px] font-bold leading-tight whitespace-nowrap ${sourceKindClass(k)}`}>{SOURCE_KIND_LABEL[k]}</span>;
+};
+
+// 참고 문헌 위 요약: "가이드라인 2 · 학술지 3 · 기타 사이트 1"
+const kindSummary = (sources: Source[]) => {
+    const parts = summarizeSourceKinds(sources);
+    if (!parts.length) return null;
+    return (
+        <span className="font-normal">
+            {parts.map((p, i) => (
+                <span key={p.kind} className={isPrimaryKind(p.kind) ? 'text-accent-600' : p.kind === 'reference' ? 'text-slate-500' : 'text-warn-700'}>
+                    {i > 0 && <span className="text-slate-300"> · </span>}{SOURCE_KIND_LABEL[p.kind]} {p.count}
+                </span>
+            ))}
+        </span>
+    );
+};
+
 const seenItem = (s: Source, i: number) => (
     <li key={i} className="text-[12px] leading-snug">
+        {kindBadge(s)}
         <a href={s.uri} target="_blank" rel="noopener noreferrer" className="text-slate-600 hover:text-accent-700 hover:underline break-words">{s.title}</a>
         {hostOf(s.uri) && <span className="text-slate-400"> · {hostOf(s.uri)}</span>}
     </li>
@@ -130,12 +153,13 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[]; seen?: Source[];
             />
             {list.length > 0 && (
                 <div className="mt-3 pt-2.5 border-t border-slate-100">
-                    <p className="text-[11px] font-bold text-slate-400 mb-1.5">참고 문헌</p>
+                    <p className="text-[11px] font-bold text-slate-400 mb-1.5 flex flex-wrap items-baseline gap-x-2">참고 문헌 {kindSummary(list)}</p>
                     <ol className="space-y-1.5">
                         {list.map((s, i) => (
                             <li key={i} className="flex gap-2 text-[12px] leading-snug">
                                 <span className="shrink-0 w-5 text-right font-bold text-accent-600">{i + 1}</span>
                                 <div className="min-w-0">
+                                    {kindBadge(s)}
                                     <a href={s.uri} target="_blank" rel="noopener noreferrer" className="text-slate-700 hover:text-accent-700 hover:underline break-words">
                                         {s.title}
                                     </a>

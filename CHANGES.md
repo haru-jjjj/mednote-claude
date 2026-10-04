@@ -1221,6 +1221,22 @@
 - AI 출력의 "~~" 처리(글자 그대로 표시)는 기존과 같음.
 - 바뀐 파일: `services/claudeService.ts`.
 
+## 5-67. 참고 문헌마다 자료 종류 표시 (요청)
+
+- 새 파일 `services/sourceKind.ts`: 출처 주소(도메인·경로)와 제목으로 자료 종류를 자동 분류.
+  - **가이드라인**: 학회·학술지 사이트에 있고 제목이 guideline·consensus/scientific statement·position paper·focused update·
+    appropriate use criteria·가이드라인 등인 자료 (뉴스·블로그의 "가이드라인 소개"는 해당 안 됨, 학회 사이트의 Key Points·
+    Ten Points to Remember·저널 스캔 같은 요약은 "학회")
+  - **학술지**(NEJM·Lancet·JAMA·AHA/ACC·OUP·BMJ·Elsevier·Wiley·Springer·PubMed·PMC 등), **학회**(ESC·ACC·AHA·HRS·NICE·KDIGO·WHO·CDC 등),
+    **허가·규제**(FDA·DailyMed·EMA·식약처 등), **임상시험 등록**(ClinicalTrials.gov 등)
+  - **참고서**(UpToDate·Medscape·MSD 매뉴얼·StatPearls·LITFL·Radiopaedia 등), **프리프린트**(medRxiv 등), **기타 사이트**(그 밖 전부)
+- 표시
+  - 질문 노트: 참고 문헌 항목·"검색해 본 자료" 항목마다 종류 배지 + "참고 문헌" 옆에 요약("가이드라인 1 · 학술지 1 · 기타 사이트 1").
+    색: 가이드라인 진한 강조색, 학술지·학회·허가·규제·임상시험 등록 연한 강조색, 참고서 회색, 프리프린트·기타 사이트 주의색.
+  - 퀴즈 해설 "참고 자료", 메모의 AI 요약 출처·가이드라인 점검 출처에도 같은 배지.
+- 한계: 주소 규칙만 보는 분류라 그 자료의 질이나 인용 내용이 맞는지를 보증하지 않음(예: 학술지 사이트의 질 낮은 논문도 "학술지").
+- 바뀐 파일: `services/sourceKind.ts`(새 파일), `components/ThreadsView.tsx`, `components/QuizView.tsx`, `components/NoteDetail.tsx`.
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.

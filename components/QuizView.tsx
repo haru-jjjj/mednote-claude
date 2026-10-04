@@ -6,6 +6,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { generateDetailedQuizExplanation, formatMedicalMarkdown } from '../services/claudeService';
 import { getNoteFromDB } from '../services/storage';
+import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/sourceKind';
 import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo } from '../services/studyUtils';
 
 const PERIOD_KEY = 'medinote_quiz_period';
@@ -682,6 +683,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                     {src.title || "Reference Source"}
                                                 </div>
                                                 <div className="text-[10px] text-slate-400 truncate">
+                                                    <span className={`inline-block mr-1 px-1.5 rounded border font-bold ${sourceKindClass(sourceKindOf(src))}`}>{SOURCE_KIND_LABEL[sourceKindOf(src)]}</span>
                                                     {src.uri}
                                                 </div>
                                             </div>
