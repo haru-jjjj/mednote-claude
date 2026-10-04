@@ -26,6 +26,7 @@ interface StreamState {
     quote?: string;
     text: string;
     status: 'thinking' | 'searching' | 'writing';
+    recheck?: boolean; // 빠른 답이 출처 없이 와서 검색을 요구하며 다시 받는 중
     sources?: Source[];
     reinforceAt?: number; // 다시 쓰는 답변(그 답변의 시각) — "근거 보강" 또는 "자세히"
     redoKind?: 'reinforce' | 'expand';
@@ -82,8 +83,8 @@ const linkCitations = (html: string, sources: Source[]): string => {
 // 답변 하나 (마크다운 렌더링은 내용이 바뀔 때만)
 const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: () => void; reinforceDisabled?: boolean; fast?: boolean; onExpand?: () => void }> = React.memo(({ text, sources, onReinforce, reinforceDisabled, fast, onExpand }) => {
     const list = sources || [];
-    // 수치·권고·시험 등이 들어갔는데 근거 번호가 없는 문장 (빠른 답변은 "자세히"로 다시 받는 게 우선이라 표시 안 함)
-    const uncited = useMemo(() => (onReinforce && !fast ? uncitedClaims(text) : []), [text, onReinforce, fast]);
+    // 수치·권고·시험 등이 들어갔는데 근거 번호가 없는 문장 (빠른 답변도 표시 — 근거 없는 내용을 그대로 두지 않게)
+    const uncited = useMemo(() => (onReinforce ? uncitedClaims(text) : []), [text, onReinforce]);
     const html = useMemo(
         () => linkCitations(renderMd(text), list).replace(/<a href="(https?:)/g, '<a target="_blank" rel="noopener noreferrer" href="$1'),
         [text, sources]
@@ -92,7 +93,9 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: ()
         <div data-answer="1">
             {fast && (
                 <div className="mb-2 flex items-center gap-2">
-                    <span className="text-[10px] font-bold text-slate-400">빠른 답변 · 검색을 줄여 짧게 답함</span>
+                    {list.length > 0
+                        ? <span className="text-[10px] font-bold text-slate-400">빠른 답변 · 짧게 답함</span>
+                        : <span className="text-[10px] font-bold text-warn-700">빠른 답변 · 출처 없음</span>}
                     {onExpand && (
                         <button
                             onClick={onExpand}
@@ -158,7 +161,7 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[]; onReinforce?: ()
 const MODE_KEY = 'medinote_thread_mode';
 const readMode = (): ThreadAnswerMode => { try { return localStorage.getItem(MODE_KEY) === 'fast' ? 'fast' : 'full'; } catch { return 'full'; } };
 
-// 답변 방식: 근거 중심(검색 최대 8회·깊게) / 빠르게(검색 최대 2회·짧게, 비용 적음)
+// 답변 방식: 근거 중심(검색 최대 8회·깊게) / 빠르게(검색 1~3회·짧게, 비용 적음 — 검색은 필수)
 const ModeToggle: React.FC<{ mode: ThreadAnswerMode; onChange: (m: ThreadAnswerMode) => void }> = ({ mode, onChange }) => (
     <div className="flex items-center gap-2">
         <div className="inline-flex p-0.5 bg-slate-100 rounded-lg">
@@ -172,7 +175,7 @@ const ModeToggle: React.FC<{ mode: ThreadAnswerMode; onChange: (m: ThreadAnswerM
                 </button>
             ))}
         </div>
-        <span className="text-[10px] text-slate-400">{mode === 'fast' ? '검색 최대 2회·짧게 — 비용이 적음' : '근거를 충분히 검색 — 정확도 우선'}</span>
+        <span className="text-[10px] text-slate-400">{mode === 'fast' ? '검색 1~3회·짧게 — 비용이 적음' : '근거를 충분히 검색 — 정확도 우선'}</span>
     </div>
 );
 
@@ -296,7 +299,12 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                 question: { role: 'user', text: question.text, quote: question.quote, images: imgsOf(question) },
                 mode: answerMode,
                 onText: t => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], text: t, status: 'writing' } } : prev),
-                onStatus: st => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], status: st } } : prev),
+                onStatus: st => setStreams(prev => prev[threadId] ? {
+                    ...prev,
+                    [threadId]: st === 'recheck'
+                        ? { ...prev[threadId], text: '', sources: [], status: 'thinking', recheck: true }
+                        : { ...prev[threadId], status: st }
+                } : prev),
                 onSources: list => setStreams(prev => prev[threadId] ? { ...prev, [threadId]: { ...prev[threadId], sources: list } } : prev),
                 signal: controller.signal
             });
@@ -763,7 +771,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                         <div className="bg-white border border-accent-100 rounded-2xl rounded-bl-md px-4 py-3 shadow-sm">
                             <p className="text-[11px] font-bold text-accent-500 flex items-center gap-1.5 mb-2">
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                {stream.reinforceAt ? (stream.redoKind === 'expand' ? '자세히 — ' : '근거 보강 — ') : ''}{stream.status === 'searching' ? '근거 찾는 중…' : stream.status === 'writing' ? '답변 쓰는 중…' : '생각하는 중…'}
+                                {stream.reinforceAt ? (stream.redoKind === 'expand' ? '자세히 — ' : '근거 보강 — ') : ''}{stream.recheck ? '출처 없이 답해서 검색해 다시 받는 중 — ' : ''}{stream.status === 'searching' ? '근거 찾는 중…' : stream.status === 'writing' ? '답변 쓰는 중…' : '생각하는 중…'}
                                 <button onClick={() => controllersRef.current.get(active.id)?.abort()} className="ml-auto text-slate-400 hover:text-red-500 font-bold">멈추기</button>
                             </p>
                             {stream.text && <AnswerBlock text={stream.text} sources={stream.sources} />}

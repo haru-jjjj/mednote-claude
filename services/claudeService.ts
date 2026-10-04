@@ -22,7 +22,7 @@
 
 import { Note, Source, QuizQuestion, QuizLanguage, GuidelineCheck } from "../types";
 import { applySectionPatch } from "./handoverPatch";
-import { threadPlainText } from "./threadFormat";
+import { threadPlainText, uncitedClaims } from "./threadFormat";
 import { v4 as uuidv4 } from 'uuid';
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -664,8 +664,15 @@ const buildThreadMessages = (history: ThreadTurn[], question: ThreadTurn, extraI
 
 export type ThreadAnswerMode = 'full' | 'fast';
 // 빠른 모드: 시스템 지시·검색 도구는 그대로 두고(캐시 유지) 이번 질문 뒤에만 붙이는 안내
-const FAST_MODE_NOTE = `(앱 설정 — 빠른 모드) 이번 답은 빠르고 짧게: 핵심만 5~8줄. 검색은 가장 중요한 수치·권고 1~2개에 대해서만, 최대 2회.
-근거 규칙은 그대로 — 출처를 붙이지 못한 수치·권고·시험 결과에는 "(출처 미확인)".`;
+// 짧게 쓰는 것만 줄이고 "검색 먼저"는 그대로 — 근거 없는 빠른 답은 쓰지 않음 (§5-61)
+const FAST_MODE_NOTE = `(앱 설정 — 빠른 모드) 이번 답은 짧게: 핵심만 5~8줄.
+- 짧아도 근거는 필수: 쓰기 전에 반드시 web_search를 1~3회 해서 이 답의 핵심 수치·권고·시험 결과를 확인하고, 그 검색 결과에서 인용해 쓸 것.
+  검색 없이 기억만으로 답하지 말 것. 순수한 기전·정의만 묻는 질문이 아니면 검색을 건너뛰지 말 것.
+- 출처를 붙이지 못한 수치·권고·시험 결과는 빼거나 "(출처 미확인)".`;
+
+// 빠른 모드 답이 출처 하나 없이 사실 진술을 담고 돌아왔을 때 한 번 더 요청하며 붙이는 안내
+const FAST_RETRY_NOTE = `(앱 확인) 직전 시도는 검색·출처 없이 답해서 앱이 받지 않았음. 이번에는 반드시 먼저 web_search로
+핵심 수치·권고·시험 결과를 확인하고, 그 검색 결과에서 인용해 짧게 답할 것.`;
 
 const THREAD_SYSTEM = `
     You are an attending-level colleague in a specialist medical discussion with the reader. The conversation is kept
@@ -726,15 +733,38 @@ export const THREAD_REINFORCE_INSTRUCTION = (answer: string) => `
 ${answer.replace(/\[(\d{1,2})\]/g, '')}
 """`;
 
-export const streamThreadAnswer = async (params: {
+type ThreadStreamParams = {
     history: ThreadTurn[];
     question: ThreadTurn;
     mode?: ThreadAnswerMode; // 기본 'full'(근거 중심)
     onText?: (textSoFar: string) => void;
-    onStatus?: (status: 'searching' | 'writing') => void;
+    onStatus?: (status: 'searching' | 'writing' | 'recheck') => void;
     onSources?: (sources: Source[]) => void;
     signal?: AbortSignal;
-}): Promise<{ text: string; sources: Source[]; truncated: boolean }> => {
+};
+type ThreadStreamResult = { text: string; sources: Source[]; truncated: boolean };
+
+export const streamThreadAnswer = async (params: ThreadStreamParams): Promise<ThreadStreamResult> => {
+    const fast = params.mode === 'fast';
+    const first = await streamThreadOnce(params, fast ? FAST_MODE_NOTE : undefined);
+    // 빠른 모드 안전장치: 수치·권고 같은 사실 진술이 있는데 출처가 하나도 없으면 검색을 요구하며 한 번만 다시 받음
+    // (앞 대화·질문은 캐시에서 읽으므로 추가 비용은 대부분 짧은 답 한 번 + 검색)
+    if (!fast || first.sources.length > 0 || first.truncated || params.signal?.aborted) return first;
+    if (uncitedClaims(first.text).length === 0) return first;
+    params.onStatus?.('recheck');
+    params.onText?.('');
+    params.onSources?.([]);
+    try {
+        const second = await streamThreadOnce(params, `${FAST_MODE_NOTE}\n\n${FAST_RETRY_NOTE}`);
+        return second; // 화면에 이미 다시 받은 답이 흐르고 있으므로 그대로 씀
+    } catch (e: any) {
+        if (e?.name === 'AbortError') throw e;
+        console.warn('빠른 답변 근거 재요청 실패 — 첫 답변을 씀', e);
+        return first;
+    }
+};
+
+const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: string): Promise<ThreadStreamResult> => {
     const apiKey = getApiKey();
     const fast = params.mode === 'fast';
     const body: Record<string, any> = {
@@ -742,13 +772,14 @@ export const streamThreadAnswer = async (params: {
         max_tokens: fast ? 16000 : 32000,
         // 시스템 지시는 모든 질문에서 같으므로 캐시 (대화가 달라도 이 부분은 0.1배로 읽음)
         system: [{ type: 'text', text: THREAD_SYSTEM, cache_control: CACHE }],
-        messages: buildThreadMessages(params.history, params.question, fast ? FAST_MODE_NOTE : undefined),
+        messages: buildThreadMessages(params.history, params.question, extraInstruction),
         // 검색 도구 정의는 두 모드 모두 같게 (바뀌면 캐시 전체가 무효). 빠른 모드의 검색 횟수는 안내문으로 제한
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }],
         stream: true
     };
-    // 빠른 모드는 생각 깊이 low (근거 중심은 기본값 high). 모드를 바꾸면 그 대화의 캐시는 한 번 새로 씀
-    if (fast) body.output_config = { effort: 'low' };
+    // 빠른 모드는 생각 깊이 medium (근거 중심은 기본값 high). low는 검색을 아예 건너뛰는 일이 잦아 근거 없는 답이 나왔음 (§5-61)
+    // 모드를 바꾸면 그 대화의 캐시는 한 번 새로 씀
+    if (fast) body.output_config = { effort: 'medium' };
     const response = await fetch(API_URL, {
         method: 'POST',
         headers: {
