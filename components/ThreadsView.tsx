@@ -193,6 +193,50 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[]; seen?: Source[];
     );
 });
 
+// 답변 아래 "이어서 물어볼 만한 것": 누르면 바로 질문, 시계 버튼은 나중에 물어보기로 적어둠
+// 마지막 답변은 펼쳐서, 이전 답변은 접어서
+const FollowUps: React.FC<{ items: string[]; open: boolean; disabled: boolean; onAsk: (q: string) => void; onLater: (q: string) => void }> = ({ items, open, disabled, onAsk, onLater }) => {
+    const list = (
+        <ul className="mt-1.5 space-y-1">
+            {items.map((q, i) => (
+                <li key={i} className="flex items-stretch gap-1">
+                    <button
+                        onClick={() => onAsk(q)}
+                        disabled={disabled}
+                        className="flex-1 min-w-0 flex items-center gap-1.5 text-left px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-[12px] text-slate-700 hover:border-accent-300 hover:text-accent-700 disabled:opacity-50"
+                        title="이 질문을 바로 물어보기"
+                    >
+                        <ChevronRight className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                        <span className="break-words">{q}</span>
+                    </button>
+                    <button
+                        onClick={() => onLater(q)}
+                        className="shrink-0 px-2 rounded-lg border border-slate-200 bg-white text-slate-400 hover:text-accent-700 hover:border-accent-300"
+                        title="나중에 물어보기로 적어두기"
+                    >
+                        <Clock className="w-3.5 h-3.5" />
+                    </button>
+                </li>
+            ))}
+        </ul>
+    );
+    return (
+        <div className="mt-3 pt-2.5 border-t border-slate-100">
+            {open ? (
+                <>
+                    <p className="text-[11px] font-bold text-slate-400">이어서 물어볼 만한 것</p>
+                    {list}
+                </>
+            ) : (
+                <details>
+                    <summary className="text-[11px] text-slate-400 cursor-pointer">이어서 물어볼 만한 것 {items.length}개</summary>
+                    {list}
+                </details>
+            )}
+        </div>
+    );
+};
+
 const MODE_KEY = 'medinote_thread_mode';
 const readMode = (): ThreadAnswerMode => { try { return localStorage.getItem(MODE_KEY) === 'fast' ? 'fast' : 'full'; } catch { return 'full'; } };
 
@@ -353,9 +397,10 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                 if (opts?.replaceAt) {
                     const i = msgs.findIndex(m => m.role === 'assistant' && m.at === opts.replaceAt);
                     if (i < 0) return null; // 그 사이 지워졌거나 바뀐 경우
-                    msgs[i] = { ...msgs[i], text: result.text, sources: result.sources, seen: result.seen, queries: result.queries, fast: undefined };
+                    // 다시 쓴 답에 제안 질문이 없으면(보강 지시는 본문만 쓰라고 함) 원래 것을 유지
+                    msgs[i] = { ...msgs[i], text: result.text, sources: result.sources, seen: result.seen, queries: result.queries, followups: result.followups.length ? result.followups : msgs[i].followups, fast: undefined };
                 } else {
-                    msgs.push({ role: 'assistant', at: now, text: result.text, sources: result.sources, seen: result.seen, queries: result.queries, ...(answerMode === 'fast' ? { fast: true } : {}) });
+                    msgs.push({ role: 'assistant', at: now, text: result.text, sources: result.sources, seen: result.seen, queries: result.queries, followups: result.followups, ...(answerMode === 'fast' ? { fast: true } : {}) });
                 }
                 return { ...latest, content: encodeThread(msgs), updatedAt: now };
             });
@@ -729,6 +774,9 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
     const unanswered = lastQuestionUnanswered(messages) && !stream;
     const tooLong = (active.content || '').length > THREAD_SOFT_LIMIT_CHARS;
     const busy = !!stream;
+    // 가장 최근 답변 (그 답의 "이어서 물어볼 만한 것"만 펼쳐서 보여줌)
+    let lastAnswerIdx = -1;
+    for (let k = messages.length - 1; k >= 0; k--) if (messages[k].role === 'assistant') { lastAnswerIdx = k; break; }
 
     const send = async () => {
         const text = draft;
@@ -797,6 +845,15 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                                 onExpand={stream?.reinforceAt === m.at ? undefined : () => expandAnswer(active.id, m.at)}
                                 reinforceDisabled={busy}
                             />
+                            {m.followups && m.followups.length > 0 && stream?.reinforceAt !== m.at && (
+                                <FollowUps
+                                    items={m.followups}
+                                    open={i === lastAnswerIdx}
+                                    disabled={busy}
+                                    onAsk={q => { stickToBottomRef.current = true; ask(active.id, q, null); }}
+                                    onLater={async q => { if (!(await addPending(active.id, q))) alert('적어두지 못했습니다. 다시 시도해주세요.'); }}
+                                />
+                            )}
                             {stream?.reinforceAt === m.at && (
                                 <p className="mt-2 text-[11px] font-bold text-accent-600 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" />
                                     {stream.redoKind === 'expand' ? '근거 중심으로 자세히 다시 쓰는 중…' : '이 답변의 근거를 찾아 다시 쓰는 중…'} 아래에 진행 상황이 보여요

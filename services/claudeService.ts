@@ -674,6 +674,29 @@ const FAST_MODE_NOTE = `(앱 설정 — 빠른 모드) 이번 답은 짧게: 핵
 const FAST_RETRY_NOTE = `(앱 확인) 직전 시도는 검색·출처 없이 답해서 앱이 받지 않았음. 이번에는 반드시 먼저 web_search로
 핵심 수치·권고·시험 결과를 확인하고, 그 검색 결과에서 인용해 짧게 답할 것.`;
 
+// 답변 끝의 "이어서 물어볼 만한 것" 구분 표시 (앱이 본문에서 떼어 버튼으로 보여줌)
+const FOLLOWUP_MARKER = '%%NEXT%%';
+
+// 받은 글을 본문 / 이어서 물어볼 질문으로 나눔. 받는 중이면 구분 표시가 반쯤 들어온 끝부분도 숨김
+export const splitFollowups = (raw: string, streaming = false): { body: string; followups: string[] } => {
+    const at = raw.indexOf(FOLLOWUP_MARKER);
+    if (at < 0) {
+        let body = raw;
+        if (streaming) {
+            for (let k = Math.min(FOLLOWUP_MARKER.length - 1, body.length); k > 0; k--) {
+                if (body.endsWith(FOLLOWUP_MARKER.slice(0, k))) { body = body.slice(0, -k); break; }
+            }
+        }
+        return { body, followups: [] };
+    }
+    const followups = raw.slice(at + FOLLOWUP_MARKER.length).split('\n')
+        .map(l => l.replace(/^\s*(?:[-*]|\d+[.)])\s*/, '').replace(/\[\d{1,2}\]/g, '').replace(/\*\*/g, '').trim())
+        .filter(l => l.length >= 4)
+        .map(l => (l.length > 80 ? l.slice(0, 80) + '…' : l))
+        .slice(0, 4);
+    return { body: raw.slice(0, at).trimEnd(), followups };
+};
+
 const THREAD_SYSTEM = `
     You are an attending-level colleague in a specialist medical discussion with the reader. The conversation is kept
     as their study notes and will be re-read and quizzed, so OBJECTIVE, VERIFIABLE EVIDENCE IS THE TOP PRIORITY —
@@ -717,6 +740,12 @@ const THREAD_SYSTEM = `
       line, ≥/≤ instead of LaTeX. Tables are fine for comparisons (plain text cells).
     - Write in Korean with standard English medical terms/abbreviations, unless the reader writes in another language.
     - Output only the answer — no narration of your process ("검색해보겠습니다" etc.).
+
+    AFTER THE ANSWER (always, briefly): on a new line write exactly ${FOLLOWUP_MARKER} and then 3 follow-up questions,
+    one per line starting with "- ", in Korean (≤ 40 characters each). Pick what a fellow would most likely want to ask
+    next or should not miss: a practical pitfall, an adjacent decision, a special population, a conflicting guideline,
+    a landmark trial worth knowing. Questions only — no statements, no numbers, no citations, no searching for them.
+    Do not repeat what the answer already covered. Nothing after them.
 `;
 
 // "근거 보강": 이미 받은 답변에서 출처가 없는 내용을 찾아 검색으로 근거를 붙여 다시 씀
@@ -745,7 +774,7 @@ type ThreadStreamParams = {
     signal?: AbortSignal;
 };
 // sources = 본문에 [n]으로 인용된 자료, seen = 검색해 본 자료 중 인용 안 된 것, queries = 검색어
-type ThreadStreamResult = { text: string; sources: Source[]; seen: Source[]; queries: string[]; truncated: boolean };
+type ThreadStreamResult = { text: string; sources: Source[]; seen: Source[]; queries: string[]; followups: string[]; truncated: boolean };
 
 export const streamThreadAnswer = async (params: ThreadStreamParams): Promise<ThreadStreamResult> => {
     const fast = params.mode === 'fast';
@@ -847,7 +876,7 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
                     toolInput.set(evt.index, (toolInput.get(evt.index) || '') + (d.partial_json || ''));
                 } else if (d.type === 'text_delta' && blockTypes.get(evt.index) === 'text') {
                     text += d.text || '';
-                    params.onText?.(text);
+                    params.onText?.(splitFollowups(text, true).body);
                 } else if (d.type === 'citations_delta' && d.citation?.url) {
                     const c = d.citation;
                     let src = sources.get(c.url);
@@ -878,7 +907,7 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
                     const m = /(\s*)$/.exec(text);
                     const tail = m ? m[1] : '';
                     text = text.slice(0, text.length - tail.length) + marker + tail;
-                    params.onText?.(text);
+                    params.onText?.(splitFollowups(text, true).body);
                 }
                 break;
             }
@@ -907,7 +936,8 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
     }
 
     if (stopReason === 'refusal') throw new Error('Safety: content blocked by the model (refusal)');
-    text = text.trim();
+    const split = splitFollowups(text);
+    text = split.body.trim();
     if (!text) {
         throw new Error(stopReason === 'max_tokens'
             ? '답변을 쓰기 전에 분량 한도에 걸렸습니다. 질문을 조금 좁혀서 다시 시도해주세요.'
@@ -918,7 +948,7 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
     // 번호 순서 그대로 (번호와 목록이 어긋나지 않게 자르지 않음)
     const list = Array.from(sources.values()).sort((a, b) => a.n - b.n).map(({ n, ...s }) => s);
     const seenList = Array.from(seen.values()).filter(s => !sources.has(s.uri));
-    return { text, sources: list, seen: seenList, queries, truncated };
+    return { text, sources: list, seen: seenList, queries, followups: split.followups, truncated };
 };
 
 // ----------------------------------------------------------------------------

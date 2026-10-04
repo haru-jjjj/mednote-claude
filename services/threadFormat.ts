@@ -16,6 +16,7 @@ export interface ThreadMessage {
     fast?: boolean; // 빠른 모드로 받은 답변
     seen?: Source[]; // 답을 쓰며 검색해 본 자료 중 본문에 번호로 직접 인용되지 않은 것 (§5-62)
     queries?: string[]; // 그 답을 쓰며 쓴 검색어
+    followups?: string[]; // 답변 끝에 AI가 제안한 "이어서 물어볼 만한 것" (§5-63)
 }
 
 const Q_RE = /<!-- mt:q (\d+) -->/;
@@ -76,6 +77,12 @@ export const encodeThread = (messages: ThreadMessage[]): string => {
                 seen.forEach(s => block.push(`- [${cleanTitle(s.title || s.uri)}](${cleanUri(s.uri)})`));
                 block.push('<!-- /mt:seen -->');
             }
+            const next = (m.followups || []).map(q => scrub(q).replace(/\s+/g, ' ')).filter(Boolean);
+            if (next.length) {
+                block.push('<!-- mt:next -->');
+                next.forEach(q => block.push(`- ${q}`));
+                block.push('<!-- /mt:next -->');
+            }
             out.push(block.join('\n'));
         }
     });
@@ -135,8 +142,15 @@ export const parseThread = (content: string): ThreadMessage[] => {
                 });
                 text = text.replace(vm[0], '');
             }
+            const followups: string[] = [];
+            const nm = /<!-- mt:next -->\n?([\s\S]*?)\n?<!-- \/mt:next -->/.exec(text);
+            if (nm) {
+                nm[1].split('\n').forEach(line => { const q = line.trim().replace(/^- /, '').trim(); if (q) followups.push(q); });
+                text = text.replace(nm[0], '');
+            }
             msgs.push({
                 role: 'assistant', at, text: text.trim(),
+                ...(followups.length ? { followups } : {}),
                 ...(sources.length ? { sources } : {}),
                 ...(seen.length ? { seen } : {}),
                 ...(queries.length ? { queries } : {}),

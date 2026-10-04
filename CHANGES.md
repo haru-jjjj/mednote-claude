@@ -1163,6 +1163,21 @@
 - 바뀐 파일: `services/claudeService.ts`(검색어 `input_json_delta`·검색 결과 `web_search_tool_result` 수집, `onSearch`),
   `services/threadFormat.ts`(`seen`·`queries`), `services/quizCoverage.ts`, `components/ThreadsView.tsx`.
 
+## 5-63. 답변 아래 "이어서 물어볼 만한 것" (요청)
+
+- 같은 답변 요청 안에서 AI가 답 끝에 구분 표시(`%%NEXT%%`) 뒤로 짧은 후속 질문 3개를 덧붙이게 함 → **추가 요청·추가 검색 없음**.
+  늘어나는 건 출력 약 100~150토큰(질문 3줄)이라 답변 시간은 보통 몇 초 이내, 비용은 답변당 약 $0.002 수준.
+- 고르는 기준(시스템 지시): 실무상 함정, 이어지는 결정, 특수 환자군, 가이드라인 간 차이, 알아둘 대표 임상시험.
+  **질문 형태만**(사실·수치·인용 없음, 답에서 이미 다룬 것 제외) — 근거 없는 진술이 섞이지 않게.
+- 앱이 구분 표시 뒤를 본문에서 떼어 답변 아래 버튼으로 표시(받는 중에는 구분 표시가 화면에 보이지 않게 숨김).
+  - 질문을 누르면 그 대화에서 **바로 질문**(현재 선택한 모드로), 오른쪽 시계 버튼은 **나중에 물어보기**로 적어둠.
+  - 가장 최근 답변만 펼쳐서, 이전 답변들은 "이어서 물어볼 만한 것 3개"로 접어서.
+- "근거 찾아 보강"/"자세히"로 다시 받은 답에 제안이 없으면 원래 제안을 유지.
+- 저장: 답변 블록 끝 `<!-- mt:next -->`(`- 질문` 줄). AI에 보내는 앞 대화·퀴즈 출제에서는 빠짐(본문만 보냄 → 캐시도 영향 없음).
+  시스템 지시가 바뀌어 업데이트 직후 첫 질문만 캐시를 한 번 새로 씀.
+- 바뀐 파일: `services/claudeService.ts`(`FOLLOWUP_MARKER`, `splitFollowups`, THREAD_SYSTEM), `services/threadFormat.ts`(`followups`),
+  `services/quizCoverage.ts`, `components/ThreadsView.tsx`(`FollowUps`).
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.

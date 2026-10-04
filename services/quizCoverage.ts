@@ -45,6 +45,7 @@ const cleanContent = (content: string): string =>
         // 질문 노트 답변의 출처 링크 목록은 출제 대상이 아님
         .replace(/<!-- mt:src -->[\s\S]*?<!-- \/mt:src -->/g, '')
         .replace(/<!-- mt:seen -->[\s\S]*?<!-- \/mt:seen -->/g, '')
+        .replace(/<!-- mt:next -->[\s\S]*?<!-- \/mt:next -->/g, '')
         .replace(/<!--[\s\S]*?-->/g, '')
         .replace(/<summary>[\s\S]*?<\/summary>/g, '')
         .replace(/<\/?details[^>]*>/g, '')
