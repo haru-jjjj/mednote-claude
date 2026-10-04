@@ -587,11 +587,14 @@ const THREAD_TRIM_STEP = 6;
 // 이전 대화의 사진은 최근 것만 다시 보냄 (매번 모든 사진을 보내면 비용·속도가 커짐)
 const THREAD_MAX_IMAGES = 6;
 
+// 앞 답변 속 [n] 출처 번호는 앱이 붙인 것 — 그대로 보내면 AI가 흉내 내서 번호를 직접 써버리고
+// 정작 앱이 받는 인용 정보(citations)는 비어 "번호는 있는데 연결된 출처가 없는" 답이 나옴 (§5-65)
+const stripCiteNumbers = (s: string) => s.replace(/\[\d{1,2}(?:\s*[,–-]\s*\d{1,2})*\]/g, '');
 const turnText = (t: ThreadTurn) => {
-    const base = t.role === 'user' && t.quote
-        ? `(이전 답변에서 이 부분을 짚어서 묻는 질문)\n"""${t.quote}"""\n\n${t.text}`
+    if (t.role === 'assistant') return stripCiteNumbers(t.text);
+    return t.quote
+        ? `(이전 답변에서 이 부분을 짚어서 묻는 질문)\n"""${stripCiteNumbers(t.quote)}"""\n\n${t.text}`
         : t.text;
-    return base;
 };
 
 // 1시간 캐시: 답변을 읽고(5분은 금방 지남) 이어서 물어도 앞부분을 다시 0.1배로 읽음. 쓰기는 2배지만 질문마다 새로 붙는 부분에만 듦
@@ -668,11 +671,13 @@ export type ThreadAnswerMode = 'full' | 'fast';
 const FAST_MODE_NOTE = `(앱 설정 — 빠른 모드) 이번 답은 짧게: 핵심만 5~8줄.
 - 짧아도 근거는 필수: 쓰기 전에 반드시 web_search를 1~3회 해서 이 답의 핵심 수치·권고·시험 결과를 확인하고, 그 검색 결과에서 인용해 쓸 것.
   검색 없이 기억만으로 답하지 말 것. 순수한 기전·정의만 묻는 질문이 아니면 검색을 건너뛰지 말 것.
-- 출처를 붙이지 못한 수치·권고·시험 결과는 빼거나 "(출처 미확인)".`;
+- 출처를 붙이지 못한 수치·권고·시험 결과는 빼거나 "(출처 미확인)".
+- [1] 같은 번호나 참고문헌 목록을 직접 쓰지 말 것(앱이 검색 인용에서 자동으로 붙임). 검색 결과 영어 원문을 길게 그대로 옮기지 말고 한국어로 요약.
+- 이 안내 자체("빠른 모드" 등)는 답에 언급하지 말 것.`;
 
 // 빠른 모드 답이 출처 하나 없이 사실 진술을 담고 돌아왔을 때 한 번 더 요청하며 붙이는 안내
-const FAST_RETRY_NOTE = `(앱 확인) 직전 시도는 검색·출처 없이 답해서 앱이 받지 않았음. 이번에는 반드시 먼저 web_search로
-핵심 수치·권고·시험 결과를 확인하고, 그 검색 결과에서 인용해 짧게 답할 것.`;
+const FAST_RETRY_NOTE = `(앱 확인) 직전 시도는 출처가 연결되지 않은 답이라 앱이 받지 않았음(검색을 안 했거나, 인용 대신 [n] 번호를 직접 씀).
+이번에는 반드시 먼저 web_search로 핵심 수치·권고·시험 결과를 확인하고, 그 검색 결과를 인용해 짧게 답할 것. 번호는 직접 쓰지 말 것.`;
 
 // 답변 끝의 "이어서 물어볼 만한 것" 구분 표시 (앱이 본문에서 떼어 버튼으로 보여줌)
 const FOLLOWUP_MARKER = '%%NEXT%%';
@@ -774,14 +779,27 @@ type ThreadStreamParams = {
     signal?: AbortSignal;
 };
 // sources = 본문에 [n]으로 인용된 자료, seen = 검색해 본 자료 중 인용 안 된 것, queries = 검색어
-type ThreadStreamResult = { text: string; sources: Source[]; seen: Source[]; queries: string[]; followups: string[]; truncated: boolean };
+// orphanCites = AI가 직접 쓴 [n] 번호 개수 (연결된 출처가 없어 앱이 지움)
+type ThreadStreamResult = { text: string; sources: Source[]; seen: Source[]; queries: string[]; followups: string[]; truncated: boolean; orphanCites: number };
+
+// 앱이 붙인 출처 번호 앞에만 보이지 않는 표시(U+2063)를 둬서, AI가 직접 쓴 번호와 구별
+const CITE_TAG = '\u2063';
+const ORPHAN_RE = /( *)(\u2063)?\[\d{1,2}(?:\s*[,–-]\s*\d{1,2})*\]/g;
+// AI가 직접 쓴 번호는 지우고(가리킬 출처가 없음), 앱 번호의 표시는 떼어 냄
+const dropOrphanCites = (t: string): { text: string; orphans: number } => {
+    let orphans = 0;
+    const text = t.replace(ORPHAN_RE, (m, _sp, tag) => { if (tag) return m; orphans++; return ''; }).split(CITE_TAG).join('');
+    return { text, orphans };
+};
 
 export const streamThreadAnswer = async (params: ThreadStreamParams): Promise<ThreadStreamResult> => {
     const fast = params.mode === 'fast';
     const first = await streamThreadOnce(params, fast ? FAST_MODE_NOTE : undefined);
     // 빠른 모드 안전장치: 수치·권고 같은 사실 진술이 있는데 검색을 아예 안 했으면 검색을 요구하며 한 번만 다시 받음
     // (검색은 했으면 그 자료 링크를 보여주므로 다시 받지 않음. 앞 대화·질문은 캐시에서 읽어 추가 비용은 짧은 답 한 번 + 검색)
-    if (!fast || first.sources.length > 0 || first.seen.length > 0 || first.truncated || params.signal?.aborted) return first;
+    // 또는 검색은 했지만 인용 대신 번호를 직접 써서 연결된 출처가 하나도 없을 때도 (§5-65)
+    const noLinkedSource = first.sources.length === 0 && (first.seen.length === 0 || first.orphanCites > 0);
+    if (!fast || !noLinkedSource || first.truncated || params.signal?.aborted) return first;
     if (uncitedClaims(first.text).length === 0) return first;
     params.onStatus?.('recheck');
     params.onText?.('');
@@ -789,7 +807,9 @@ export const streamThreadAnswer = async (params: ThreadStreamParams): Promise<Th
     params.onSearch?.([], []);
     try {
         const second = await streamThreadOnce(params, `${FAST_MODE_NOTE}\n\n${FAST_RETRY_NOTE}`);
-        return second; // 화면에 이미 다시 받은 답이 흐르고 있으므로 그대로 씀
+        // 화면에 이미 다시 받은 답이 흐르고 있으므로 그대로 씀. 검색 자료는 두 번 다 보여줌
+        const firstSeen = [...first.sources, ...first.seen].filter(s => !second.sources.some(x => x.uri === s.uri) && !second.seen.some(x => x.uri === s.uri));
+        return { ...second, seen: [...second.seen, ...firstSeen], queries: Array.from(new Set([...first.queries, ...second.queries])) };
     } catch (e: any) {
         if (e?.name === 'AbortError') throw e;
         console.warn('빠른 답변 근거 재요청 실패 — 첫 답변을 씀', e);
@@ -876,7 +896,7 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
                     toolInput.set(evt.index, (toolInput.get(evt.index) || '') + (d.partial_json || ''));
                 } else if (d.type === 'text_delta' && blockTypes.get(evt.index) === 'text') {
                     text += d.text || '';
-                    params.onText?.(splitFollowups(text, true).body);
+                    params.onText?.(splitFollowups(dropOrphanCites(text).text, true).body);
                 } else if (d.type === 'citations_delta' && d.citation?.url) {
                     const c = d.citation;
                     let src = sources.get(c.url);
@@ -903,11 +923,11 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
                 // 인용이 붙은 글 조각이 끝나면 그 뒤에 출처 번호 [n]을 붙임 (끝의 줄바꿈 앞에)
                 const nums = blockCites.get(evt.index);
                 if (nums && nums.size) {
-                    const marker = Array.from(nums).sort((a, b) => a - b).map(n => `[${n}]`).join('');
+                    const marker = Array.from(nums).sort((a, b) => a - b).map(n => `${CITE_TAG}[${n}]`).join('');
                     const m = /(\s*)$/.exec(text);
                     const tail = m ? m[1] : '';
                     text = text.slice(0, text.length - tail.length) + marker + tail;
-                    params.onText?.(splitFollowups(text, true).body);
+                    params.onText?.(splitFollowups(dropOrphanCites(text).text, true).body);
                 }
                 break;
             }
@@ -936,7 +956,8 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
     }
 
     if (stopReason === 'refusal') throw new Error('Safety: content blocked by the model (refusal)');
-    const split = splitFollowups(text);
+    const cleaned = dropOrphanCites(text);
+    const split = splitFollowups(cleaned.text);
     text = split.body.trim();
     if (!text) {
         throw new Error(stopReason === 'max_tokens'
@@ -948,7 +969,7 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
     // 번호 순서 그대로 (번호와 목록이 어긋나지 않게 자르지 않음)
     const list = Array.from(sources.values()).sort((a, b) => a.n - b.n).map(({ n, ...s }) => s);
     const seenList = Array.from(seen.values()).filter(s => !sources.has(s.uri));
-    return { text, sources: list, seen: seenList, queries, followups: split.followups, truncated };
+    return { text, sources: list, seen: seenList, queries, followups: split.followups, truncated, orphanCites: cleaned.orphans };
 };
 
 // ----------------------------------------------------------------------------

@@ -6,12 +6,17 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { generateDetailedQuizExplanation, formatMedicalMarkdown } from '../services/claudeService';
 import { getNoteFromDB } from '../services/storage';
-import { collectWrongAnswers, WrongAnswerWithNote } from '../services/studyUtils';
+import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo } from '../services/studyUtils';
+
+const PERIOD_KEY = 'medinote_quiz_period';
+const readPeriod = (): ReviewPeriod => {
+  try { const v = localStorage.getItem(PERIOD_KEY); return REVIEW_PERIODS.some(p => p.key === v) ? (v as ReviewPeriod) : '1w'; } catch { return '1w'; }
+};
 
 interface QuizViewProps {
   notes: Note[];
   quizState: QuizState;
-  onStart: (mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source?: 'RANDOM' | 'REVIEW') => void;
+  onStart: (mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source?: 'RANDOM' | 'REVIEW' | 'PERIOD', period?: ReviewPeriod) => void;
   onNext: (wasCorrect: boolean, chosenIndex: number | null) => void;
   onStop: () => void;
   onEndSession: () => void;
@@ -32,6 +37,15 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   
   // Language Selection State
   const [selectedLanguage, setSelectedLanguage] = useState<QuizLanguage>('Korean');
+  // 기간별 복습: 고른 기간(마지막 선택 기억)과 기간별 메모 수
+  const [period, setPeriodState] = useState<ReviewPeriod>(readPeriod);
+  const setPeriod = (p: ReviewPeriod) => { setPeriodState(p); try { localStorage.setItem(PERIOD_KEY, p); } catch { /* 저장 안 돼도 이번 화면에선 동작 */ } };
+  const periodCounts = useMemo(() => {
+      const now = Date.now();
+      const out = {} as Record<ReviewPeriod, number>;
+      REVIEW_PERIODS.forEach(p => { out[p.key] = notesInPeriod(notes, p.key, now).length; });
+      return out;
+  }, [notes]);
 
   // States for Deep Dive (Detailed Explanation)
   const [isDetailLoading, setIsDetailLoading] = useState(false);
@@ -221,6 +235,57 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                           </div>
                       </div>
 
+                      {/* 기간별 복습: 고른 기간에 새로 쓰거나 고친 메모로만 냄 */}
+                      <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 md:p-6">
+                          <div className="flex items-start gap-3">
+                              <div className="w-10 h-10 shrink-0 rounded-xl flex items-center justify-center bg-slate-100 text-slate-500">
+                                  <Layers className="w-5 h-5" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                  <h3 className="text-lg font-bold text-slate-900">기간별 복습</h3>
+                                  <p className="text-sm text-slate-500 leading-relaxed mt-1">
+                                      고른 기간에 쓰거나 고친 메모(질문 노트 포함)로만 냅니다. 한 바퀴 다 돌면 다시 처음부터.
+                                  </p>
+                                  <div className="flex flex-wrap gap-1.5 mt-3">
+                                      {REVIEW_PERIODS.map(p => (
+                                          <button
+                                              key={p.key}
+                                              type="button"
+                                              onClick={() => setPeriod(p.key)}
+                                              className={`px-3 py-1.5 rounded-lg border text-sm font-bold transition-colors ${period === p.key ? 'bg-accent-50 border-accent-300 text-accent-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                                          >
+                                              {p.label} <span className={`text-xs font-normal ${period === p.key ? 'text-accent-600' : 'text-slate-400'}`}>{periodCounts[p.key]}</span>
+                                          </button>
+                                      ))}
+                                  </div>
+                                  <p className="text-xs text-slate-400 mt-2">
+                                      {periodCounts[period] > 0
+                                          ? `${periodInfo(period).long} 메모 ${periodCounts[period]}개`
+                                          : `${periodInfo(period).long} 동안 쓰거나 고친 메모가 없어요.`}
+                                      {isFetchingAll && ' (예전 메모 불러오는 중…)'}
+                                  </p>
+                                  <div className="flex flex-wrap gap-2 mt-3">
+                                      <button
+                                          type="button"
+                                          onClick={() => onStart('DETAILED', selectedLanguage, 'PERIOD', period)}
+                                          disabled={periodCounts[period] === 0}
+                                          className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                          <BookOpen className="w-4 h-4" /> 케이스 문제로
+                                      </button>
+                                      <button
+                                          type="button"
+                                          onClick={() => onStart('QUICK_OX', selectedLanguage, 'PERIOD', period)}
+                                          disabled={periodCounts[period] === 0}
+                                          className="px-4 py-2 rounded-xl bg-white border border-accent-300 text-accent-700 text-sm font-bold hover:bg-accent-100 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                          <Zap className="w-4 h-4" /> OX로 빠르게
+                                      </button>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+
                       <p className="text-xs font-bold text-slate-400 mb-3 px-1">
                           무작위 퀴즈 — 복습일이 된 메모와 아직 안 푼 메모가 더 자주 나옵니다
                       </p>
@@ -376,7 +441,9 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
       const { correct, total } = quizState.stats;
       const title = quizState.source === 'WRONG'
           ? '오답 다시 풀기 완료'
-          : total === 0 ? '오늘 복습할 메모가 없어요' : '오늘의 복습 완료';
+          : quizState.source === 'PERIOD'
+              ? (total === 0 ? `${periodInfo(quizState.period).long} 동안 쓰거나 고친 메모가 없어요` : `${periodInfo(quizState.period).long} 복습 — 더 낼 메모가 없어요`)
+              : total === 0 ? '오늘 복습할 메모가 없어요' : '오늘의 복습 완료';
       return (
           <div className="flex flex-col items-center justify-center h-full bg-slate-50 p-6 text-center animate-in fade-in">
               <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center mb-6">
@@ -389,6 +456,8 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
               <p className="text-slate-400 text-xs mb-8 max-w-sm leading-relaxed">
                   {quizState.source === 'WRONG'
                       ? '맞힌 문제는 오답 노트에서 빠졌고, 또 틀린 문제는 그대로 남아 있습니다.'
+                      : quizState.source === 'PERIOD' && total === 0
+                      ? '기간을 더 길게 골라 보세요.'
                       : '틀린 문제는 오답 노트에 저장됐고, 해당 메모는 내일 다시 복습 목록에 나옵니다.'}
               </p>
               <div className="flex flex-col gap-3 w-full max-w-xs">
@@ -460,7 +529,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                 </div>
                 <div>
                     <h2 className="font-bold text-slate-800 text-base md:text-lg">
-                        {quizState.source === 'REVIEW' ? '오늘의 복습' : quizState.source === 'WRONG' ? '오답 다시 풀기' : (isOX ? 'OX 빠른 복습' : '케이스 문제')}
+                        {quizState.source === 'REVIEW' ? '오늘의 복습' : quizState.source === 'WRONG' ? '오답 다시 풀기' : quizState.source === 'PERIOD' ? `기간 복습 · ${periodInfo(quizState.period).long}` : (isOX ? 'OX 빠른 복습' : '케이스 문제')}
                     </h2>
                     <div className="text-[11px] text-slate-400 flex items-center gap-1">
                         <Trophy className="w-3 h-3" /> Score: {quizState.stats.correct}/{quizState.stats.total}

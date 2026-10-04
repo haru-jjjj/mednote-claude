@@ -37,6 +37,31 @@ export const isReviewDue = (n: Pick<Note, 'reviewDueAt'>, now: number): boolean 
 export const countDueNotes = (notes: Note[], now: number): number =>
     notes.reduce((c, n) => c + (isReviewDue(n, now) ? 1 : 0), 0);
 
+// 퀴즈에 낼 수 있는 메모: 퀴즈에서 뺀 것 제외, 질문 노트는 답이 하나라도 있을 때만
+export const isQuizEligible = (n: Note): boolean =>
+    !n.quizExcluded && (n.kind !== 'thread' || /<!-- mt:a \d+ -->/.test(n.content || ''));
+
+// ---------------------------------------------------------------------------
+// 기간별 복습: 선택한 기간에 새로 쓰거나 내용을 고친 메모(질문 노트 포함)로만 출제
+// ---------------------------------------------------------------------------
+export type ReviewPeriod = 'today' | '1w' | '2w' | '1m' | '3m';
+export const REVIEW_PERIODS: { key: ReviewPeriod; label: string; long: string; days: number }[] = [
+    { key: 'today', label: '오늘', long: '오늘', days: 1 },
+    { key: '1w', label: '1주', long: '최근 1주', days: 7 },
+    { key: '2w', label: '2주', long: '최근 2주', days: 14 },
+    { key: '1m', label: '1달', long: '최근 1달', days: 30 },
+    { key: '3m', label: '3달', long: '최근 3달', days: 90 },
+];
+export const periodInfo = (p: ReviewPeriod | undefined) => REVIEW_PERIODS.find(x => x.key === p) || REVIEW_PERIODS[1];
+// 기간 시작 = 오늘 0시에서 (일수-1)일 전 0시 (예: 1주 = 오늘 포함 7일)
+export const periodStart = (p: ReviewPeriod, now: number): number => localMidnightAfter(now, -(periodInfo(p).days - 1));
+// 내용을 쓰거나 고친 시각 (복습 일정·오답 같은 부가정보 변경은 포함하지 않음)
+export const noteTouchedAt = (n: Pick<Note, 'createdAt' | 'updatedAt'>): number => Math.max(n.createdAt || 0, n.updatedAt || 0);
+export const notesInPeriod = (notes: Note[], p: ReviewPeriod, now: number): Note[] => {
+    const start = periodStart(p, now);
+    return notes.filter(n => isQuizEligible(n) && noteTouchedAt(n) >= start);
+};
+
 // 퀴즈 출제 가중치: 복습일이 된 메모 > 아직 한 번도 안 푼 메모 > 복습일이 아직 안 된 메모
 export const quizPickWeight = (n: Note, now: number): number => {
     if (isReviewDue(n, now)) return 4;

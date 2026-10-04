@@ -70,13 +70,13 @@ const escAttr = (v: string) => v.replace(/&/g, '&amp;').replace(/"/g, '&quot;').
 
 // 렌더링된 답변에서 [1][2] 출처 번호를 누르면 그 출처가 열리는 작은 위첨자로.
 // (마크다운 변환 뒤에 바꿈 — 의학 표기 변환이 주소의 _ $ 등을 바꾸지 않게. 코드 블록·태그 속성 안은 그대로)
+// 연결된 출처가 없는 번호(예전 답변에서 AI가 직접 쓴 번호)는 흐린 글씨로 두고 "연결된 출처 없음" 표시
 const linkCitations = (html: string, sources: Source[]): string => {
-    if (!sources.length) return html;
     return html.split(/(<pre[\s\S]*?<\/pre>|<[^>]+>)/g).map(part => {
         if (part.startsWith('<')) return part;
         return part.replace(/\[(\d{1,2})\]/g, (all, num) => {
             const src = sources[Number(num) - 1];
-            if (!src || !/^https?:\/\//.test(src.uri)) return all;
+            if (!src || !/^https?:\/\//.test(src.uri)) return `<span class="text-slate-300" title="AI가 직접 쓴 번호 — 앱이 확인한 출처와 연결되지 않음">${all}</span>`;
             return `<sup class="cite"><a href="${escAttr(src.uri)}" title="${escAttr(src.title)}">${num}</a></sup>`;
         });
     }).join('');
@@ -98,7 +98,7 @@ const AnswerBlock: React.FC<{ text: string; sources?: Source[]; seen?: Source[];
     const seenList = (seen || []).filter(s => !citedUris.has(s.uri));
     const queryList = queries || [];
     // 수치·권고·시험 등이 들어갔는데 근거 번호가 없는 문장 (빠른 답변도 표시 — 근거 없는 내용을 그대로 두지 않게)
-    const uncited = useMemo(() => (onReinforce ? uncitedClaims(text) : []), [text, onReinforce]);
+    const uncited = useMemo(() => (onReinforce ? uncitedClaims(text, (sources || []).length) : []), [text, onReinforce, sources]);
     const html = useMemo(
         () => linkCitations(renderMd(text), list).replace(/<a href="(https?:)/g, '<a target="_blank" rel="noopener noreferrer" href="$1'),
         [text, sources]

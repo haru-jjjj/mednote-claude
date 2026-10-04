@@ -177,7 +177,9 @@ export interface QuizState {
     isActive: boolean;
     mode: 'DETAILED' | 'QUICK_OX' | null;
     // RANDOM: 무작위(복습 예정·안 푼 메모 우선) / REVIEW: 오늘 복습할 메모만 / WRONG: 오답 다시 풀기
-    source: 'RANDOM' | 'REVIEW' | 'WRONG';
+    // PERIOD: 기간별 복습(선택한 기간에 쓰거나 고친 메모만, 메모를 한 바퀴 돌면 다시 처음부터)
+    source: 'RANDOM' | 'REVIEW' | 'WRONG' | 'PERIOD';
+    period?: 'today' | '1w' | '2w' | '1m' | '3m'; // source가 PERIOD일 때
     // 더 낼 문제가 없음(오늘 복습을 다 만들었거나, 오답 다시 풀기 목록이 끝남)
     noMoreQuestions: boolean;
     language: QuizLanguage;

@@ -15,7 +15,7 @@ import { buildPatientIndex, patientIdOf, buildMergedPatientContent, buildAppende
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
 import PinSettingsModal from './components/PinSettingsModal';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NoteCategory, toggleCategory, categoryLabels } from './types';
-import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote } from './services/studyUtils';
+import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote, isQuizEligible, notesInPeriod, ReviewPeriod } from './services/studyUtils';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines } from './services/claudeService';
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
@@ -84,7 +84,6 @@ const sanitizeNotes = (rawNotes: any[]): Note[] => {
 };
 
 // 퀴즈에 낼 수 있는 메모: 퀴즈에서 빼지 않았고, 질문 노트라면 답이 하나라도 있는 것
-const isQuizEligible = (n: Note) => !n.quizExcluded && (!isThread(n) || /<!-- mt:a \d+ -->/.test(n.content || ''));
 
 // 두 사본 중 a가 더 최신인지: 내용 수정 시각(updatedAt)이 우선, 같으면 부가정보 수정 시각(metaUpdatedAt)
 const isNewerCopy = (a: Note, b: Note) => {
@@ -549,6 +548,8 @@ const App: React.FC = () => {
   const quizSessionRef = useRef(0);
   // "오늘의 복습" 세션에서 이미 문제를 만든 메모 (같은 메모로 두 번 내지 않도록)
   const reviewUsedIdsRef = useRef<Set<string>>(new Set());
+  // "기간별 복습" 세션에서 이번 바퀴에 이미 문제를 만든 메모 (기간 안의 메모를 한 바퀴 돌면 비우고 다시)
+  const periodUsedIdsRef = useRef<Set<string>>(new Set());
   // 이번 세션에서 이미 문제를 만든(아직 안 푼 것 포함) 구역 — 미리 만들어 두는 문제가 같은 구역에서 겹치지 않게
   const reservedPartsRef = useRef<Map<string, Set<string>>>(new Map());
 
@@ -578,6 +579,7 @@ const App: React.FC = () => {
             // 세션이 바뀐 뒤 늦게 끝난 요청이 새 세션의 기록을 건드리지 않도록 지금 세션의 것을 잡아 둠
             const reservedMap = reservedPartsRef.current;
             const reviewUsed = reviewUsedIdsRef.current;
+            const periodUsed = periodUsedIdsRef.current;
             const skipIds: string[] = []; // 낼 내용이 없는 메모 (이번 요청에서 건너뜀)
 
             let fullNote: Note | null = null;
@@ -599,6 +601,17 @@ const App: React.FC = () => {
                     }
                     reviewUsed.add(due[0].id);
                     focusNote = due[0];
+                } else if (quizState.source === 'PERIOD') {
+                    // 기간별 복습: 기간 안의 메모를 한 번씩 (덜 출제된·복습일이 된 메모부터 가중치로), 다 돌면 다음 바퀴
+                    const inRange = notesInPeriod(notesRef.current, quizState.period || '1w', Date.now()).filter(n => !skipIds.includes(n.id));
+                    if (inRange.length === 0) {
+                        setIfCurrent(prev => ({ ...prev, isGenerating: false, noMoreQuestions: true }));
+                        return;
+                    }
+                    let left = inRange.filter(n => !periodUsed.has(n.id));
+                    if (left.length === 0) { periodUsed.clear(); left = inRange; }
+                    focusNote = pickLocalRandomNote(left, []);
+                    if (focusNote) periodUsed.add(focusNote.id);
                 } else {
                     // 문제 하나에 메모 하나: 복습일·안 푼 메모·덜 출제된 메모 우선 (최근에 낸 메모는 잠시 제외)
                     const exclude = [...recentRandomIds, ...skipIds];
@@ -634,7 +647,7 @@ const App: React.FC = () => {
                 return;
             }
             const focusId = fullNote.id;
-            if (quizState.source !== 'REVIEW') {
+            if (quizState.source === 'RANDOM') {
                 setRecentRandomIds(prev => [focusId, ...skipIds, ...prev.filter(id => id !== focusId && !skipIds.includes(id))].slice(0, 50));
             }
             const reserved = reservedMap.get(focusId) || new Set<string>();
@@ -704,17 +717,19 @@ const App: React.FC = () => {
 
     fetchNext();
 
-  }, [quizState.isActive, quizState.mode, quizState.source, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
+  }, [quizState.isActive, quizState.mode, quizState.source, quizState.period, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
 
 
-  const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' = 'RANDOM') => {
+  const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' | 'PERIOD' = 'RANDOM', period?: ReviewPeriod) => {
       quizSessionRef.current += 1;
       reviewUsedIdsRef.current = new Set();
+      periodUsedIdsRef.current = new Set();
       reservedPartsRef.current = new Map();
       setQuizState({
           isActive: true,
           mode: mode,
           source,
+          period: source === 'PERIOD' ? (period || '1w') : undefined,
           noMoreQuestions: false,
           language: language,
           isGenerating: false,
