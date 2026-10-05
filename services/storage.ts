@@ -149,3 +149,41 @@ export const saveAllNotesToDB = async (notes: Note[]): Promise<void> => {
         notes.forEach(note => store.put(note));
     });
 };
+
+// 사진 모아보기용 (§5-69): 사진이 있는 메모의 정보만 (사진 데이터는 빼고 개수만 — 화면에 보일 때 따로 읽음)
+// 질문 노트는 사진이 어느 질문에 붙었는지 알아야 해서 content를 함께 넘김
+export interface PhotoNoteMeta {
+    id: string;
+    title: string;
+    kind?: 'thread';
+    tag?: Note['tag'];
+    work?: boolean;
+    createdAt: number;
+    updatedAt?: number;
+    imageCount: number;
+    content?: string; // 질문 노트만
+}
+export const getPhotoNotesMetaFromDB = async (): Promise<PhotoNoteMeta[]> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction(STORE_NAME, 'readonly');
+        const store = transaction.objectStore(STORE_NAME);
+        const out: PhotoNoteMeta[] = [];
+        const request = store.openCursor();
+        request.onsuccess = (event) => {
+            const cursor = (event.target as IDBRequest).result;
+            if (!cursor) { resolve(out); return; }
+            const n = cursor.value as Note;
+            const count = Array.isArray(n.images) ? n.images.filter(x => typeof x === 'string' && x).length : 0;
+            if (count > 0 && !n.deleted) {
+                out.push({
+                    id: n.id, title: n.title, kind: n.kind, tag: n.tag, work: n.work,
+                    createdAt: n.createdAt, updatedAt: n.updatedAt, imageCount: n.images!.length,
+                    ...(n.kind === 'thread' ? { content: n.content } : {})
+                });
+            }
+            cursor.continue();
+        };
+        request.onerror = () => reject(request.error);
+    });
+};

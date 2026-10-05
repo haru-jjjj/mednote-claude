@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers, Sparkles, Search } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers, Sparkles, Search, Image as ImageIcon } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList, { TagFilter } from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
@@ -10,6 +10,7 @@ import AskNotesView from './components/AskNotesView';
 import GuidelineCheckView from './components/GuidelineCheckView';
 import InsightsView from './components/InsightsView';
 import ThreadsView from './components/ThreadsView';
+import PhotosView from './components/PhotosView';
 import { followUpStatus, contentForAnalysis } from './services/insightUtils';
 import { buildPatientIndex, patientIdOf, buildMergedPatientContent, buildAppendedContent } from './services/patientId';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
@@ -375,7 +376,7 @@ const App: React.FC = () => {
       // 항상 무작위 폴백만 타게 됩니다. 화면을 열자마자 전체 메모를 불러와 임베딩
       // 백필 대상과 클러스터링 후보 풀을 넓혀줍니다.
       // 퀴즈(오늘 복습 수·오답 노트)와 오래된 메모 점검도 전체 메모 기준이라 함께 불러옴
-      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES || view === ViewMode.QUIZ || view === ViewMode.GUIDELINE_CHECK || view === ViewMode.INSIGHTS || view === ViewMode.THREADS) triggerAutoFetchAllOnce();
+      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES || view === ViewMode.QUIZ || view === ViewMode.GUIDELINE_CHECK || view === ViewMode.INSIGHTS || view === ViewMode.THREADS || view === ViewMode.PHOTOS) triggerAutoFetchAllOnce();
   }, [view]);
 
   // "내 메모에 물어보기" 화면에서 인용된 메모를 열었다가 뒤로 가면, 목록이 아니라 방금 보던
@@ -1480,6 +1481,7 @@ const App: React.FC = () => {
             { key: 'ask', view: ViewMode.ASK_NOTES, label: '내 메모에 물어보기', icon: Search },
             { key: 'guideline', view: ViewMode.GUIDELINE_CHECK, label: '오래된 메모 점검', icon: ShieldCheck, busy: guidelineCheckingIds.length > 0 },
             { key: 'insights', view: ViewMode.INSIGHTS, label: '메모 활용', icon: Layers, badge: patientFollowUpDue > 0 ? `환자 ${patientFollowUpDue}` : null, badgeTitle: '확인할 차례인 환자 메모' },
+            { key: 'photos', view: ViewMode.PHOTOS, label: '사진 모아보기', icon: ImageIcon },
           ] as { key: string; view?: ViewMode; label: string; icon: React.ComponentType<{ className?: string }>; onClick?: () => void; busy?: boolean; disabled?: boolean; badge?: string | null; badgeTitle?: string }[]).map(item => {
             const active = !!item.view && view === item.view;
             const Icon = item.icon;
@@ -1683,6 +1685,14 @@ const App: React.FC = () => {
                             }}
                         />
                     </div>
+                )}
+                {view === ViewMode.PHOTOS && (
+                    <PhotosView
+                        onBack={() => setView(ViewMode.LIST)}
+                        onOpenNote={openNoteFrom(ViewMode.PHOTOS)}
+                        refreshKey={`${notes.length}:${isFetchingAll ? 1 : 0}`}
+                        isFetchingAll={isFetchingAll}
+                    />
                 )}
                 {/* 질문 노트: 답변을 받는 중에 다른 화면에 가도 계속되도록 한 번 열면 계속 띄워 둠 */}
                 {(threadsMounted || view === ViewMode.THREADS) && (
