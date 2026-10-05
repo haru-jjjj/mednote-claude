@@ -4,8 +4,8 @@ import { ArrowLeft, ArrowUp, Clock, Loader2, Trash2, X, Plus, Search, Globe, Edi
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
 import type { Note, ThreadPending, Source } from '../types';
-import { formatMedicalMarkdown, streamThreadAnswer, THREAD_REINFORCE_INSTRUCTION, ThreadAnswerMode } from '../services/claudeService';
-import { encodeThread, parseThread, threadTitleFrom, countQuestions, lastQuestionUnanswered, pendingOf, THREAD_SOFT_LIMIT_CHARS, ThreadMessage, uncitedClaims } from '../services/threadFormat';
+import { formatMedicalMarkdown, streamThreadAnswer, THREAD_REINFORCE_INSTRUCTION, ThreadAnswerMode, generateThreadTitle } from '../services/claudeService';
+import { encodeThread, parseThread, threadTitleFrom, countQuestions, lastQuestionUnanswered, pendingOf, THREAD_SOFT_LIMIT_CHARS, ThreadMessage, uncitedClaims, threadPlainText } from '../services/threadFormat';
 import { getNoteFromDB } from '../services/storage';
 import AutoTextarea from './AutoTextarea';
 import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass, summarizeSourceKinds, isPrimaryKind } from '../services/sourceKind';
@@ -261,6 +261,15 @@ const FollowUps: React.FC<{ items: string[]; open: boolean; disabled: boolean; o
     );
 };
 
+// 제목이 아직 "첫 질문 그대로"(자동으로 붙은 제목)인지 — 직접 바꾼 제목은 건드리지 않기 위해 (§5-68)
+const isAutoTitled = (t: Pick<Note, 'title' | 'content'>) => {
+    const title = (t.title || '').trim();
+    if (!title || title === '새 질문') return true;
+    const first = parseThread(t.content || '').find(x => x.role === 'user');
+    return !!first && title === threadTitleFrom(first.text);
+};
+const hasAnswer = (content: string) => /<!-- mt:a \d+ -->/.test(content || '');
+
 const MODE_KEY = 'medinote_thread_mode';
 const readMode = (): ThreadAnswerMode => { try { return localStorage.getItem(MODE_KEY) === 'fast' ? 'fast' : 'full'; } catch { return 'full'; } };
 
@@ -289,6 +298,14 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
     const [quote, setQuote] = useState<string | null>(null);
     const [filter, setFilter] = useState('');
     const [streams, setStreams] = useState<Record<string, StreamState>>({});
+    // 제목 짓는 중인 대화, 예전 대화 제목 일괄 정리 진행 (§5-68)
+    const [titling, setTitling] = useState<Record<string, boolean>>({});
+    const [bulkTitling, setBulkTitling] = useState<{ done: number; total: number } | null>(null);
+    // 예전 대화 중 제목이 아직 첫 질문 그대로인 것 (목록 위 "제목 정리" 버튼)
+    const autoTitledIds = useMemo(
+        () => threads.filter(t => hasAnswer(t.content || '') && isAutoTitled(t)).map(t => t.id),
+        [threads]
+    );
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [selection, setSelection] = useState('');
     const [mode, setModeState] = useState<ThreadAnswerMode>(readMode);
@@ -428,6 +445,10 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                 }
                 return { ...latest, content: encodeThread(msgs), updatedAt: now };
             });
+            // 첫 답을 받으면 제목을 대화 주제로 (제목이 아직 첫 질문 그대로일 때만, 뒤에서 조용히)
+            if (!opts?.replaceAt && !history.some(m => m.role === 'assistant')) {
+                retitle(threadId, { onlyIfAuto: true });
+            }
         } catch (e: any) {
             console.error(e);
             if (opts?.replaceAt) { if (e?.name !== 'AbortError') alert(`${opts.redoKind === 'expand' ? '자세한 답변 받기' : '근거 보강'}에 실패했습니다: ${errText(e)}\n원래 답변은 그대로 있어요.`); }
@@ -561,6 +582,42 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
         controllersRef.current.get(t.id)?.abort();
         await onDelete(t.id);
         if (activeId === t.id) setActiveId(null);
+    };
+
+    // AI로 제목 짓기. onlyIfAuto: 직접 바꾼 제목이면 건드리지 않음(자동·일괄 정리용)
+    // 목록 순서가 바뀌지 않게 내용 수정 시각(updatedAt)은 그대로, 다른 기기 반영은 metaUpdatedAt으로
+    const retitle = async (threadId: string, opts: { onlyIfAuto: boolean }): Promise<boolean> => {
+        setTitling(prev => ({ ...prev, [threadId]: true }));
+        try {
+            const latest = await getNoteFromDB(threadId).catch(() => undefined);
+            if (!latest || !hasAnswer(latest.content || '')) return false;
+            if (opts.onlyIfAuto && !isAutoTitled(latest)) return false;
+            const title = await generateThreadTitle(threadPlainText(latest.content || ''));
+            if (!title) return false;
+            const saved = await onUpdate(threadId, cur => {
+                if (!cur || cur.title === title) return null;
+                if (opts.onlyIfAuto && !isAutoTitled(cur)) return null; // 그 사이 직접 바꿨으면 그대로
+                return { ...cur, title, metaUpdatedAt: Date.now() };
+            });
+            return !!saved;
+        } catch (e) {
+            console.error('제목 짓기 실패', e);
+            return false;
+        } finally {
+            setTitling(prev => { const n = { ...prev }; delete n[threadId]; return n; });
+        }
+    };
+
+    const retitleAll = async () => {
+        if (bulkTitling || !autoTitledIds.length) return;
+        if (!window.confirm(`제목이 첫 질문 그대로인 대화 ${autoTitledIds.length}개의 제목을 대화 주제에 맞게 정리할까요?\n(직접 바꾼 제목은 그대로 두며, 대화당 약 $0.002 이하)`)) return;
+        const ids = [...autoTitledIds];
+        setBulkTitling({ done: 0, total: ids.length });
+        for (let i = 0; i < ids.length; i++) {
+            await retitle(ids[i], { onlyIfAuto: true });
+            setBulkTitling({ done: i + 1, total: ids.length });
+        }
+        setBulkTitling(null);
     };
 
     const handleRename = async (t: Note) => {
@@ -750,6 +807,18 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                         <div>
                             <div className="flex items-center gap-2 mb-2">
                                 <p className="text-xs font-bold text-slate-400 flex items-center gap-1.5"><MessageSquareText className="w-3.5 h-3.5" /> 대화 {threads.filter(t => countQuestions(t.content) > 0).length}</p>
+                                {(autoTitledIds.length > 0 || bulkTitling) && (
+                                    <button
+                                        onClick={retitleAll}
+                                        disabled={!!bulkTitling}
+                                        className="flex items-center gap-1 px-2 py-1 rounded-lg border border-slate-200 bg-white text-[11px] font-bold text-slate-600 hover:border-accent-300 hover:text-accent-700 disabled:opacity-60 whitespace-nowrap"
+                                        title="제목이 첫 질문 그대로인 대화의 제목을 대화 주제에 맞게 정리"
+                                    >
+                                        {bulkTitling
+                                            ? <><Loader2 className="w-3 h-3 animate-spin" /> 제목 정리 {bulkTitling.done}/{bulkTitling.total}</>
+                                            : <><Sparkles className="w-3 h-3" /> 제목 정리 {autoTitledIds.length}</>}
+                                    </button>
+                                )}
                                 <div className="ml-auto flex items-center gap-1 bg-white border border-slate-200 rounded-lg px-2 py-1">
                                     <Search className="w-3.5 h-3.5 text-slate-400" />
                                     <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="대화 검색" className="text-xs outline-none w-28 bg-transparent" />
@@ -776,6 +845,7 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                                                             {pend > 0 && <span className="text-slate-600">적어둔 질문 {pend}</span>}
                                                             {t.quizExcluded && <span>퀴즈 제외</span>}
                                                             {streams[t.id] && <span className="text-accent-600 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> 답변 중</span>}
+                                                            {titling[t.id] && !streams[t.id] && <span className="text-slate-500 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> 제목 짓는 중</span>}
                                                             {errors[t.id] && !streams[t.id] && <span className="text-red-500">답변 실패</span>}
                                                         </p>
                                                     </div>
@@ -821,6 +891,16 @@ const ThreadsView: React.FC<Props> = ({ threads, onUpdate, onPatchMeta, onDelete
                     <span className="font-bold text-slate-800 truncate">{active.title}</span>
                     <Edit className="w-3.5 h-3.5 text-slate-300 group-hover:text-slate-500 shrink-0" />
                 </button>
+                {hasAnswer(active.content || '') && (
+                    <button
+                        onClick={() => retitle(active.id, { onlyIfAuto: false })}
+                        disabled={!!titling[active.id]}
+                        className="p-2 text-slate-400 hover:text-accent-700 disabled:opacity-60"
+                        title="대화 내용에 맞게 제목 다시 짓기 (AI)"
+                    >
+                        {titling[active.id] ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                    </button>
+                )}
                 <button
                     onClick={() => toggleQuiz(active)}
                     className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold whitespace-nowrap ${active.quizExcluded ? 'text-slate-400 bg-slate-100' : 'text-accent-600 bg-accent-50'}`}

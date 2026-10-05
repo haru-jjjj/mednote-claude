@@ -682,6 +682,38 @@ const buildThreadMessages = (history: ThreadTurn[], question: ThreadTurn, extraI
     return merged;
 };
 
+// 질문 노트 제목 짓기 (§5-68): 대화 내용으로 주제를 나타내는 짧은 제목. Haiku로 짧게 → 1건에 약 $0.002 이하
+export const generateThreadTitle = async (conversation: string): Promise<string | null> => {
+    const text = (conversation || '').trim();
+    if (!text) return null;
+    // 앞부분 위주(첫 질문·답이 주제를 정함) + 뒤에 다른 주제가 이어졌으면 보이도록 끝부분 조금
+    const clip = text.length > 6000 ? `${text.slice(0, 4500)}\n…\n${text.slice(-1500)}` : text;
+    const data = await callClaude({
+        model: MODEL_FAST,
+        max_tokens: 80,
+        messages: [{
+            role: 'user',
+            content: `아래는 심장내과 전임의가 저장해 두는 의학 질의응답 대화다. 나중에 목록에서 찾아보기 좋게 이 대화의 주제를 나타내는 제목을 하나 지어라.
+- 한국어 위주로, 표준 영어 의학 용어·약어는 그대로 (예: "LAAO 후 항혈전제 기간", "Wide QRS tachycardia 감별: VT vs SVT", "CRT 적응증: QRS·LBBB 기준")
+- 8~30자의 주제 명사구. 질문 문장·물음표·마침표·따옴표·이모지 없이
+- 여러 주제를 다루면 가장 중심이 되는 주제로, 필요하면 "A·B"처럼 두 개까지
+- 제목만 출력
+
+[대화 시작]
+${clip}
+[대화 끝]`
+        }]
+    });
+    const raw = extractText(data).split('\n').map(l => l.trim()).find(Boolean) || '';
+    const title = raw
+        .replace(/^(?:제목|title)\s*[:：]\s*/i, '')
+        .replace(/^[#*\-\s]+|[*\s]+$/g, '')
+        .replace(/^["'“”‘’「」『』]+|["'“”‘’「」『』]+$/g, '')
+        .replace(/[.。?？]+$/, '')
+        .trim();
+    return title ? title.slice(0, 60) : null;
+};
+
 export type ThreadAnswerMode = 'full' | 'fast';
 // 빠른 모드: 시스템 지시·검색 도구는 그대로 두고(캐시 유지) 이번 질문 뒤에만 붙이는 안내
 // 짧게 쓰는 것만 줄이고 "검색 먼저"는 그대로 — 근거 없는 빠른 답은 쓰지 않음 (§5-61)
