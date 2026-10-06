@@ -153,7 +153,8 @@ export enum ViewMode {
   GUIDELINE_CHECK = 'GUIDELINE_CHECK',
   INSIGHTS = 'INSIGHTS',
   THREADS = 'THREADS',
-  PHOTOS = 'PHOTOS'
+  PHOTOS = 'PHOTOS',
+  USAGE = 'USAGE'
 }
 
 export type QuizType = 'MULTIPLE_CHOICE' | 'OX';

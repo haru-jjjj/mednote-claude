@@ -16,7 +16,8 @@ import {
   documentId,
   getDoc,
   updateDoc,
-  deleteField
+  deleteField,
+  increment
 } from "firebase/firestore";
 import { getAuth, signInAnonymously } from "firebase/auth";
 import { v4 as uuidv4 } from 'uuid';
@@ -565,4 +566,67 @@ export const fetchAppPrefs = async (): Promise<AppPrefs | null> => {
 export const saveAppPrefs = async (prefs: AppPrefs): Promise<void> => {
     await ensureAuth();
     await setDoc(doc(db, SETTINGS_COLLECTION, 'prefs'), prefs, { merge: true });
+};
+
+
+// ----------------------------------------------------------------------------
+// API 사용량 (§5-70): 월별 누적 — appSettings/usage-YYYY-MM (모든 기기 공통, 달이 바뀌면 새 문서 = 0부터)
+// - 여러 기기에서 동시에 더해도 어긋나지 않게 increment로 더함
+// ----------------------------------------------------------------------------
+export interface UsageDelta {
+    cost: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheWriteTokens: number;
+    cacheReadTokens: number;
+    searches: number;
+    embedTokens: number;
+    feature: string;
+}
+export interface UsageMonth {
+    month: string;
+    cost: number;
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheWriteTokens: number;
+    cacheReadTokens: number;
+    searches: number;
+    embedTokens: number;
+    byFeature: Record<string, { cost: number; calls: number }>;
+    updatedAt?: number;
+}
+
+const usageDocId = (month: string) => `usage-${month}`;
+
+export const addUsageToFirestore = async (month: string, d: UsageDelta): Promise<void> => {
+    await ensureAuth();
+    await setDoc(doc(db, SETTINGS_COLLECTION, usageDocId(month)), {
+        month,
+        cost: increment(d.cost),
+        calls: increment(1),
+        inputTokens: increment(d.inputTokens),
+        outputTokens: increment(d.outputTokens),
+        cacheWriteTokens: increment(d.cacheWriteTokens),
+        cacheReadTokens: increment(d.cacheReadTokens),
+        searches: increment(d.searches),
+        embedTokens: increment(d.embedTokens),
+        byFeature: { [d.feature]: { cost: increment(d.cost), calls: increment(1) } },
+        updatedAt: Date.now(),
+    }, { merge: true });
+};
+
+const num = (v: any) => (typeof v === 'number' && isFinite(v) ? v : 0);
+export const fetchUsageMonth = async (month: string): Promise<UsageMonth | null> => {
+    await ensureAuth();
+    const snap = await getDoc(doc(db, SETTINGS_COLLECTION, usageDocId(month)));
+    if (!snap.exists()) return null;
+    const x = snap.data() as any;
+    const byFeature: UsageMonth['byFeature'] = {};
+    Object.entries(x.byFeature || {}).forEach(([k, v]: [string, any]) => { byFeature[k] = { cost: num(v?.cost), calls: num(v?.calls) }; });
+    return {
+        month, cost: num(x.cost), calls: num(x.calls), inputTokens: num(x.inputTokens), outputTokens: num(x.outputTokens),
+        cacheWriteTokens: num(x.cacheWriteTokens), cacheReadTokens: num(x.cacheReadTokens), searches: num(x.searches),
+        embedTokens: num(x.embedTokens), byFeature, updatedAt: typeof x.updatedAt === 'number' ? x.updatedAt : undefined,
+    };
 };

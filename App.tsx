@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers, Sparkles, Search, Image as ImageIcon } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers, Sparkles, Search, Image as ImageIcon, Wallet } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList, { TagFilter } from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
@@ -11,6 +11,8 @@ import GuidelineCheckView from './components/GuidelineCheckView';
 import InsightsView from './components/InsightsView';
 import ThreadsView from './components/ThreadsView';
 import PhotosView from './components/PhotosView';
+import UsageView from './components/UsageView';
+import { loadCurrentMonthUsage, subscribeMonthCost, formatUsd, checkMonthRollover } from './services/usageTracker';
 import { followUpStatus, contentForAnalysis } from './services/insightUtils';
 import { buildPatientIndex, patientIdOf, buildMergedPatientContent, buildAppendedContent } from './services/patientId';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
@@ -143,6 +145,14 @@ const App: React.FC = () => {
           }
       })();
   }, [view]);
+
+  // 이번 달 API 사용 추정 금액 (§5-70): 시작 시 클라우드에서 읽고, 이 기기에서 쓸 때마다 더함
+  const [monthCost, setMonthCost] = useState(0);
+  useEffect(() => {
+      const unsub = subscribeMonthCost(setMonthCost);
+      loadCurrentMonthUsage();
+      return unsub;
+  }, []);
 
   // Quiz State with Queue support
   const [quizState, setQuizState] = useState<QuizState>({
@@ -877,7 +887,9 @@ const App: React.FC = () => {
   };
 
   // 오늘 복습할 메모 수 (자정이 지나면 갱신되도록 몇 분마다 시각을 새로 읽음)
+  // 같은 시각으로 API 사용량의 달 바뀜도 확인 (매월 1일 0부터)
   const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => { checkMonthRollover(); }, [nowTick]);
   useEffect(() => {
       const t = setInterval(() => setNowTick(Date.now()), 5 * 60 * 1000);
       const onVisible = () => { if (document.visibilityState === 'visible') setNowTick(Date.now()); };
@@ -1482,6 +1494,7 @@ const App: React.FC = () => {
             { key: 'guideline', view: ViewMode.GUIDELINE_CHECK, label: '오래된 메모 점검', icon: ShieldCheck, busy: guidelineCheckingIds.length > 0 },
             { key: 'insights', view: ViewMode.INSIGHTS, label: '메모 활용', icon: Layers, badge: patientFollowUpDue > 0 ? `환자 ${patientFollowUpDue}` : null, badgeTitle: '확인할 차례인 환자 메모' },
             { key: 'photos', view: ViewMode.PHOTOS, label: '사진 모아보기', icon: ImageIcon },
+            { key: 'usage', view: ViewMode.USAGE, label: 'API 사용량', icon: Wallet, badge: monthCost > 0 ? formatUsd(monthCost) : null, badgeTitle: '이번 달 추정 사용 금액 (매월 1일 0부터)' },
           ] as { key: string; view?: ViewMode; label: string; icon: React.ComponentType<{ className?: string }>; onClick?: () => void; busy?: boolean; disabled?: boolean; badge?: string | null; badgeTitle?: string }[]).map(item => {
             const active = !!item.view && view === item.view;
             const Icon = item.icon;
@@ -1685,6 +1698,9 @@ const App: React.FC = () => {
                             }}
                         />
                     </div>
+                )}
+                {view === ViewMode.USAGE && (
+                    <UsageView onBack={() => setView(ViewMode.LIST)} liveMonthCost={monthCost} />
                 )}
                 {view === ViewMode.PHOTOS && (
                     <PhotosView

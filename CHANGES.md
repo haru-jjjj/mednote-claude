@@ -1262,6 +1262,23 @@
 - AI 호출 없음(비용 없음).
 - 바뀐 파일: `components/PhotosView.tsx`(**새 파일**), `services/storage.ts`(`getPhotoNotesMetaFromDB`), `types.ts`(`ViewMode.PHOTOS`), `App.tsx`.
 
+## 5-70. API 사용량 월별 누적 (요청)
+
+- AI 응답마다 오는 `usage`(입력·출력·캐시 쓰기/읽기 토큰, 웹 검색 횟수)와 Voyage 임베딩 토큰에 공개 요금표를 곱해 비용을 추정,
+  **월별로 누적**. 매월 1일(이 기기 날짜 기준)부터 새 달 = 0부터 다시, 지난달 기록은 남아 최근 6개월 비교.
+  - 요금(100만 토큰당): Sonnet 5 입력 $2·출력 $10·캐시 읽기 $0.2·캐시 쓰기 5분 $2.5/1시간 $4, Haiku 4.5 입력 $1·출력 $5·
+    캐시 읽기 $0.1·쓰기 $1.25/$2, 웹 검색 1회 $0.01, Voyage voyage-4-lite $0.02.
+  - 질문 노트 스트리밍은 `message_start`(입력·캐시)와 `message_delta`(출력·검색 누적)에서 읽음. 멈추거나 끊겨도 받은 만큼 기록.
+- 저장: Firestore `appSettings/usage-YYYY-MM` 문서 하나(월), `increment`로 더해서 여러 기기에서 동시에 써도 합산됨.
+  기능별(질문 노트 답변·제목, 퀴즈, 요약·저널클럽, 주제 탐구, 내 메모에 물어보기, 사진 글자 읽기, 가이드라인 점검, 메모 활용, 임베딩) 금액·횟수.
+- 화면
+  - 사이드바 맨 아래 "API 사용량" 옆에 **이번 달 금액**(예: $0.08) — 앱 시작 시 클라우드에서 읽고 이 기기에서 쓸 때마다 바로 더해짐.
+  - "API 사용량" 화면: 이번 달 누적·요청 수·토큰·검색 횟수, 기능별 막대, 최근 6개월.
+- 한계: **추정치**(실제 청구는 Anthropic Console·Voyage 대시보드 기준). 이 업데이트 전 사용량, Claude 구독 사용량은 포함 안 됨.
+  오프라인이면 그동안의 기록은 Firestore가 연결될 때 올라감(앱을 완전히 닫으면 일부가 빠질 수 있음).
+- 바뀐 파일: `services/usageTracker.ts`(**새 파일**), `components/UsageView.tsx`(**새 파일**), `services/claudeService.ts`(호출마다 `feature`·usage 기록),
+  `services/voyageService.ts`, `services/firebaseService.ts`(`addUsageToFirestore`, `fetchUsageMonth`), `types.ts`(`ViewMode.USAGE`), `App.tsx`.
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.

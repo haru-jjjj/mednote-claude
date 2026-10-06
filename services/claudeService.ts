@@ -25,6 +25,7 @@ import { applySectionPatch } from "./handoverPatch";
 import { threadPlainText, uncitedClaims } from "./threadFormat";
 import { v4 as uuidv4 } from 'uuid';
 import { marked } from 'marked';
+import { recordClaudeUsage, UsageFeature } from './usageTracker';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -100,6 +101,8 @@ interface CallParams {
     temperature?: number;
     // 생각(thinking) 깊이. Sonnet 5 이상에서만 보냄(Haiku 4.5는 지원 안 함). 미지정 시 모델 기본값(high).
     effort?: 'low' | 'medium' | 'high';
+    // 사용량 집계용 기능 이름 (§5-70) — API로는 보내지 않음
+    feature?: UsageFeature;
 }
 
 // Claude Sonnet 5는 "적응형 생각(adaptive thinking)"이 기본으로 켜져 있고, 생각에 쓴 토큰도 max_tokens에
@@ -183,6 +186,8 @@ const callClaudeOnce = async (params: CallParams): Promise<any> => {
     }
 
     const data = await response.json();
+    // 사용량 집계 (§5-70): 응답의 usage로 비용 추정 → 월별 누적
+    try { recordClaudeUsage(params.model, data?.usage, params.feature || 'other'); } catch { /* 집계 실패는 무시 */ }
 
     if (data.stop_reason === 'refusal') {
         throw new Error('Safety: content blocked by the model (refusal)');
@@ -243,8 +248,10 @@ const callForJson = async (params: {
     schema: Record<string, any>;
     maxTokens?: number;
     temperature?: number;
+    feature?: UsageFeature;
 }): Promise<any> => {
     const data = await callClaude({
+        feature: params.feature,
         model: params.model,
         messages: params.messages,
         tools: [{
@@ -479,6 +486,7 @@ export const summarizeSingleNote = async (note: Note): Promise<{ summary: string
         content.push({ type: 'text', text: prompt });
 
         const data = await callClaude({
+            feature: 'summary',
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
             // RUSHED(급하게 적은 메모) 케이스는 최대 3번까지 검색해 근거를 찾도록 허용합니다.
@@ -572,6 +580,7 @@ export const refineNoteSummary = async (
     content.push({ type: 'text', text: prompt });
 
     const data = await callClaude({
+        feature: 'summary',
         model: MODEL_SMART,
         messages: [{ role: 'user', content }],
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
@@ -689,6 +698,7 @@ export const generateThreadTitle = async (conversation: string): Promise<string 
     // 앞부분 위주(첫 질문·답이 주제를 정함) + 뒤에 다른 주제가 이어졌으면 보이도록 끝부분 조금
     const clip = text.length > 6000 ? `${text.slice(0, 4500)}\n…\n${text.slice(-1500)}` : text;
     const data = await callClaude({
+        feature: 'threadTitle',
         model: MODEL_FAST,
         max_tokens: 80,
         messages: [{
@@ -915,6 +925,7 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
     const emitSearch = () => params.onSearch?.([...queries], Array.from(seen.values()));
     let text = '';
     let stopReason = '';
+    let streamUsage: Record<string, any> = {};
     let buf = '';
     let lastStartedType = '';
 
@@ -980,14 +991,21 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
                 }
                 break;
             }
+            case 'message_start':
+                if (evt.message?.usage) streamUsage = { ...evt.message.usage };
+                break;
             case 'message_delta':
                 if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
+                // 출력 토큰·검색 횟수는 누적값으로 옴 (값이 있는 것만 덮어씀)
+                if (evt.usage) Object.entries(evt.usage).forEach(([k, v]) => { if (v !== null && v !== undefined) streamUsage[k] = v; });
                 break;
             case 'error':
                 throw new Error(`Claude API error (stream): ${evt.error?.message || evt.error?.type || 'unknown'}`);
         }
     };
 
+    // 사용량 집계 (§5-70): 중간에 멈추거나 끊겨도 받은 만큼은 기록
+    try {
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1002,6 +1020,9 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
             try { evt = JSON.parse(data); } catch { continue; }
             handle(evt);
         }
+    }
+    } finally {
+        try { recordClaudeUsage(MODEL_SMART, streamUsage, 'thread'); } catch { /* 무시 */ }
     }
 
     if (stopReason === 'refusal') throw new Error('Safety: content blocked by the model (refusal)');
@@ -1062,6 +1083,7 @@ export const generateStudySuggestions = async (notes: Note[], language: string =
         content.push({ type: 'text', text: prompt });
 
         const input = await callForJson({
+            feature: 'study',
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
             toolName: 'submit_suggestions',
@@ -1144,6 +1166,7 @@ export const generateStudyGuideContent = async (topic: string, notes: Note[], mo
         content.push({ type: 'text', text: prompt });
 
         const data = await callClaude({
+            feature: 'study',
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
             // NOTE: 이 모델/버전 조합에서는 web_search 툴과 함께 temperature를 보내면
@@ -1277,6 +1300,7 @@ export const answerFromNotes = async (question: string, notes: Note[]): Promise<
     `;
 
     const data = await callClaude({
+        feature: 'ask',
         model: MODEL_SMART,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         max_tokens: 2500
@@ -1313,6 +1337,7 @@ export const synthesizeNotes = async (topic: string, notes: Note[]): Promise<str
     `;
 
     const data = await callClaude({
+        feature: 'ask',
         model: MODEL_SMART,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         max_tokens: 6000
@@ -1335,6 +1360,7 @@ export const extractTextFromImages = async (images: string[]): Promise<string> =
         ];
 
         const data = await callClaude({
+            feature: 'imageText',
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
             max_tokens: 2000
@@ -1431,6 +1457,7 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
         content.push({ type: 'text', text: prompt });
 
         const input = await callForJson({
+            feature: 'quiz',
             model: MODEL_FAST,
             messages: [{ role: 'user', content }],
             toolName: 'submit_quiz_question',
@@ -1523,6 +1550,7 @@ export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 
         content.push({ type: 'text', text: prompt });
 
         const input = await callForJson({
+            feature: 'quiz',
             model: MODEL_FAST,
             messages: [{ role: 'user', content }],
             toolName: 'submit_ox_question',
@@ -1585,6 +1613,7 @@ export const generateDetailedQuizExplanation = async (question: string, isTrue: 
         `;
 
         const data = await callClaude({
+            feature: 'quiz',
             model: MODEL_SMART,
             messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
             tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }],
@@ -1675,6 +1704,7 @@ export const analyzeJournalArticle = async (note: Note): Promise<{ summary: stri
         content.push({ type: 'text', text: prompt });
 
         const data = await callClaude({
+            feature: 'summary',
             model: MODEL_SMART,
             messages: [{ role: 'user', content }],
             tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
@@ -1753,6 +1783,7 @@ export const checkNoteAgainstGuidelines = async (note: Note): Promise<GuidelineC
     `;
 
     const data = await callClaude({
+        feature: 'guideline',
         model: MODEL_SMART,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
@@ -1809,6 +1840,7 @@ export const generateWeeklyDigest = async (
         OUTPUT: only the review itself.
     `;
     const data = await callClaude({
+        feature: 'insights',
         model: MODEL_FAST,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         max_tokens: 3000
@@ -1851,6 +1883,7 @@ export const findCoverageGaps = async (topic: string, notes: Note[]): Promise<{ 
         Output only the result — no narration of your process.
     `;
     const data = await callClaude({
+        feature: 'insights',
         model: MODEL_SMART,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 4 }],
@@ -1896,6 +1929,7 @@ export const buildDocumentationTemplate = async (target: string, notes: Note[]):
         Output only the result.
     `;
     const data = await callClaude({
+        feature: 'insights',
         model: MODEL_SMART,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         max_tokens: 9000
@@ -1937,6 +1971,7 @@ export const extractCaseLogBatch = async (
         """
     `;
     const input = await callForJson({
+        feature: 'insights',
         model: MODEL_FAST,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         toolName: 'submit_case_log',
@@ -2063,6 +2098,7 @@ export const updateHandoverDocument = async (params: {
         `OUTPUT: only the handover document — no preamble, no narration, no summary of what changed.`}
     `;
     const data = await callClaude({
+        feature: 'insights',
         model: MODEL_SMART,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         // 한국어는 글자당 토큰이 많고, 생각(thinking)도 이 한도에 포함됨 → 넉넉히 (Sonnet 5 출력 최대 128K)

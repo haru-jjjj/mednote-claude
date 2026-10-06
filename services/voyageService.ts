@@ -1,3 +1,4 @@
+import { recordEmbeddingUsage } from './usageTracker';
 import { threadPlainText } from './threadFormat';
 
 // ============================================================================
@@ -97,6 +98,8 @@ export const embedTexts = async (texts: string[], inputType: EmbeddingInputType)
     }
 
     const data = await response.json();
+    // 사용량 집계 (§5-70)
+    try { recordEmbeddingUsage(data?.usage?.total_tokens); } catch { /* 무시 */ }
 
     // OpenAI 호환 응답 형식: { data: [{ embedding: number[], index: number }], ... }
     // 혹시 다른 형태로 오는 경우까지 방어적으로 처리.
