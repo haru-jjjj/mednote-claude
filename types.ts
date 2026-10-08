@@ -148,13 +148,13 @@ export enum ViewMode {
   EDIT = 'EDIT',
   DETAIL = 'DETAIL',
   QUIZ = 'QUIZ',
-  STUDY_GUIDE = 'STUDY_GUIDE',
   ASK_NOTES = 'ASK_NOTES',
   GUIDELINE_CHECK = 'GUIDELINE_CHECK',
   INSIGHTS = 'INSIGHTS',
   THREADS = 'THREADS',
   PHOTOS = 'PHOTOS',
-  USAGE = 'USAGE'
+  USAGE = 'USAGE',
+  PDFS = 'PDFS'
 }
 
 export type QuizType = 'MULTIPLE_CHOICE' | 'OX';
@@ -173,6 +173,76 @@ export interface QuizQuestion {
     replayOfNoteId?: string;
     // 메모의 어느 구역에서 낸 문제인지 (푼 뒤 출제 범위 기록에 사용)
     coverage?: { noteId: string; partKey: string; partLabel: string; partIndex: number; partCount: number; topic?: string };
+    // PDF 자료에서 낸 문제 (§5-75): 어느 PDF의 어느 구간·요점인지 (푼 뒤 진행 기록에 사용)
+    pdfRef?: PdfQuestionRef;
+}
+
+export interface PdfQuestionRef {
+    docId: string;
+    docTitle: string;
+    docSource: string;
+    sectionKey: string;
+    sectionLabel: string; // 예: "p.3–4"
+    sectionIndex: number; // 0부터 (출제 대상 구간 기준)
+    sectionCount: number;
+    pointIndex: number;
+    point: string; // 이 문제가 다룬 요점 (한국어 짧게)
+}
+
+// ----------------------------------------------------------------------------
+// PDF 자료실 (§5-75): 올린 PDF에서 뽑은 글을 구간으로 나눠 보관하고, 구간마다 요점 목록을 만들어
+// 요점 하나 = OX 문제 하나로 빠짐없이 냄. 원본 PDF 파일은 보관하지 않음(글만).
+// ----------------------------------------------------------------------------
+export interface PdfSectionMeta {
+    key: string; // 's0', 's1' … (Firestore 필드 이름으로 씀)
+    label: string; // "p.3–4"
+    pageFrom: number;
+    pageTo: number;
+    chars: number;
+    head: string; // 구간 첫 줄 (목록 표시용)
+    excluded?: boolean; // 출제에서 뺌 (참고문헌·표지 등)
+}
+
+export interface PdfPoint {
+    p: string; // 요점 (한국어 짧게)
+    st: 'new' | 'ok' | 'wrong'; // 이번 바퀴에서: 아직 / 맞힘 / 틀림
+    at?: number; // 마지막으로 푼 시각
+    wc?: number; // 틀린 횟수 (누적)
+}
+
+export interface PdfQuestion {
+    id: string;
+    pi: number; // 요점 번호 (pts 인덱스)
+    q: string; // 참/거짓 문장
+    t: boolean; // 참이면 true
+    ex: string; // 해설
+    lang: QuizLanguage;
+}
+
+export interface PdfSectionProgress {
+    pts?: PdfPoint[]; // 요점 목록 (처음 출제할 때 AI가 만듦)
+    qs?: PdfQuestion[]; // 만들어 두고 아직 안 풀었거나 틀린 문제 (맞히면 지움)
+    empty?: boolean; // 문제로 낼 내용이 없는 구간(참고문헌·표지 등)으로 AI가 판단
+    u?: number; // 이 구간 기록을 마지막으로 바꾼 시각 (기기 간 병합용)
+}
+
+export interface PdfDoc {
+    id: string;
+    title: string;
+    source: string; // 출처 (학회·학술지·연도·URL 등 자유 입력)
+    fileName: string;
+    pageCount: number;
+    charCount: number;
+    createdAt: number;
+    updatedAt: number;
+    sections: PdfSectionMeta[];
+    progress: Record<string, PdfSectionProgress>;
+    textParts: number; // 클라우드에 글을 나눠 저장한 문서 수
+    round?: number; // "처음부터 다시"를 누른 횟수 (1바퀴 = 0)
+    ocr?: boolean; // 사진(스캔) PDF라 AI로 글자를 읽음
+    refsFromPage?: number; // 참고문헌이 시작돼 출제에서 뺀 쪽
+    inPool?: boolean; // false면 "PDF 복습"(전체 풀)에서 뺌 (§5-76). 없으면 포함
+    deleted?: boolean;
 }
 
 export interface QuizState {
@@ -180,7 +250,10 @@ export interface QuizState {
     mode: 'DETAILED' | 'QUICK_OX' | null;
     // RANDOM: 무작위(복습 예정·안 푼 메모 우선) / REVIEW: 오늘 복습할 메모만 / WRONG: 오답 다시 풀기
     // PERIOD: 기간별 복습(선택한 기간에 쓰거나 고친 메모만, 메모를 한 바퀴 돌면 다시 처음부터)
-    source: 'RANDOM' | 'REVIEW' | 'WRONG' | 'PERIOD';
+    // PDF: PDF 자료실의 PDF 하나로 OX (요점마다 한 문제, 빠짐없이) (§5-75)
+    source: 'RANDOM' | 'REVIEW' | 'WRONG' | 'PERIOD' | 'PDF';
+    pdfId?: string; // source가 PDF일 때: 이 PDF만. 없으면 전체 풀(PDF 복습에 넣어 둔 모든 PDF) (§5-76)
+    pdfMode?: 'all' | 'wrong'; // all: 안 푼 요점부터 / wrong: 틀린 요점만 다시
     period?: 'today' | '1w' | '2w' | '1m' | '3m'; // source가 PERIOD일 때
     periodAll?: boolean; // 기간별 복습: 맞혀서 쉬는 메모까지 포함 (§5-72)
     // 더 낼 문제가 없음(오늘 복습을 다 만들었거나, 오답 다시 풀기 목록이 끝남)

@@ -630,3 +630,55 @@ export const fetchUsageMonth = async (month: string): Promise<UsageMonth | null>
         embedTokens: num(x.embedTokens), byFeature, updatedAt: typeof x.updatedAt === 'number' ? x.updatedAt : undefined,
     };
 };
+
+// ----------------------------------------------------------------------------
+// PDF 자료실 (§5-75): 이미 규칙이 열려 있는 appSettings 컬렉션에 이름 앞머리로 구분해 저장
+// (새 컬렉션을 만들면 Firestore 보안 규칙을 따로 고쳐야 해서)
+// - pdfm-<id>: 제목·출처·구간 목록·진행 기록 (구간 기록은 progress.s3 처럼 구간별로 따로 고침)
+// - pdft-<id>-<n>: 뽑은 글 (문서 하나 1MB 제한이라 나눠 저장)
+// ----------------------------------------------------------------------------
+const pdfMetaId = (id: string) => `pdfm-${id}`;
+const pdfTextId = (id: string, n: number) => `pdft-${id}-${n}`;
+
+export const savePdfMetaToFirestore = async (d: object & { id: string }): Promise<void> => {
+    await ensureAuth();
+    await setDoc(doc(db, SETTINGS_COLLECTION, pdfMetaId(d.id)), d);
+};
+
+// fields 예: { 'progress.s3': {...} } 또는 { title, updatedAt }
+export const updatePdfFieldsInFirestore = async (id: string, fields: Record<string, any>): Promise<void> => {
+    await ensureAuth();
+    await updateDoc(doc(db, SETTINGS_COLLECTION, pdfMetaId(id)), fields);
+};
+
+export const fetchPdfMetasFromFirestore = async (): Promise<any[]> => {
+    await ensureAuth();
+    const snap = await getDocs(query(
+        collection(db, SETTINGS_COLLECTION),
+        where(documentId(), '>=', 'pdfm-'),
+        where(documentId(), '<', 'pdfm.')
+    ));
+    return snap.docs.map(d => d.data());
+};
+
+export const savePdfTextToFirestore = async (id: string, n: number, texts: Record<string, string>): Promise<void> => {
+    await ensureAuth();
+    await setDoc(doc(db, SETTINGS_COLLECTION, pdfTextId(id, n)), { id, n, texts });
+};
+
+export const fetchPdfTextFromFirestore = async (id: string, n: number): Promise<Record<string, string> | null> => {
+    await ensureAuth();
+    const snap = await getDoc(doc(db, SETTINGS_COLLECTION, pdfTextId(id, n)));
+    if (!snap.exists()) return null;
+    const t = (snap.data() as any)?.texts;
+    return t && typeof t === 'object' ? t : null;
+};
+
+// 다른 기기에도 지워지도록 정보 문서는 "삭제됨" 표시만 남기고, 글 문서는 지움
+export const deletePdfFromFirestore = async (id: string, textParts: number): Promise<void> => {
+    await ensureAuth();
+    await setDoc(doc(db, SETTINGS_COLLECTION, pdfMetaId(id)), { id, deleted: true, sections: [], progress: {}, updatedAt: Date.now() });
+    for (let n = 0; n < Math.max(1, textParts); n++) {
+        await deleteDoc(doc(db, SETTINGS_COLLECTION, pdfTextId(id, n))).catch(() => undefined);
+    }
+};

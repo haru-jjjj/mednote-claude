@@ -12,10 +12,10 @@
 // 구조적으로 바뀐 점:
 // - Gemini의 `responseMimeType: "application/json"` 텍스트 파싱 방식 대신,
 //   Claude의 강제 tool-use(입력 스키마)를 사용해 항상 유효한 JSON을 받습니다.
-//   (퀴즈 생성 등 - generateMedicalQuiz, generateOXQuiz, generateStudySuggestions)
+//   (퀴즈 생성 등 - generateMedicalQuiz, generateOXQuiz, generatePdfOXBatch)
 // - Gemini의 Google Search grounding 대신 Claude의 web_search 툴을 사용하고,
 //   응답 텍스트에 포함된 citations를 그대로 출처로 사용합니다.
-//   (summarizeSingleNote, generateStudyGuideContent, generateDetailedQuizExplanation)
+//   (summarizeSingleNote, generateDetailedQuizExplanation)
 // - 정리 대상으로 결정된 기능(AI 시맨틱 검색 findRelevantNotes, Further Reading
 //   getFurtherReading, 사용되지 않던 enhanceNoteContent)은 이 파일에 포함하지 않습니다.
 // ============================================================================
@@ -1055,157 +1055,6 @@ const streamThreadOnce = async (params: ThreadStreamParams, extraInstruction?: s
 };
 
 // ----------------------------------------------------------------------------
-// AI 주제 탐구 (Study Guide) — 유지 결정된 부가 기능
-// ----------------------------------------------------------------------------
-export const generateStudySuggestions = async (notes: Note[], language: string = 'Korean'): Promise<string[]> => {
-    try {
-        if (notes.length === 0) return [];
-        const content: any[] = [];
-
-        notes.forEach(note => {
-            if (note.images && note.images.length > 0) {
-                note.images.forEach(base64 => content.push(imageBlock(base64)));
-            }
-        });
-
-        const contextText = notes.map(n =>
-            `[Note: ${n.title}]\n${n.content}\n${n.transcription ? '(Extracted Text: ' + n.transcription + ')' : ''}`
-        ).join("\n\n---\n\n");
-
-        const prompt = `
-            You are a creative clinical research assistant.
-            ${READER_PROFILE}
-            Analyze the provided notes (and images if any).
-
-            Context: "${contextText.substring(0, 10000)}"
-
-            Task:
-            Suggest 3 to 5 **creative, novel, and thought-provoking** "Deep Dive Topics" based on these notes.
-
-            CREATIVITY INSTRUCTIONS:
-            1. **Avoid Standard Headers**: Do not use simple titles like "Pneumonia" or "Antibiotics".
-            2. **Seek Novelty**: Frame topics as intriguing questions, comparative paradoxes, or deep mechanistic inquiries (e.g., "The immune system's double-edged sword in [Disease]", "Why [Treatment X] fails in [Condition Y]").
-            3. **Interdisciplinary Connections**: Try to connect unrelated concepts found in the notes to offer a fresh perspective.
-
-            CRITICAL RULES:
-            1. **Relevance**: While being creative, ensure the topic is scientifically grounded in the context provided.
-            2. **Level**: Topics must be worth a fellow's time — e.g. guideline discordances, trial results that changed practice, procedural decision points, mechanisms behind device/drug behavior. Nothing a resident would find basic.
-            3. **Output Language: ${language}**.
-        `;
-        content.push({ type: 'text', text: prompt });
-
-        const input = await callForJson({
-            feature: 'study',
-            model: MODEL_SMART,
-            messages: [{ role: 'user', content }],
-            toolName: 'submit_suggestions',
-            toolDescription: 'Submit the list of creative deep-dive study topic suggestions.',
-            schema: {
-                type: 'object',
-                properties: {
-                    suggestions: { type: 'array', items: { type: 'string' }, minItems: 3, maxItems: 5 }
-                },
-                required: ['suggestions']
-            },
-            temperature: 1,
-            maxTokens: 1000
-        });
-
-        return input.suggestions || [];
-    } catch (error) {
-        console.error("Study Suggestions Failed", error);
-        return [];
-    }
-};
-
-export const generateStudyGuideContent = async (topic: string, notes: Note[], modelLevel: 'fast' | 'detailed' = 'fast', language: string = 'Korean'): Promise<{ content: string; sources: Source[] } | null> => {
-    try {
-        const content: any[] = [];
-
-        let imageCount = 0;
-        const MAX_IMAGES = 3;
-        notes.forEach(note => {
-            if (imageCount < MAX_IMAGES && note.images && note.images.length > 0) {
-                content.push(imageBlock(note.images[0]));
-                imageCount++;
-            }
-        });
-
-        const contextText = notes.map(n =>
-            `[Note: ${n.title}]\n${n.content}\n${n.transcription ? '(Extracted Text: ' + n.transcription + ')' : ''}`
-        ).join("\n\n---\n\n");
-
-        const taskInstruction = modelLevel === 'detailed'
-            ? `Write a **PROFESSIONAL-GRADE, DEEP-DIVE** review for this topic, written for a subspecialty fellow (not students or residents).
-
-               Required Depth:
-               1. **Mechanism**: Pathophysiology or device/procedural mechanism at the level needed to reason through atypical cases.
-               2. **Diagnosis & Assessment**: Exact criteria and thresholds (with guideline source and year), pitfalls in measurement/interpretation.
-               3. **Management**: Guideline recommendations with class/LOE, key trials behind them (name, population, main result), and where guidelines or experts disagree.
-               4. **Practical Pearls**: Procedural or real-world decision points and common errors.
-
-               Tone: Academic, precise, and clinically oriented. Avoid superficial summaries. Be thorough,
-               but write efficiently (no redundant padding or repeated points) so the full article fits
-               within your response and is never cut off mid-section.`
-            : `Create an **EXECUTIVE CLINICAL BRIEF** for a Medical Specialist or Researcher.
-               - **Target Audience**: Senior Fellows, Attending Physicians, and Clinical Researchers.
-               - **Depth**: Go beyond basic textbooks. Focus on recent clinical trial data, emerging pathomechanisms, controversial management guidelines, and novel therapeutic targets.
-               - **Style**: Extremely dense, technical, and precise. Use professional medical abbreviations and jargon.
-               - **Format**: Structured Executive Summary (Bullet points).
-               - **Strict Length**: Roughly 300-500 words total (not counting citations). This is a BRIEF —
-                 stay condensed even when citing multiple sources, so it never gets cut off mid-sentence.`;
-
-        const prompt = `
-            You are a subspecialty-level clinical educator.
-            ${READER_PROFILE}
-            Topic to Explain: "${topic}"
-
-            Potential Context Notes (Warning: These may or may not be relevant):
-            "${contextText.substring(0, 15000)}"
-
-            Task:
-            ${taskInstruction}
-
-            CRITICAL INSTRUCTIONS:
-            1. **STRICT RELEVANCE CHECK**: If a note is directly related to "${topic}", cite it and expand on it. **IF THE NOTES ARE UNRELATED, IGNORE THEM COMPLETELY** and generate the guide from your own medical knowledge plus web search.
-            2. **Mandatory Citations**: You MUST use the web search tool to find and cite authoritative medical sources (PubMed, CDC, NIH, etc.). Keep searches efficient (a couple of targeted searches is enough) rather than exhaustive.
-            3. **Structure**: Use Markdown headers (##, ###) to organize the guide logically.
-            4. **Language**: ${language}.
-            5. **No meta-commentary**: Output ONLY the guide itself. Do NOT narrate your research process
-               (e.g. do not write things like "Let me search for..." or "먼저 검색해보겠습니다") before,
-               between, or after the content.
-        `;
-        content.push({ type: 'text', text: prompt });
-
-        const data = await callClaude({
-            feature: 'study',
-            model: MODEL_SMART,
-            messages: [{ role: 'user', content }],
-            // NOTE: 이 모델/버전 조합에서는 web_search 툴과 함께 temperature를 보내면
-            // "400 invalid_request_error: `temperature` is deprecated for this model"로
-            // 요청 자체가 거부됩니다(실사용 중 발견). 그래서 다른 web_search 호출들처럼
-            // temperature 파라미터를 아예 보내지 않습니다.
-            tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: modelLevel === 'detailed' ? 3 : 2 }],
-            max_tokens: modelLevel === 'detailed' ? 4500 : 2200
-        });
-
-        const text = extractText(data) || "Explanation generation failed.";
-        const sources = extractCitations(data, 5);
-
-        return { content: text, sources };
-
-    } catch (error) {
-        // 예전엔 여기서 null만 반환하고 실제 에러 메시지를 삼켜버려서, 호출부(주제 탐구
-        // 화면)에서 "아무 반응 없음"으로만 보이고 사용자는 원인을 전혀 알 수 없었습니다.
-        // 호출부가 이미 try/catch로 감싸고 있으므로, 여기서는 원래 에러를 그대로
-        // 다시 던져서 실제 원인(예: API 키 문제, 429 rate limit, 네트워크 오류 등)이
-        // 화면까지 전달되도록 합니다.
-        console.error("Study Guide Content Gen Failed", error);
-        throw error;
-    }
-};
-
-// ----------------------------------------------------------------------------
 // 내 메모에 물어보기 / 여러 메모 정리본 만들기
 // - 관련 메모 검색(임베딩)은 화면(AskNotesView)에서 하고, 여기서는 찾은 메모를 근거로
 //   답변·정리본을 씁니다. 메모 번호 [메모1], [메모2] ... 는 화면에서 해당 메모로 바로 가는
@@ -1461,16 +1310,17 @@ const callQuizWithLanguage = async (
     language: QuizLanguage,
     makeContent: (extra: string) => any[],
     params: Omit<Parameters<typeof callForJson>[0], 'messages'>,
-    textOf: (input: any) => string
+    textOf: (input: any) => string,
+    isValid: (input: any) => boolean = x => !!x?.question
 ): Promise<any> => {
     const first = await callForJson({ ...params, messages: [{ role: 'user', content: makeContent('') }] });
-    if (!first || textMatchesLanguage(textOf(first), language)) return first;
+    if (!first || !isValid(first) || textMatchesLanguage(textOf(first), language)) return first;
     console.warn(`퀴즈가 ${language}가 아닌 언어로 와서 다시 요청합니다.`);
     const retry = await callForJson({
         ...params,
         messages: [{ role: 'user', content: makeContent(`\nIMPORTANT: Your previous attempt was not written in ${LANGUAGE_LABEL[language]}. Write everything (question, options, explanation) in ${LANGUAGE_LABEL[language]} only.`) }]
     }).catch(() => null);
-    return retry && retry.question ? retry : first;
+    return retry && isValid(retry) ? retry : first;
 };
 
 export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLanguage = 'Korean'): Promise<QuizQuestion | null> => {
@@ -1640,6 +1490,153 @@ export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 
         console.error("OX Gen Failed", error);
         return null;
     }
+};
+
+// ----------------------------------------------------------------------------
+// PDF 자료실 (§5-75)
+// ----------------------------------------------------------------------------
+// 구간 하나 → 시험에 낼 만한 요점 목록 + 요점마다 OX 한 문제 (한 번 호출로 구간 전체).
+// 요점 목록이 이미 있으면(언어를 바꿨거나 "처음부터 다시") 그 요점들에 대해 새 문장만 씀.
+export interface PdfOXInput {
+    docTitle: string;
+    docSource: string;
+    sectionLabel: string;
+    sectionIndex: number;
+    sectionCount: number;
+    text: string;
+    points: string[] | null; // null = 요점 목록부터
+}
+export interface PdfOXItem { point: string; statement: string; isTrue: boolean; explanation: string }
+
+export const generatePdfOXBatch = async (input: PdfOXInput, language: QuizLanguage = 'Korean'): Promise<PdfOXItem[]> => {
+    const langRule = quizLanguageRule(language).replace("The reader's note below is written in Korean — read it, but", 'Read the document text below (any language), but');
+    const pointsTask = input.points
+        ? `
+            THE POINTS TO TEST (already chosen — keep this exact order, one item per point, copy each point text into "point"):
+${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
+            Write a NEW statement for each point (a different angle from an obvious restatement).`
+        : `
+            STEP 1 — List every distinct testable point in this section: each fact, number/threshold, recommendation
+            (with its class/level if stated), trial result, mechanism, definition, criterion, or procedural step that a
+            fellow should know. Cover the WHOLE section from beginning to end — the reader wants nothing left out.
+            Merge trivial fragments; skip author lists, affiliations, funding, disclosures, figure/table numbering,
+            and reference lists. Typically 3–10 points for a section this size (up to 14 if it is dense).
+            If the section has nothing testable (title page, contents, references, acknowledgments), return an empty list.
+            STEP 2 — For each point, write one True/False statement testing it.`;
+
+    const prompt = `
+            ${langRule}
+            ${READER_PROFILE}
+            You write True/False review statements from a PDF the reader uploaded, so that over many sessions the reader
+            meets EVERY point of the document.
+
+            DOCUMENT: ${input.docTitle || 'Untitled'}${input.docSource ? ` — ${input.docSource}` : ''}
+            THIS SECTION: ${input.sectionLabel} (section ${input.sectionIndex + 1} of ${input.sectionCount})
+            """${input.text}"""
+            ${pointsTask}
+
+            RULES FOR STATEMENTS:
+            - Base every statement on what THIS SECTION says (not outside knowledge). The answer key is the document.
+            - Make roughly half of the statements FALSE, in a mixed order (not alternating).
+            - A false statement must be a plausible near-miss, not a simple negation: a shifted threshold or number,
+              the wrong drug/class/trial, swapped indications, wrong direction of effect, wrong class of recommendation.
+            - One idea per statement; specific enough that it is clearly true or false according to the section.
+            - "explanation" (1–3 sentences): state what the section actually says (with the exact number or wording),
+              so a wrong answer teaches the correct fact.
+            - "point": the point tested, ≤ 14 words, in Korean (internal metadata).
+
+            FINAL CHECK — ${langRule} (Only "point" is internal metadata and stays in Korean.)
+        `;
+    const langNote = `Written in ${LANGUAGE_LABEL[language]}.`;
+    const out = await callQuizWithLanguage(language, extra => [{ type: 'text', text: prompt + extra }], {
+        feature: 'pdf',
+        model: MODEL_FAST,
+        toolName: 'submit_pdf_ox_items',
+        toolDescription: 'Submit the testable points of this section, each with one True/False statement.',
+        schema: {
+            type: 'object',
+            properties: {
+                items: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            point: { type: 'string', description: 'Internal metadata: the point tested (≤ 14 words, Korean).' },
+                            statement: { type: 'string', description: `The true/false statement. ${langNote}` },
+                            isTrue: { type: 'boolean' },
+                            explanation: { type: 'string', description: `What the section actually says (1–3 sentences). ${langNote}` }
+                        },
+                        required: ['point', 'statement', 'isTrue', 'explanation']
+                    },
+                    maxItems: 16
+                }
+            },
+            required: ['items']
+        },
+        maxTokens: 6000
+    }, x => (Array.isArray(x?.items) ? x.items.map((it: any) => `${it?.statement || ''} ${it?.explanation || ''}`).join(' ') : ''),
+       x => Array.isArray(x?.items) && x.items.length > 0);
+    const items: PdfOXItem[] = Array.isArray(out?.items) ? out.items : [];
+    return items.filter(it => it && typeof it.statement === 'string' && typeof it.isTrue === 'boolean');
+};
+
+// 올린 PDF의 제목·출처 제안 (첫 쪽 글로, 아주 짧은 호출) — 사용자가 고쳐서 저장
+export const suggestPdfInfo = async (firstText: string, fileName: string, metaTitle?: string): Promise<{ title: string; source: string }> => {
+    const input = await callForJson({
+        feature: 'pdf',
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content: [{ type: 'text', text: `
+            From the first page(s) of a PDF, identify the document for a study library.
+            FILE NAME: ${fileName}
+            ${metaTitle ? `PDF METADATA TITLE: ${metaTitle}` : ''}
+            TEXT:
+            """${firstText.slice(0, 5000)}"""
+            - "title": the document's real title as printed (keep its language; shorten an extremely long subtitle).
+            - "source": where it is from — society/organization or journal, year, and volume/pages or DOI if printed
+              (e.g. "ESC 2024 Guidelines · Eur Heart J 2024;45:3314–3414 · doi:10.1093/eurheartj/ehae176").
+              Only what is printed in the text; empty string if unknown. Never guess.` }] }],
+        toolName: 'submit_pdf_info',
+        toolDescription: 'Submit the title and source of the PDF.',
+        schema: {
+            type: 'object',
+            properties: { title: { type: 'string' }, source: { type: 'string' } },
+            required: ['title', 'source']
+        },
+        maxTokens: 400
+    });
+    return {
+        title: typeof input?.title === 'string' ? input.title.trim().slice(0, 300) : '',
+        source: typeof input?.source === 'string' ? input.source.trim().slice(0, 500) : ''
+    };
+};
+
+// 사진(스캔) PDF: 쪽 그림 몇 장을 받아 글자를 그대로 옮김 (쪽 사이에 구분선)
+export const transcribePdfPages = async (pageImages: string[], firstPageNo: number): Promise<string[]> => {
+    const content: any[] = [];
+    pageImages.forEach((img, i) => {
+        content.push({ type: 'text', text: `[PAGE ${firstPageNo + i}]` });
+        content.push(imageBlock(img));
+    });
+    content.push({ type: 'text', text: `Transcribe ALL text on each page above exactly as printed (keep the original language, numbers and units; keep table rows as lines with " | " between cells). Do not summarize or add anything. Output each page starting with its marker line "[PAGE n]".` });
+    const data = await callClaude({
+        feature: 'pdf',
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content }],
+        max_tokens: 3000 * pageImages.length
+    });
+    const text = extractText(data);
+    const out: string[] = pageImages.map(() => '');
+    const re = /\[PAGE (\d+)\]\s*/g;
+    const marks: { n: number; at: number; end: number }[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) marks.push({ n: Number(m[1]), at: m.index, end: re.lastIndex });
+    if (marks.length === 0) { out[0] = text.trim(); return out; }
+    marks.forEach((mk, i) => {
+        const idx = mk.n - firstPageNo;
+        const seg = text.slice(mk.end, i + 1 < marks.length ? marks[i + 1].at : undefined).trim();
+        if (idx >= 0 && idx < out.length && seg) out[idx] = out[idx] ? `${out[idx]}\n${seg}` : seg;
+    });
+    return out;
 };
 
 export const generateDetailedQuizExplanation = async (question: string, isTrue: boolean, language: QuizLanguage = 'Korean'): Promise<{ explanation: string; sources: Source[] } | null> => {

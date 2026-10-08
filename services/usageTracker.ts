@@ -8,18 +8,19 @@ import { addUsageToFirestore, fetchUsageMonth, UsageMonth } from './firebaseServ
 
 export type UsageFeature =
     | 'thread' | 'threadTitle' | 'quiz' | 'summary' | 'study' | 'ask' | 'imageText'
-    | 'guideline' | 'insights' | 'embedding' | 'other';
+    | 'guideline' | 'insights' | 'pdf' | 'embedding' | 'other';
 
 export const USAGE_FEATURE_LABELS: Record<UsageFeature, string> = {
     thread: '질문 노트 답변',
     threadTitle: '질문 노트 제목',
     quiz: 'AI 퀴즈',
     summary: 'AI 요약·저널클럽',
-    study: 'AI 주제 탐구',
+    study: 'AI 주제 탐구(삭제된 기능)',
     ask: '내 메모에 물어보기',
     imageText: '사진 글자 읽기',
     guideline: '가이드라인 점검',
     insights: '메모 활용(이번 주·인계장 등)',
+    pdf: 'PDF 자료 OX·글자 읽기',
     embedding: '검색용 임베딩(Voyage)',
     other: '기타',
 };

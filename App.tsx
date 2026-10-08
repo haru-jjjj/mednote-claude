@@ -1,26 +1,28 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, Lightbulb, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers, Sparkles, Search, Image as ImageIcon, Wallet } from 'lucide-react';
+import { Plus, LayoutGrid, Network, Menu, X, Cloud, Shuffle, Clock, BrainCircuit, Loader2, Upload, Download, LogOut, MessageSquareText, KeyRound, ShieldCheck, Layers, Sparkles, Search, Image as ImageIcon, Wallet } from 'lucide-react';
 import NoteEditor from './components/NoteEditor';
 import NoteList, { TagFilter } from './components/NoteList';
 import NoteDetail from './components/NoteDetail';
 import QuizView from './components/QuizView';
-import StudyGuideView from './components/StudyGuideView';
 import AskNotesView from './components/AskNotesView';
 import GuidelineCheckView from './components/GuidelineCheckView';
 import InsightsView from './components/InsightsView';
 import ThreadsView from './components/ThreadsView';
 import PhotosView from './components/PhotosView';
 import UsageView from './components/UsageView';
+import PdfLibraryView from './components/PdfLibraryView';
 import { loadCurrentMonthUsage, subscribeMonthCost, formatUsd, checkMonthRollover } from './services/usageTracker';
 import { followUpStatus, contentForAnalysis } from './services/insightUtils';
 import { buildPatientIndex, patientIdOf, buildMergedPatientContent, buildAppendedContent } from './services/patientId';
 import { hasTrustedDeviceFlag, forgetThisDevice } from './services/authService';
 import PinSettingsModal from './components/PinSettingsModal';
-import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, NoteCategory, toggleCategory, categoryLabels } from './types';
+import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, PdfDoc, NoteCategory, toggleCategory, categoryLabels } from './types';
 import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote, isQuizEligible, notesInPeriod, ReviewPeriod } from './services/studyUtils';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
-import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines } from './services/claudeService';
+import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines, generatePdfOXBatch } from './services/claudeService';
+import { subscribePdfDocs, loadLocalPdfDocs, syncPdfDocs, getPdfDoc, getAllPdfDocs, getPdfSectionText, updatePdfSection } from './services/pdfLibrary';
+import { pickPdfQuestion, applyGenerated, recordPdfAnswer, toQuizQuestion, newPdfId, pickFromPool, inPdfPool, PoolPick } from './services/pdfQuiz';
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 import { sanitizeHistory, historyKey, archiveCurrentSummary, trimHistory } from './services/summaryHistory';
@@ -153,6 +155,27 @@ const App: React.FC = () => {
       loadCurrentMonthUsage();
       return unsub;
   }, []);
+
+  // PDF 자료실 (§5-75): 이 기기 목록을 바로 보여주고, 퀴즈·자료실 화면을 열 때 클라우드와 맞춤
+  const [pdfDocs, setPdfDocs] = useState<PdfDoc[]>([]);
+  const [pdfSyncing, setPdfSyncing] = useState(false);
+  const [pdfSyncError, setPdfSyncError] = useState<string | null>(null);
+  const pdfSyncedAtRef = useRef(0);
+  useEffect(() => {
+      const unsub = subscribePdfDocs(setPdfDocs);
+      loadLocalPdfDocs();
+      return unsub;
+  }, []);
+  useEffect(() => {
+      if (view !== ViewMode.QUIZ && view !== ViewMode.PDFS) return;
+      if (Date.now() - pdfSyncedAtRef.current < 60 * 1000) return;
+      pdfSyncedAtRef.current = Date.now();
+      setPdfSyncing(true);
+      syncPdfDocs()
+          .then(() => setPdfSyncError(null))
+          .catch(e => { console.warn('PDF 자료 동기화 실패', e); setPdfSyncError('클라우드와 맞추지 못했어요 (이 기기에 있는 자료만 보여요). 인터넷 연결 후 다시 열어주세요.'); })
+          .finally(() => setPdfSyncing(false));
+  }, [view]);
 
   // Quiz State with Queue support
   const [quizState, setQuizState] = useState<QuizState>({
@@ -365,11 +388,10 @@ const App: React.FC = () => {
       }
   };
 
-  // 검색을 처음 사용하는 순간, 또는 AI 주제 탐구 화면을 처음 여는 순간, 화면에
+  // 검색을 처음 사용하는 순간, 또는 전체 메모가 필요한 화면을 처음 여는 순간, 화면에
   // 아직 로드되지 않은(오래된) 클라우드 메모까지 검색/임베딩 대상 범위에
-  // 포함되도록 전체 메모를 한 번만 자동으로 불러옵니다. (두 트리거가 같은 ref를
-  // 공유해서, 검색을 먼저 했든 주제 탐구를 먼저 열었든 전체 불러오기는 딱 한
-  // 번만 실행됩니다.)
+  // 포함되도록 전체 메모를 한 번만 자동으로 불러옵니다. (여러 트리거가 같은 ref를
+  // 공유해서 전체 불러오기는 딱 한 번만 실행됩니다.)
   const hasAutoFetchedAllRef = useRef(false);
   const triggerAutoFetchAllOnce = () => {
       if (!hasAutoFetchedAllRef.current) {
@@ -381,12 +403,9 @@ const App: React.FC = () => {
       if (searchTerm.trim()) triggerAutoFetchAllOnce();
   }, [searchTerm]);
   useEffect(() => {
-      // AI 주제 탐구는 임베딩으로 "관련 메모"를 찾아 주제를 제안/심화하는 기능이라
-      // 로컬에 적게 로드된 상태(예: 최근 30개)로는 관련 메모 풀이 너무 작아 사실상
-      // 항상 무작위 폴백만 타게 됩니다. 화면을 열자마자 전체 메모를 불러와 임베딩
-      // 백필 대상과 클러스터링 후보 풀을 넓혀줍니다.
-      // 퀴즈(오늘 복습 수·오답 노트)와 오래된 메모 점검도 전체 메모 기준이라 함께 불러옴
-      if (view === ViewMode.STUDY_GUIDE || view === ViewMode.ASK_NOTES || view === ViewMode.QUIZ || view === ViewMode.GUIDELINE_CHECK || view === ViewMode.INSIGHTS || view === ViewMode.THREADS || view === ViewMode.PHOTOS) triggerAutoFetchAllOnce();
+      // 메모에 물어보기(임베딩 후보 풀), 퀴즈(오늘 복습 수·오답 노트), 오래된 메모 점검 등은
+      // 전체 메모 기준이라 화면을 열자마자 전체 메모를 불러옴
+      if (view === ViewMode.ASK_NOTES || view === ViewMode.QUIZ || view === ViewMode.GUIDELINE_CHECK || view === ViewMode.INSIGHTS || view === ViewMode.THREADS || view === ViewMode.PHOTOS) triggerAutoFetchAllOnce();
   }, [view]);
 
   // "내 메모에 물어보기" 화면에서 인용된 메모를 열었다가 뒤로 가면, 목록이 아니라 방금 보던
@@ -563,6 +582,8 @@ const App: React.FC = () => {
   const periodUsedIdsRef = useRef<Set<string>>(new Set());
   // 이번 세션에서 이미 문제를 만든(아직 안 푼 것 포함) 구역 — 미리 만들어 두는 문제가 같은 구역에서 겹치지 않게
   const reservedPartsRef = useRef<Map<string, Set<string>>>(new Map());
+  // PDF 퀴즈: 이번 세션에서 이미 꺼낸 "구간키#요점번호" (§5-75)
+  const pdfReservedRef = useRef<Map<string, Set<string>>>(new Map()); // PDF id → 꺼낸 "구간키#요점번호" (§5-76: 여러 PDF)
 
   useEffect(() => {
     // Background Quiz Generation Logic
@@ -592,6 +613,82 @@ const App: React.FC = () => {
             const reviewUsed = reviewUsedIdsRef.current;
             const periodUsed = periodUsedIdsRef.current;
             const skipIds: string[] = []; // 낼 내용이 없는 메모 (이번 요청에서 건너뜀)
+
+            // PDF 자료로 OX (§5-75): 앞 구간부터 안 푼 요점의 문제를 냄. 구간을 처음 풀 때는 요점 목록+문제를 한 번에 만듦
+            // §5-76: pdfId가 없으면 "PDF 복습"에 넣어 둔 모든 PDF를 한 풀로 — PDF끼리는 섞고, 각 PDF 안에서는 앞에서부터 빠짐없이
+            if (quizState.source === 'PDF') {
+                const singleId = quizState.pdfId || null;
+                const mode = quizState.pdfMode || 'all';
+                const reservedMap = pdfReservedRef.current;
+                let pdfQuestion: QuizQuestion | null = null;
+                // 풀에서 한 PDF의 구간 문제를 막 만들었으면, 다음은 그 PDF에서 바로 꺼냄 (연달아 여러 PDF를 만들며 기다리지 않게)
+                let stickId: string | null = null;
+                try {
+                    for (let attempt = 0; attempt < 6 && !pdfQuestion; attempt++) {
+                        let chosen: PoolPick | null = null;
+                        if (singleId) {
+                            const d = await getPdfDoc(singleId);
+                            if (!d) throw new Error('PDF를 찾지 못했습니다 (지워졌을 수 있어요).');
+                            const p1 = pickPdfQuestion(d, reservedMap.get(d.id) || new Set(), mode, quizState.language);
+                            chosen = p1.kind === 'done' ? null : { doc: d, pick: p1 };
+                        } else {
+                            const all = (await getAllPdfDocs()).filter(inPdfPool);
+                            const stick = stickId ? all.filter(d => d.id === stickId) : [];
+                            chosen = (stick.length ? pickFromPool(stick, reservedMap, mode, quizState.language) : null)
+                                || pickFromPool(all, reservedMap, mode, quizState.language);
+                            if (all.length === 0) throw new Error('PDF 복습에 넣어 둔 PDF가 없습니다. PDF 자료실에서 PDF를 올리거나 "PDF 복습에 넣기"를 켜 주세요.');
+                        }
+                        if (quizSessionRef.current !== session) return;
+                        if (!chosen) {
+                            setIfCurrent(prev => ({ ...prev, isGenerating: false, noMoreQuestions: true }));
+                            return;
+                        }
+                        const doc = chosen.doc;
+                        const pick = chosen.pick;
+                        const pdfId = doc.id;
+                        const reservedPdf = reservedMap.get(pdfId) || new Set<string>();
+                        reservedMap.set(pdfId, reservedPdf);
+                        if (pick.kind === 'question') {
+                            reservedPdf.add(`${pick.section.key}#${pick.question.pi}`);
+                            pdfQuestion = toQuizQuestion(doc, pick);
+                            break;
+                        }
+                        stickId = pdfId;
+                        const text = await getPdfSectionText(doc, pick.section.key);
+                        const pts = doc.progress[pick.section.key]?.pts || [];
+                        const items = await generatePdfOXBatch({
+                            docTitle: doc.title,
+                            docSource: doc.source,
+                            sectionLabel: pick.section.label,
+                            sectionIndex: pick.sectionIndex,
+                            sectionCount: pick.sectionCount,
+                            text,
+                            points: pick.pointIndexes ? pick.pointIndexes.map(i => pts[i]?.p || '') : null
+                        }, quizState.language);
+                        // 비용을 이미 썼으니 세션이 끝났어도 만든 문제는 저장 (다음에 그대로 씀)
+                        await updatePdfSection(pdfId, pick.section.key, prev => applyGenerated(prev, pick.pointIndexes, items, quizState.language, () => newPdfId('q_'), Date.now()));
+                        if (quizSessionRef.current !== session) return;
+                        if (pick.pointIndexes && items.length === 0) throw new Error('AI가 문제를 만들지 못했습니다. 다시 시도해주세요.');
+                    }
+                } catch (e: any) {
+                    console.error('PDF 퀴즈 생성 오류', e);
+                    const msg = String(e?.message || '');
+                    setIfCurrent(prev => ({ ...prev, isGenerating: false, error: /[가-힣]/.test(msg) ? msg : '문제를 만들지 못했습니다. 인터넷 연결을 확인하고 다시 시도해주세요.' }));
+                    return;
+                }
+                if (!pdfQuestion) {
+                    setIfCurrent(prev => ({ ...prev, isGenerating: false, error: '문제를 만들지 못했습니다. 다시 시도해주세요.' }));
+                    return;
+                }
+                const pq = pdfQuestion;
+                setIfCurrent(prev => {
+                    if (!prev.isActive || prev.source !== 'PDF') return prev;
+                    return prev.currentQuestion
+                        ? { ...prev, isGenerating: false, questionQueue: [...prev.questionQueue, pq], error: null }
+                        : { ...prev, isGenerating: false, currentQuestion: pq, error: null };
+                });
+                return;
+            }
 
             let fullNote: Note | null = null;
             let parts: ReturnType<typeof splitNoteParts> = [];
@@ -732,7 +829,7 @@ const App: React.FC = () => {
 
     fetchNext();
 
-  }, [quizState.isActive, quizState.mode, quizState.source, quizState.period, quizState.periodAll, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
+  }, [quizState.isActive, quizState.mode, quizState.source, quizState.period, quizState.periodAll, quizState.pdfId, quizState.pdfMode, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
 
 
   const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' | 'PERIOD' = 'RANDOM', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => {
@@ -754,6 +851,28 @@ const App: React.FC = () => {
           error: null,
           stats: { correct: 0, total: 0 }
       });
+  }, []);
+
+  // PDF 자료로 OX (§5-75): mode all = 안 푼 요점부터 빠짐없이 / wrong = 틀린 요점의 문제를 그대로 다시
+  // pdfId가 null이면 전체 풀(PDF 복습에 넣어 둔 모든 PDF) (§5-76)
+  const handleStartPdfQuiz = React.useCallback((pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage) => {
+      quizSessionRef.current += 1;
+      pdfReservedRef.current = new Map();
+      setQuizState({
+          isActive: true,
+          mode: 'QUICK_OX',
+          source: 'PDF',
+          pdfId: pdfId || undefined,
+          pdfMode: mode,
+          noMoreQuestions: false,
+          language,
+          isGenerating: false,
+          questionQueue: [],
+          currentQuestion: null,
+          error: null,
+          stats: { correct: 0, total: 0 }
+      });
+      setView(ViewMode.QUIZ);
   }, []);
 
   // 오답 노트 다시 풀기: 저장된 문제를 그대로 다시 냄 (AI 호출 없음)
@@ -826,6 +945,12 @@ const App: React.FC = () => {
       if (!q) return;
       const now = Date.now();
       try {
+          // PDF 문제: 그 요점을 맞힘/틀림으로 표시 (메모 기록은 건드리지 않음)
+          if (q.pdfRef) {
+              const ref = q.pdfRef;
+              await updatePdfSection(ref.docId, ref.sectionKey, prev => recordPdfAnswer(prev, q.id, ref.pointIndex, wasCorrect, now));
+              return;
+          }
           if (source === 'WRONG' || q.replayOfNoteId) {
               // 오답 다시 풀기: 맞히면 오답 노트에서 빼고, 또 틀리면 횟수만 올림 (복습 일정은 그대로)
               const holderId = q.replayOfNoteId;
@@ -1490,18 +1615,16 @@ const App: React.FC = () => {
           {/* 모든 항목을 같은 모양으로: 아이콘은 단색, 선택된 항목만 강조색 */}
           {([
             { key: 'list', view: ViewMode.LIST, label: '내 메모장', icon: LayoutGrid, onClick: () => { setView(ViewMode.LIST); setSearchTerm(''); } },
-            { key: 'random', label: '무작위 공부하기', icon: Shuffle, onClick: handleRandomNote, busy: isRandomLoading, disabled: isRandomLoading, keepSidebar: false },
             { key: 'threads', view: ViewMode.THREADS, onClick: () => { setThreadsReturnView(null); setView(ViewMode.THREADS); }, label: '질문 노트', icon: MessageSquareText, badge: threadPendingCount > 0 ? `적어둔 ${threadPendingCount}` : null, badgeTitle: '적어두고 아직 안 물어본 질문' },
             { key: 'quiz', view: ViewMode.QUIZ, label: 'AI 퀴즈 복습', icon: BrainCircuit, busy: quizState.isGenerating && quizState.isActive,
               badge: reviewDueCount > 0 ? `오늘 ${reviewDueCount}` : (quizState.questionQueue.length > 0 ? String(quizState.questionQueue.length) : null), badgeTitle: '오늘 복습할 메모' },
-            { key: 'study', view: ViewMode.STUDY_GUIDE, label: 'AI 주제 탐구', icon: Lightbulb },
             { key: 'ask', view: ViewMode.ASK_NOTES, label: '내 메모에 물어보기', icon: Search },
             { key: 'guideline', view: ViewMode.GUIDELINE_CHECK, label: '오래된 메모 점검', icon: ShieldCheck, busy: guidelineCheckingIds.length > 0 },
             { key: 'insights', view: ViewMode.INSIGHTS, label: '메모 활용', icon: Layers, badge: patientFollowUpDue > 0 ? `환자 ${patientFollowUpDue}` : null, badgeTitle: '확인할 차례인 환자 메모' },
             { key: 'photos', view: ViewMode.PHOTOS, label: '사진 모아보기', icon: ImageIcon },
             { key: 'usage', view: ViewMode.USAGE, label: 'API 사용량', icon: Wallet, badge: monthCost > 0 ? formatUsd(monthCost) : null, badgeTitle: '이번 달 추정 사용 금액 (매월 1일 0부터)' },
           ] as { key: string; view?: ViewMode; label: string; icon: React.ComponentType<{ className?: string }>; onClick?: () => void; busy?: boolean; disabled?: boolean; badge?: string | null; badgeTitle?: string }[]).map(item => {
-            const active = !!item.view && view === item.view;
+            const active = !!item.view && (view === item.view || (item.view === ViewMode.QUIZ && view === ViewMode.PDFS));
             const Icon = item.icon;
             return (
               <button
@@ -1522,6 +1645,17 @@ const App: React.FC = () => {
               </button>
             );
           })}
+          {/* 자주 안 쓰는 것: 작은 글씨로 목록 아래에 (§5-75) */}
+          <div className="pt-2 mt-2 border-t border-slate-100">
+            <button
+              onClick={() => { handleRandomNote(); if (isMobile) setShowSidebar(false); }}
+              disabled={isRandomLoading}
+              className="w-full flex items-center px-3 py-2 rounded-lg text-[12px] text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition-colors disabled:opacity-50"
+            >
+              {isRandomLoading ? <Loader2 className="w-3.5 h-3.5 mr-3 shrink-0 animate-spin" /> : <Shuffle className="w-3.5 h-3.5 mr-3 shrink-0 text-slate-400" />}
+              무작위 메모 보기
+            </button>
+          </div>
         </nav>
 
         <div className="p-5 border-t border-slate-50 space-y-3">
@@ -1577,7 +1711,7 @@ const App: React.FC = () => {
                    <button onClick={handleExportBackup} className="w-10 h-10 flex items-center justify-center text-slate-400 hover:bg-slate-50 rounded-full" title="백업하기">
                       <Cloud className="w-5 h-5" />
                    </button>
-                   <button onClick={handleRandomNote} className="w-10 h-10 flex items-center justify-center text-slate-400 hover:bg-slate-50 rounded-full" title="무작위 공부하기">
+                   <button onClick={handleRandomNote} className="w-10 h-10 flex items-center justify-center text-slate-400 hover:bg-slate-50 rounded-full" title="무작위 메모 보기">
                       <Shuffle className="w-5 h-5" />
                    </button>
                 </div>
@@ -1647,12 +1781,9 @@ const App: React.FC = () => {
                         onDeleteWrongAnswer={handleDeleteWrongAnswer}
                         onOpenNote={openNoteFromQuiz}
                         isFetchingAll={isFetchingAll}
-                    />
-                )}
-                 {view === ViewMode.STUDY_GUIDE && (
-                    <StudyGuideView
-                        notes={memoNotes}
-                        onBack={() => setView(ViewMode.LIST)}
+                        pdfDocs={pdfDocs}
+                        onOpenPdfLibrary={() => setView(ViewMode.PDFS)}
+                        onStartPdf={handleStartPdfQuiz}
                     />
                 )}
                 {view === ViewMode.GUIDELINE_CHECK && (
@@ -1703,6 +1834,15 @@ const App: React.FC = () => {
                             }}
                         />
                     </div>
+                )}
+                {view === ViewMode.PDFS && (
+                    <PdfLibraryView
+                        docs={pdfDocs}
+                        loading={pdfSyncing}
+                        syncError={pdfSyncError}
+                        onBack={() => setView(ViewMode.QUIZ)}
+                        onStart={handleStartPdfQuiz}
+                    />
                 )}
                 {view === ViewMode.USAGE && (
                     <UsageView onBack={() => setView(ViewMode.LIST)} liveMonthCost={monthCost} />

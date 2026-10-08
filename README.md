@@ -1,7 +1,7 @@
 # MediNote AI
 
 의학 공부 메모 앱. 메모 저장, 랜덤 메모 복습, AI 퀴즈(객관식/OX), 메모 내 AI 요약,
-AI 주제 탐구(Study Guide), JSON/CSV 백업, (선택) 의미 기반 검색을 제공합니다.
+PDF 자료실(PDF 내용을 빠짐없이 OX로), JSON/CSV 백업, (선택) 의미 기반 검색을 제공합니다.
 AI 기능은 Claude API(Anthropic Messages API)를, 의미 기반 검색은 Voyage AI
 임베딩 API를 사용합니다.
 

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Note, QuizState, QuizQuestion, Source, QuizLanguage } from '../types';
-import { BrainCircuit, CheckCircle2, XCircle, ArrowRight, AlertTriangle, BookOpen, RotateCw, ExternalLink, Sparkles, Loader2, Zap, Trophy, Play, ArrowLeft, Layers, Microscope, Languages, FileText, X, Calendar, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
+import { Note, QuizState, QuizQuestion, Source, QuizLanguage, PdfDoc } from '../types';
+import { BrainCircuit, CheckCircle2, XCircle, ArrowRight, AlertTriangle, BookOpen, RotateCw, ExternalLink, Sparkles, Loader2, Zap, Trophy, Play, ArrowLeft, Layers, Microscope, Languages, FileText, X, Calendar, ChevronDown, ChevronUp, Trash2, FileUp } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { generateDetailedQuizExplanation, formatMedicalMarkdown } from '../services/claudeService';
@@ -9,6 +9,8 @@ import { getNoteFromDB } from '../services/storage';
 import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/sourceKind';
 import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo } from '../services/studyUtils';
 import { isRestingUntilDue } from '../services/quizCoverage';
+import { pdfStats, resetPdfRound, poolStats, inPdfPool } from '../services/pdfQuiz';
+import { getPdfDoc, getPdfSectionText, updatePdfMeta } from '../services/pdfLibrary';
 
 const PERIOD_KEY = 'medinote_quiz_period';
 const readPeriod = (): ReviewPeriod => {
@@ -29,6 +31,9 @@ interface QuizViewProps {
   onDeleteWrongAnswer: (noteId: string, questionId: string) => void;
   onOpenNote: (id: string) => void;
   isFetchingAll?: boolean;
+  pdfDocs: PdfDoc[];
+  onOpenPdfLibrary: () => void;
+  onStartPdf: (pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage) => void; // null = 전체 풀 (§5-76)
 }
 
 const WRONG_LIST_PAGE = 10;
@@ -38,7 +43,7 @@ const hasKana = (s: string) => /[\u3040-\u30ff]/.test(s || '');
 const langAttrOf = (language: QuizLanguage | undefined, sample: string): 'ja' | 'en' | 'ko' =>
     hasKana(sample) || language === 'Japanese' ? 'ja' : language === 'English' ? 'en' : 'ko';
 
-const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, onStop, onEndSession, onRetry, onBack, reviewDueCount, onStartWrongReview, onDeleteWrongAnswer, onOpenNote, isFetchingAll }) => {
+const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, onStop, onEndSession, onRetry, onBack, reviewDueCount, onStartWrongReview, onDeleteWrongAnswer, onOpenNote, isFetchingAll, pdfDocs, onOpenPdfLibrary, onStartPdf }) => {
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
   const [isRevealed, setIsRevealed] = useState(false);
   
@@ -75,6 +80,23 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   const [showSourceNotes, setShowSourceNotes] = useState(false);
   const [hydratedSourceNotes, setHydratedSourceNotes] = useState<Note[]>([]);
   
+  // PDF 문제: 근거가 된 PDF 구간 원문 보기 (§5-75)
+  const [pdfSourceText, setPdfSourceText] = useState<{ label: string; text: string | null; error?: string } | null>(null);
+  const openPdfSource = async (q: QuizQuestion) => {
+      const ref = q.pdfRef;
+      if (!ref) return;
+      setPdfSourceText({ label: `${ref.docTitle} · ${ref.sectionLabel}`, text: null });
+      try {
+          const d = await getPdfDoc(ref.docId);
+          if (!d) throw new Error('PDF를 찾지 못했습니다 (지워졌을 수 있어요).');
+          const text = await getPdfSectionText(d, ref.sectionKey);
+          setPdfSourceText({ label: `${ref.docTitle} · ${ref.sectionLabel}`, text });
+      } catch (e: any) {
+          setPdfSourceText({ label: `${ref.docTitle} · ${ref.sectionLabel}`, text: '', error: e?.message || '원문을 불러오지 못했습니다.' });
+      }
+  };
+  const currentPdf = quizState.source === 'PDF' ? pdfDocs.find(d => d.id === quizState.pdfId) : undefined;
+
   // State for Full Screen Image Viewing
   const [viewingImage, setViewingImage] = useState<string | null>(null);
 
@@ -91,6 +113,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
       setIsDetailLoading(false);
       setShowSourceNotes(false);
       setHydratedSourceNotes([]);
+      setPdfSourceText(null);
   }, [quizState.currentQuestion?.id]);
 
   // Load full notes (with images) when Source Notes modal is opened
@@ -308,6 +331,62 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                           </div>
                       </div>
 
+                      {/* PDF 복습 (§5-75, §5-76): 올린 PDF 전체를 한 풀로 — PDF끼리 섞고, 각 PDF 안에서는 앞에서부터 빠짐없이 */}
+                      {(() => {
+                          const ps = poolStats(pdfDocs);
+                          const outCount = pdfDocs.length - ps.docs;
+                          return (
+                              <div className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 md:p-6">
+                                  <div className="flex items-start gap-3">
+                                      <div className="w-10 h-10 shrink-0 rounded-xl flex items-center justify-center bg-slate-100 text-slate-500">
+                                          <FileText className="w-5 h-5" />
+                                      </div>
+                                      <div className="min-w-0 flex-1">
+                                          <div className="flex items-center gap-2">
+                                              <h3 className="text-lg font-bold text-slate-900">PDF 복습</h3>
+                                              <button type="button" onClick={onOpenPdfLibrary} className="ml-auto shrink-0 text-xs font-bold text-accent-700 hover:text-accent-800 flex items-center gap-1">
+                                                  <FileUp className="w-3.5 h-3.5" /> PDF 자료실{pdfDocs.length > 0 ? ` ${pdfDocs.length}` : ''}
+                                              </button>
+                                          </div>
+                                          <p className="text-sm text-slate-500 leading-relaxed mt-1">
+                                              {pdfDocs.length === 0
+                                                  ? 'PDF를 올리면 구간마다 요점을 정리해 요점 하나당 OX 한 문제로, 처음부터 끝까지 빠짐없이 냅니다.'
+                                                  : `올린 PDF ${ps.docs}개를 섞어서 OX로 냅니다. 각 PDF는 앞에서부터 안 푼 요점을 빠짐없이, 맞힌 요점은 이번 바퀴에 다시 안 나와요.`}
+                                          </p>
+                                          {pdfDocs.length > 0 && (
+                                              <>
+                                                  <div className="mt-3 flex items-center gap-2">
+                                                      <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                                          <div className="h-full rounded-full bg-accent-500" style={{ width: `${ps.percent}%` }} />
+                                                      </div>
+                                                      <span className="text-[11px] text-slate-400 shrink-0">{ps.allDone ? '모두 한 바퀴 끝' : `${ps.percent}%`}</span>
+                                                  </div>
+                                                  <p className="text-[11px] text-slate-400 mt-1">
+                                                      구간 {ps.sectionsDone}/{ps.sections} · 맞힘 {ps.ok} · 틀림 {ps.wrong}{outCount > 0 ? ` · 복습에서 뺀 PDF ${outCount}개` : ''}
+                                                  </p>
+                                                  <div className="flex flex-wrap gap-2 mt-3">
+                                                      <button
+                                                          type="button"
+                                                          onClick={() => (ps.allDone ? onOpenPdfLibrary() : onStartPdf(null, 'all', selectedLanguage))}
+                                                          disabled={ps.docs === 0}
+                                                          className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 transition-colors flex items-center gap-1.5 disabled:opacity-40"
+                                                      >
+                                                          <Zap className="w-4 h-4" /> {ps.allDone ? '다 풀었어요 — 자료실에서 다시' : ps.sectionsDone + ps.ok + ps.wrong === 0 ? 'PDF 전체로 OX' : '이어서 풀기'}
+                                                      </button>
+                                                      {ps.wrong > 0 && (
+                                                          <button type="button" onClick={() => onStartPdf(null, 'wrong', selectedLanguage)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
+                                                              <RotateCw className="w-4 h-4" /> 틀린 것 {ps.wrong}개
+                                                          </button>
+                                                      )}
+                                                  </div>
+                                              </>
+                                          )}
+                                      </div>
+                                  </div>
+                              </div>
+                          );
+                      })()}
+
                       <p className="text-xs font-bold text-slate-400 mb-3 px-1">
                           무작위 퀴즈 — 복습일이 된 메모와 아직 안 푼 메모가 더 자주 나옵니다
                       </p>
@@ -459,6 +538,68 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   }
 
   // State 2-a: 더 낼 문제가 없음 (오늘 복습 끝 / 오답 다시 풀기 끝)
+  if (!quizState.currentQuestion && quizState.noMoreQuestions && !quizState.isGenerating && !quizState.error && quizState.source === 'PDF') {
+      const { correct, total } = quizState.stats;
+      const wrongMode = quizState.pdfMode === 'wrong';
+      const isPool = !quizState.pdfId;
+      // 한 PDF / 전체 풀(§5-76) 공통으로 쓰는 요약
+      const one = currentPdf ? pdfStats(currentPdf) : null;
+      const pool = isPool ? poolStats(pdfDocs) : null;
+      const sum = isPool
+          ? (pool ? { points: pool.points, ok: pool.ok, wrong: pool.wrong, roundDone: pool.allDone, left: pool.sections - pool.sectionsDone } : null)
+          : (one ? { points: one.points, ok: one.ok, wrong: one.wrong, roundDone: one.roundDone, left: one.sections - one.sectionsDone } : null);
+      const startId = isPool ? null : (currentPdf?.id || null);
+      const restartDone = async () => {
+          if (!confirm(isPool ? '다 푼 PDF를 처음부터 다시 풀까요? 같은 요점을 새 문장으로 다시 냅니다.' : '처음부터 다시 풀까요? 같은 요점을 새 문장으로 다시 냅니다.')) return;
+          const targets = isPool ? pdfDocs.filter(d => inPdfPool(d) && pdfStats(d).roundDone) : (currentPdf ? [currentPdf] : []);
+          for (const d of targets) await updatePdfMeta(d.id, x => ({ progress: resetPdfRound(x, Date.now()), round: (x.round || 0) + 1 }));
+          onStartPdf(startId, 'all', quizState.language);
+      };
+      return (
+          <div className="flex flex-col items-center justify-center h-full bg-slate-50 p-6 text-center animate-in fade-in">
+              <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center mb-6">
+                  <Trophy className="w-8 h-8 text-accent-500" />
+              </div>
+              <h2 className="text-xl font-bold text-slate-800 mb-1">
+                  {wrongMode ? '틀린 문제 다시 풀기 끝' : isPool ? 'PDF 전체 한 바퀴 끝' : 'PDF 한 바퀴 끝'}
+              </h2>
+              <p className="text-sm text-slate-500 mb-3 max-w-sm">{isPool ? `PDF 복습에 넣은 PDF ${pool?.docs || 0}개` : currentPdf?.title}</p>
+              {total > 0 && <p className="text-slate-500 text-sm mb-2">이번에 {total}문제 중 <b className="text-slate-800">{correct}</b>개 정답</p>}
+              {sum && (
+                  <p className="text-slate-400 text-xs mb-8 max-w-sm leading-relaxed">
+                      지금까지 만든 요점 {sum.points}개 · 맞힘 {sum.ok} · 틀림 {sum.wrong}
+                      {!sum.roundDone
+                          ? ` — 아직 안 푼 구간이 ${sum.left}개 있어요.`
+                          : sum.wrong > 0 ? ' — 틀린 요점은 같은 문제로 다시 풀 수 있어요.' : ' — 모두 맞혔어요.'}
+                  </p>
+              )}
+              <div className="flex flex-col gap-3 w-full max-w-xs">
+                  {sum && sum.wrong > 0 && (
+                      <button type="button" onClick={() => onStartPdf(startId, 'wrong', quizState.language)} className="w-full bg-white border border-clay-300 text-clay-600 hover:bg-clay-50 py-3 rounded-xl font-bold transition-all">
+                          틀린 것 {sum.wrong}개 다시 풀기
+                      </button>
+                  )}
+                  {sum && !sum.roundDone && (
+                      <button type="button" onClick={() => onStartPdf(startId, 'all', quizState.language)} className="w-full bg-white border border-accent-300 text-accent-700 hover:bg-accent-50 py-3 rounded-xl font-bold transition-all">
+                          남은 구간 이어서 풀기
+                      </button>
+                  )}
+                  {sum?.roundDone && (
+                      <button type="button" onClick={restartDone} className="w-full bg-white border border-accent-300 text-accent-700 hover:bg-accent-50 py-3 rounded-xl font-bold transition-all">
+                          처음부터 다시 (새 문장으로)
+                      </button>
+                  )}
+                  <button type="button" onClick={() => { onEndSession(); onOpenPdfLibrary(); }} className="w-full bg-accent-700 text-white hover:bg-accent-800 py-3 rounded-xl font-bold shadow-sm transition-all">
+                      PDF 자료실로
+                  </button>
+                  <button type="button" onClick={onEndSession} className="w-full text-slate-400 hover:text-slate-600 py-2 text-sm font-medium transition-colors">
+                      퀴즈 첫 화면으로
+                  </button>
+              </div>
+          </div>
+      );
+  }
+
   if (!quizState.currentQuestion && quizState.noMoreQuestions && !quizState.isGenerating && !quizState.error) {
       const { correct, total } = quizState.stats;
       // 기간별 복습이 "남은 메모가 모두 맞혀서 쉬는 중"이라 끝났는지 (§5-72)
@@ -525,7 +666,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                   {quizState.error ? '문제가 발생했습니다' : (quizState.mode === 'QUICK_OX' ? 'OX 문제 만드는 중...' : '케이스 문제 만드는 중...')}
               </h2>
               <p className="text-slate-400 text-sm mb-8">
-                  {quizState.error ? quizState.error : 'AI가 메모를 분석하여 문제를 만들고 있습니다.\n잠시만 기다려주세요.'}
+                  {quizState.error ? quizState.error : quizState.source === 'PDF' ? 'PDF 구간의 요점을 정리해 문제를 만들고 있습니다.\n구간마다 처음 한 번만 시간이 걸려요 (10~30초).' : 'AI가 메모를 분석하여 문제를 만들고 있습니다.\n잠시만 기다려주세요.'}
               </p>
               
               <div className="flex flex-col gap-3 w-full max-w-xs">
@@ -570,7 +711,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                 </div>
                 <div>
                     <h2 className="font-bold text-slate-800 text-base md:text-lg">
-                        {quizState.source === 'REVIEW' ? '오늘의 복습' : quizState.source === 'WRONG' ? '오답 다시 풀기' : quizState.source === 'PERIOD' ? `기간 복습 · ${periodInfo(quizState.period).long}` : (isOX ? 'OX 빠른 복습' : '케이스 문제')}
+                        {quizState.source === 'PDF' ? <span className="block max-w-[52vw] md:max-w-md truncate">{quizState.pdfId ? 'PDF' : 'PDF 복습'} · {currentQ.pdfRef?.docTitle || currentPdf?.title || ''}</span> : quizState.source === 'REVIEW' ? '오늘의 복습' : quizState.source === 'WRONG' ? '오답 다시 풀기' : quizState.source === 'PERIOD' ? `기간 복습 · ${periodInfo(quizState.period).long}` : (isOX ? 'OX 빠른 복습' : '케이스 문제')}
                     </h2>
                     <div className="text-[11px] text-slate-400 flex items-center gap-1">
                         <Trophy className="w-3 h-3" /> Score: {quizState.stats.correct}/{quizState.stats.total}
@@ -733,6 +874,31 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                              </div>
                         ) : null}
 
+                        {currentQ.pdfRef && (
+                            <div className="mt-6 pt-4 border-t border-slate-200">
+                                <h4 className="text-xs font-bold text-slate-400 mb-2 flex items-center gap-1">
+                                    <FileText className="w-3.5 h-3.5" /> 근거 (PDF)
+                                </h4>
+                                <p className="text-[13px] text-slate-700 font-bold">{currentQ.pdfRef.docTitle}</p>
+                                {currentQ.pdfRef.docSource && (
+                                    /^https?:\/\//.test(currentQ.pdfRef.docSource)
+                                        ? <a href={currentQ.pdfRef.docSource} target="_blank" rel="noopener noreferrer" className="text-[12px] text-accent-600 break-all hover:underline">{currentQ.pdfRef.docSource}</a>
+                                        : <p className="text-[12px] text-slate-500 break-words">{currentQ.pdfRef.docSource}</p>
+                                )}
+                                <p className="text-[11px] text-slate-400 mt-1">
+                                    {currentQ.pdfRef.sectionLabel} · 구간 {currentQ.pdfRef.sectionIndex + 1}/{currentQ.pdfRef.sectionCount}
+                                    {currentQ.pdfRef.point ? ` · 요점: ${currentQ.pdfRef.point}` : ''}
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={() => openPdfSource(currentQ)}
+                                    className="mt-2 text-[11px] font-bold text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"
+                                >
+                                    <FileText className="w-3.5 h-3.5" /> 이 구간 원문 보기
+                                </button>
+                            </div>
+                        )}
+
                         {currentQ.coverage && (
                             <p className="mt-6 text-[11px] text-slate-400">
                                 출제 구역: {currentQ.coverage.partLabel} ({currentQ.coverage.partIndex + 1}/{currentQ.coverage.partCount})
@@ -805,6 +971,32 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
              </div>
         )}
         
+        {/* PDF 구간 원문 (§5-75) */}
+        {pdfSourceText && (
+             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setPdfSourceText(null)}>
+                <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+                    <div className="p-4 border-b border-slate-100 flex justify-between items-center gap-3">
+                        <h3 className="font-bold text-slate-800 text-sm min-w-0 flex items-start gap-2">
+                            <FileText className="w-4 h-4 text-accent-600 shrink-0 mt-0.5" /> <span className="line-clamp-2">{pdfSourceText.label}</span>
+                        </h3>
+                        <button type="button" onClick={() => setPdfSourceText(null)} className="text-slate-400 hover:text-slate-600 p-1 hover:bg-slate-100 rounded-full shrink-0">
+                            <X className="w-5 h-5" />
+                        </button>
+                    </div>
+                    <div className="p-5 overflow-y-auto bg-slate-50">
+                        {pdfSourceText.text === null ? (
+                            <div className="flex justify-center py-8"><Loader2 className="w-6 h-6 animate-spin text-slate-400" /></div>
+                        ) : pdfSourceText.error ? (
+                            <p className="text-sm text-red-500">{pdfSourceText.error}</p>
+                        ) : (
+                            <p className="text-[13px] text-slate-700 leading-relaxed whitespace-pre-wrap" lang={hasKana(pdfSourceText.text) ? 'ja' : undefined}>{pdfSourceText.text}</p>
+                        )}
+                        <p className="text-[11px] text-slate-400 mt-4">PDF에서 뽑은 글 그대로입니다 (머리말·쪽 번호 등은 뺌). 표는 줄이 섞여 보일 수 있어요.</p>
+                    </div>
+                </div>
+             </div>
+        )}
+
         {/* Full Screen Image Viewer */}
         {viewingImage && (
           <div 
