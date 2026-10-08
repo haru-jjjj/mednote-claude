@@ -8,6 +8,7 @@ import { generateDetailedQuizExplanation, formatMedicalMarkdown } from '../servi
 import { getNoteFromDB } from '../services/storage';
 import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/sourceKind';
 import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo } from '../services/studyUtils';
+import { isRestingUntilDue } from '../services/quizCoverage';
 
 const PERIOD_KEY = 'medinote_quiz_period';
 const readPeriod = (): ReviewPeriod => {
@@ -17,7 +18,7 @@ const readPeriod = (): ReviewPeriod => {
 interface QuizViewProps {
   notes: Note[];
   quizState: QuizState;
-  onStart: (mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source?: 'RANDOM' | 'REVIEW' | 'PERIOD', period?: ReviewPeriod) => void;
+  onStart: (mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source?: 'RANDOM' | 'REVIEW' | 'PERIOD', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => void;
   onNext: (wasCorrect: boolean, chosenIndex: number | null) => void;
   onStop: () => void;
   onEndSession: () => void;
@@ -41,12 +42,21 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   // 기간별 복습: 고른 기간(마지막 선택 기억)과 기간별 메모 수
   const [period, setPeriodState] = useState<ReviewPeriod>(readPeriod);
   const setPeriod = (p: ReviewPeriod) => { setPeriodState(p); try { localStorage.setItem(PERIOD_KEY, p); } catch { /* 저장 안 돼도 이번 화면에선 동작 */ } };
-  const periodCounts = useMemo(() => {
+  // 기간별 메모 수 + 그중 맞혀서 다음 복습일까지 쉬는 메모 수 (§5-72)
+  const periodStats = useMemo(() => {
       const now = Date.now();
-      const out = {} as Record<ReviewPeriod, number>;
-      REVIEW_PERIODS.forEach(p => { out[p.key] = notesInPeriod(notes, p.key, now).length; });
+      const out = {} as Record<ReviewPeriod, { all: number; resting: number }>;
+      REVIEW_PERIODS.forEach(p => {
+          const list = notesInPeriod(notes, p.key, now);
+          out[p.key] = { all: list.length, resting: list.filter(n => isRestingUntilDue(n, now)).length };
+      });
       return out;
   }, [notes]);
+  const periodCounts = useMemo(() => {
+      const out = {} as Record<ReviewPeriod, number>;
+      REVIEW_PERIODS.forEach(p => { out[p.key] = periodStats[p.key].all - periodStats[p.key].resting; });
+      return out;
+  }, [periodStats]);
 
   // States for Deep Dive (Detailed Explanation)
   const [isDetailLoading, setIsDetailLoading] = useState(false);
@@ -245,7 +255,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                               <div className="min-w-0 flex-1">
                                   <h3 className="text-lg font-bold text-slate-900">기간별 복습</h3>
                                   <p className="text-sm text-slate-500 leading-relaxed mt-1">
-                                      고른 기간에 쓰거나 고친 메모(질문 노트 포함)로만 냅니다. 한 바퀴 다 돌면 다시 처음부터.
+                                      고른 기간에 쓰거나 고친 메모(질문 노트 포함)로만 냅니다. 맞힌 메모는 다음 복습일까지 빼고, 아직 안 물어본 부분이나 틀린 메모를 냅니다.
                                   </p>
                                   <div className="flex flex-wrap gap-1.5 mt-3">
                                       {REVIEW_PERIODS.map(p => (
@@ -260,27 +270,29 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                       ))}
                                   </div>
                                   <p className="text-xs text-slate-400 mt-2">
-                                      {periodCounts[period] > 0
-                                          ? `${periodInfo(period).long} 메모 ${periodCounts[period]}개`
-                                          : `${periodInfo(period).long} 동안 쓰거나 고친 메모가 없어요.`}
+                                      {periodStats[period].all === 0
+                                          ? `${periodInfo(period).long} 동안 쓰거나 고친 메모가 없어요.`
+                                          : periodCounts[period] > 0
+                                              ? `${periodInfo(period).long} 풀 메모 ${periodCounts[period]}개${periodStats[period].resting ? ` · 맞혀서 다음 복습일까지 쉬는 메모 ${periodStats[period].resting}개는 빼고 냄` : ''}`
+                                              : `${periodInfo(period).long} 메모 ${periodStats[period].all}개를 모두 맞혔어요. 다음 복습일이 되면 다시 나옵니다.`}
                                       {isFetchingAll && ' (예전 메모 불러오는 중…)'}
                                   </p>
                                   <div className="flex flex-wrap gap-2 mt-3">
                                       <button
                                           type="button"
-                                          onClick={() => onStart('DETAILED', selectedLanguage, 'PERIOD', period)}
-                                          disabled={periodCounts[period] === 0}
+                                          onClick={() => onStart('DETAILED', selectedLanguage, 'PERIOD', period, { periodAll: periodCounts[period] === 0 })}
+                                          disabled={periodStats[period].all === 0}
                                           className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                                       >
-                                          <BookOpen className="w-4 h-4" /> 케이스 문제로
+                                          <BookOpen className="w-4 h-4" /> {periodCounts[period] === 0 && periodStats[period].all > 0 ? '맞힌 메모도 케이스로' : '케이스 문제로'}
                                       </button>
                                       <button
                                           type="button"
-                                          onClick={() => onStart('QUICK_OX', selectedLanguage, 'PERIOD', period)}
-                                          disabled={periodCounts[period] === 0}
+                                          onClick={() => onStart('QUICK_OX', selectedLanguage, 'PERIOD', period, { periodAll: periodCounts[period] === 0 })}
+                                          disabled={periodStats[period].all === 0}
                                           className="px-4 py-2 rounded-xl bg-white border border-accent-300 text-accent-700 text-sm font-bold hover:bg-accent-100 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                                       >
-                                          <Zap className="w-4 h-4" /> OX로 빠르게
+                                          <Zap className="w-4 h-4" /> {periodCounts[period] === 0 && periodStats[period].all > 0 ? '맞힌 메모도 OX로' : 'OX로 빠르게'}
                                       </button>
                                   </div>
                               </div>
@@ -440,10 +452,15 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   // State 2-a: 더 낼 문제가 없음 (오늘 복습 끝 / 오답 다시 풀기 끝)
   if (!quizState.currentQuestion && quizState.noMoreQuestions && !quizState.isGenerating && !quizState.error) {
       const { correct, total } = quizState.stats;
+      // 기간별 복습이 "남은 메모가 모두 맞혀서 쉬는 중"이라 끝났는지 (§5-72)
+      const ps = quizState.source === 'PERIOD' && quizState.period ? periodStats[quizState.period] : null;
+      const periodAllRested = !!ps && !quizState.periodAll && ps.all > 0 && ps.resting >= ps.all;
       const title = quizState.source === 'WRONG'
           ? '오답 다시 풀기 완료'
           : quizState.source === 'PERIOD'
-              ? (total === 0 ? `${periodInfo(quizState.period).long} 동안 쓰거나 고친 메모가 없어요` : `${periodInfo(quizState.period).long} 복습 — 더 낼 메모가 없어요`)
+              ? (periodAllRested
+                  ? `${periodInfo(quizState.period).long} 메모를 모두 맞혔어요`
+                  : total === 0 ? `${periodInfo(quizState.period).long} 동안 쓰거나 고친 메모가 없어요` : `${periodInfo(quizState.period).long} 복습 — 더 낼 메모가 없어요`)
               : total === 0 ? '오늘 복습할 메모가 없어요' : '오늘의 복습 완료';
       return (
           <div className="flex flex-col items-center justify-center h-full bg-slate-50 p-6 text-center animate-in fade-in">
@@ -457,11 +474,22 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
               <p className="text-slate-400 text-xs mb-8 max-w-sm leading-relaxed">
                   {quizState.source === 'WRONG'
                       ? '맞힌 문제는 오답 노트에서 빠졌고, 또 틀린 문제는 그대로 남아 있습니다.'
+                      : periodAllRested
+                      ? '맞힌 메모는 다음 복습일(3일 → 8일 → 20일 …)이 되면 다시 나옵니다. 지금 다시 풀고 싶으면 아래 버튼을 누르세요.'
                       : quizState.source === 'PERIOD' && total === 0
                       ? '기간을 더 길게 골라 보세요.'
                       : '틀린 문제는 오답 노트에 저장됐고, 해당 메모는 내일 다시 복습 목록에 나옵니다.'}
               </p>
               <div className="flex flex-col gap-3 w-full max-w-xs">
+                  {periodAllRested && quizState.mode && (
+                      <button
+                          type="button"
+                          onClick={() => onStart(quizState.mode!, quizState.language, 'PERIOD', quizState.period, { periodAll: true })}
+                          className="w-full bg-white border border-accent-300 text-accent-700 hover:bg-accent-50 py-3 rounded-xl font-bold transition-all"
+                      >
+                          맞힌 메모도 다시 풀기
+                      </button>
+                  )}
                   <button type="button" onClick={onEndSession} className="w-full bg-accent-700 text-white hover:bg-accent-800 py-3 rounded-xl font-bold shadow-sm transition-all">
                       퀴즈 첫 화면으로
                   </button>

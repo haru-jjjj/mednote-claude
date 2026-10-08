@@ -24,7 +24,7 @@ import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAg
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 import { sanitizeHistory, historyKey, archiveCurrentSummary, trimHistory } from './services/summaryHistory';
-import { splitNoteParts, textPartsCached, coverageProgress, pickQuizPart, askedTopicsOf, recordQuizCoverage, sanitizeCoverage } from './services/quizCoverage';
+import { splitNoteParts, textPartsCached, coverageProgress, pickQuizPart, askedTopicsOf, recordQuizCoverage, sanitizeCoverage, isRestingUntilDue } from './services/quizCoverage';
 import { isThread, sanitizePending } from './services/threadFormat';
 
 const sanitizeNotes = (rawNotes: any[]): Note[] => {
@@ -614,7 +614,11 @@ const App: React.FC = () => {
                     focusNote = due[0];
                 } else if (quizState.source === 'PERIOD') {
                     // 기간별 복습: 기간 안의 메모를 한 번씩 (덜 출제된·복습일이 된 메모부터 가중치로), 다 돌면 다음 바퀴
-                    const inRange = notesInPeriod(notesRef.current, quizState.period || '1w', Date.now()).filter(n => !skipIds.includes(n.id));
+                    // §5-72: 맞혀서 다음 복습일까지 쉬는 메모(글 구역을 다 물어본 것)는 빼고 냄 — 세션을 새로 시작해도 같음.
+                    // 모두 쉬는 메모면 끝(완료 화면에서 "맞힌 메모도 다시 풀기"로 periodAll 세션)
+                    const nowT = Date.now();
+                    const inRange = notesInPeriod(notesRef.current, quizState.period || '1w', nowT)
+                        .filter(n => !skipIds.includes(n.id) && (quizState.periodAll || !isRestingUntilDue(n, nowT)));
                     if (inRange.length === 0) {
                         setIfCurrent(prev => ({ ...prev, isGenerating: false, noMoreQuestions: true }));
                         return;
@@ -728,10 +732,10 @@ const App: React.FC = () => {
 
     fetchNext();
 
-  }, [quizState.isActive, quizState.mode, quizState.source, quizState.period, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
+  }, [quizState.isActive, quizState.mode, quizState.source, quizState.period, quizState.periodAll, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
 
 
-  const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' | 'PERIOD' = 'RANDOM', period?: ReviewPeriod) => {
+  const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' | 'PERIOD' = 'RANDOM', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => {
       quizSessionRef.current += 1;
       reviewUsedIdsRef.current = new Set();
       periodUsedIdsRef.current = new Set();
@@ -741,6 +745,7 @@ const App: React.FC = () => {
           mode: mode,
           source,
           period: source === 'PERIOD' ? (period || '1w') : undefined,
+          periodAll: source === 'PERIOD' && opts?.periodAll ? true : undefined,
           noMoreQuestions: false,
           language: language,
           isGenerating: false,

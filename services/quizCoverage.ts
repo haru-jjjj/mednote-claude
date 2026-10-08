@@ -192,6 +192,14 @@ export const pickQuizPart = (parts: QuizPart[], cov: Note['quizCoverage'], reser
     return scored[0].p;
 };
 
+// 기간별 복습에서 "이번엔 쉬는 메모" (§5-72): 마지막에 맞혔고(연속 정답 1회 이상) 다음 복습일이 아직 안 됐으며,
+// 메모의 글 구역을 모두 한 번 이상 물어본 메모. 틀린 메모·복습일이 된 메모·아직 안 물어본 구역이 있는 메모는 계속 나옴
+export const isRestingUntilDue = (n: Note, now: number): boolean => {
+    if (!((n.quizMasteryCount || 0) > 0)) return false;
+    if (typeof n.reviewDueAt !== 'number' || n.reviewDueAt <= now) return false;
+    return textPartsCached(n).every(p => (entryOf(n.quizCoverage, p.key)?.n || 0) >= 1);
+};
+
 export const askedTopicsOf = (cov: Note['quizCoverage'], key: string): string[] => entryOf(cov, key)?.t || [];
 
 // 문제를 푼 뒤 기록. 지금 메모에 없는 구역(고쳐서 사라진 구역)의 기록은 정리
