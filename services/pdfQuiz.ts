@@ -54,7 +54,7 @@ export const pickPdfQuestion = (
             return { kind: 'generate', ...base, pointIndexes: null, format: 'OX' };
         }
         const want = mode === 'wrong' ? 'wrong' : 'new';
-        const pending = prog.pts.map((p, i) => ({ p, i })).filter(x => x.p.st === want && !reserved.has(`${s.key}#${x.i}`));
+        const pending = prog.pts.map((p, i) => ({ p, i })).filter(x => x.p.st === want && !isSkippedPoint(x.p) && !reserved.has(`${s.key}#${x.i}`));
         if (pending.length === 0) return null;
         const qs = prog.qs || [];
         if (mode === 'wrong') {
@@ -101,7 +101,15 @@ export const pickPdfQuestion = (
     return pool[Math.floor(rand() * pool.length) % pool.length];
 };
 
-export interface GeneratedItem { point: string; statement: string; isTrue: boolean; explanation: string }
+export interface GeneratedItem { point: string; statement: string; isTrue: boolean; explanation: string; ok?: boolean }
+
+// 정답 검증에 실패했거나 사용자가 "문제 오류"로 뺀 요점: 실패 횟수를 세고, 2번이면 이번 바퀴에서 건너뜀 (§5-82)
+export const MAX_POINT_FAILS = 2;
+const bumpFail = (pt: PdfPoint): PdfPoint => {
+    const fa = (pt.fa || 0) + 1;
+    return { ...pt, fa, x: fa >= MAX_POINT_FAILS ? true : undefined };
+};
+export const isSkippedPoint = (pt: PdfPoint) => pt.x === true;
 
 // AI 결과를 구간 기록에 넣기
 // - pointIndexes가 null(처음): 요점 목록을 새로 만들고 문제를 붙임. 결과가 0개면 "낼 내용 없음" 구간
@@ -117,15 +125,23 @@ export const applyGenerated = (
     const valid = items.filter(it => it && typeof it.statement === 'string' && it.statement.trim() && typeof it.isTrue === 'boolean');
     if (pointIndexes === null) {
         if (valid.length === 0) return { ...(prev || {}), empty: true, pts: [], qs: [], u: now };
-        const pts: PdfPoint[] = valid.map(it => ({ p: (it.point || '').trim().slice(0, 80) || it.statement.slice(0, 40), st: 'new' }));
-        const qs: PdfQuestion[] = valid.map((it, i) => ({ id: makeId(), pi: i, q: it.statement.trim(), t: it.isTrue, ex: (it.explanation || '').trim(), lang: language }));
+        // 검증에서 정답이 안 맞은 문제(ok === false)는 버리고 요점만 남김 → 다음에 그 요점 문제를 다시 만듦
+        const pts: PdfPoint[] = valid.map(it => {
+            const pt: PdfPoint = { p: (it.point || '').trim().slice(0, 80) || it.statement.slice(0, 40), st: 'new' };
+            return it.ok === false ? bumpFail(pt) : pt;
+        });
+        const qs: PdfQuestion[] = valid
+            .map((it, i) => ({ it, i }))
+            .filter(({ it }) => it.ok !== false)
+            .map(({ it, i }) => ({ id: makeId(), pi: i, q: it.statement.trim(), t: it.isTrue, ex: (it.explanation || '').trim(), lang: language }));
         return { ...(prev || {}), pts, qs, empty: undefined, u: now };
     }
     const pts = [...(prev?.pts || [])];
     let qs = [...(prev?.qs || [])];
     pointIndexes.forEach((pi, k) => {
         const it = valid[k];
-        if (!it || !pts[pi]) return;
+        if (!pts[pi]) return;
+        if (!it || it.ok === false) { pts[pi] = bumpFail(pts[pi]); return; } // 못 만들었거나 검증 불일치
         qs = qs.filter(q => !(q.pi === pi && qFormat(q) === 'OX' && (q.lang === language || pts[pi].st === 'new')));
         qs.push({ id: makeId(), pi, q: it.statement.trim(), t: it.isTrue, ex: (it.explanation || '').trim(), lang: language });
     });
@@ -142,7 +158,12 @@ export const applyGeneratedCase = (
     makeId: () => string,
     now: number
 ): PdfSectionProgress => {
-    if (!item || !item.question || !Array.isArray(item.options) || item.options.length < 2) return { ...(prev || {}), u: now };
+    if (!item || !item.question || !Array.isArray(item.options) || item.options.length < 2) {
+        // 못 만들었거나 정답 검증 불일치 → 실패 횟수 (2번이면 이번 바퀴 건너뜀)
+        const pts = [...(prev?.pts || [])];
+        if (pts[pointIndex]) pts[pointIndex] = bumpFail(pts[pointIndex]);
+        return { ...(prev || {}), pts, u: now };
+    }
     const qs = (prev?.qs || []).filter(q => !(q.pi === pointIndex && qFormat(q) === 'MC' && q.lang === language));
     const ans = Math.min(Math.max(0, Math.round(item.correctAnswerIndex || 0)), item.options.length - 1);
     qs.push({ id: makeId(), pi: pointIndex, type: 'MC', q: item.question.trim(), t: false, opts: item.options.map(o => String(o)), ans, ex: (item.explanation || '').trim(), lang: language });
@@ -159,11 +180,24 @@ export const recordPdfAnswer = (prev: PdfSectionProgress | undefined, questionId
     return { ...(prev || {}), pts, qs, u: now };
 };
 
+// "문제 오류 — 기록 없이 넘기기" (§5-82): 그 문제를 지우고, 그 문제 때문에 틀림으로 남은 기록이면 되돌림.
+// 요점은 그대로 남아 다음에 새 문제로 다시 나옴(같은 요점에서 두 번째면 이번 바퀴 건너뜀)
+export const discardPdfQuestion = (prev: PdfSectionProgress | undefined, questionId: string, pointIndex: number, now: number): PdfSectionProgress => {
+    const pts = [...(prev?.pts || [])];
+    const pt = pts[pointIndex];
+    const qs = (prev?.qs || []).filter(q => q.id !== questionId);
+    if (pt) {
+        const undoWrong = pt.st === 'wrong' && pt.wq === questionId;
+        pts[pointIndex] = bumpFail(undoWrong ? { ...pt, st: 'new', wq: undefined, wc: Math.max(0, (pt.wc || 1) - 1) } : pt);
+    }
+    return { ...(prev || {}), pts, qs, u: now };
+};
+
 // 처음부터 다시: 모든 요점을 '아직'으로, 만들어 둔 문제는 지움(새 문장으로 다시 만듦). 틀린 횟수는 유지
 export const resetPdfRound = (doc: PdfDoc, now: number): Record<string, PdfSectionProgress> => {
     const out: Record<string, PdfSectionProgress> = {};
     Object.entries(doc.progress || {}).forEach(([k, p]) => {
-        out[k] = { ...p, pts: p.pts?.map(x => ({ ...x, st: 'new' as const })), qs: [], u: now };
+        out[k] = { ...p, pts: p.pts?.map(x => ({ ...x, st: 'new' as const, fa: undefined, x: undefined, wq: undefined })), qs: [], u: now };
     });
     return out;
 };
@@ -189,8 +223,9 @@ export const pdfStats = (doc: PdfDoc): PdfStats => {
         sections++;
         if (!p?.pts) return;
         sectionsStarted++;
-        const n = p.pts.filter(x => x.st === 'new').length;
-        points += p.pts.length;
+        const live = p.pts.filter(x => !isSkippedPoint(x));
+        const n = live.filter(x => x.st === 'new').length;
+        points += live.length;
         ok += p.pts.filter(x => x.st === 'ok').length;
         wrong += p.pts.filter(x => x.st === 'wrong').length;
         pending += n;
@@ -260,7 +295,7 @@ export const sanitizePdfDoc = (x: any): PdfDoc | null => {
     Object.entries(x.progress && typeof x.progress === 'object' ? x.progress : {}).forEach(([k, p]: [string, any]) => {
         if (!/^s\d+$/.test(k) || !p || typeof p !== 'object') return;
         progress[k] = {
-            pts: Array.isArray(p.pts) ? p.pts.map((t: any) => ({ p: str(t?.p, 120), st: t?.st === 'ok' || t?.st === 'wrong' ? t.st : 'new', at: typeof t?.at === 'number' ? t.at : undefined, wc: typeof t?.wc === 'number' ? t.wc : undefined, wq: typeof t?.wq === 'string' ? t.wq : undefined })) : undefined,
+            pts: Array.isArray(p.pts) ? p.pts.map((t: any) => ({ p: str(t?.p, 120), st: t?.st === 'ok' || t?.st === 'wrong' ? t.st : 'new', at: typeof t?.at === 'number' ? t.at : undefined, wc: typeof t?.wc === 'number' ? t.wc : undefined, wq: typeof t?.wq === 'string' ? t.wq : undefined, fa: typeof t?.fa === 'number' ? t.fa : undefined, x: t?.x === true ? true : undefined })) : undefined,
             qs: Array.isArray(p.qs) ? p.qs.filter((q: any) => q && typeof q.id === 'string' && typeof q.q === 'string' && typeof q.pi === 'number').map((q: any) => ({ id: q.id, pi: q.pi, q: str(q.q, 2000), t: q.t === true, ex: str(q.ex, 4000), lang: LANGS.includes(q.lang) ? q.lang : 'Korean', ...(q.type === 'MC' && Array.isArray(q.opts) ? { type: 'MC' as const, opts: q.opts.map((o: any) => str(o, 1000)), ans: typeof q.ans === 'number' ? q.ans : 0 } : {}) })) : undefined,
             empty: p.empty === true ? true : undefined,
             u: typeof p.u === 'number' ? p.u : undefined,

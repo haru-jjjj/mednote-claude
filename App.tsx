@@ -22,7 +22,7 @@ import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, qui
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines, generatePdfOXBatch, generatePdfCaseQuestion } from './services/claudeService';
 import { subscribePdfDocs, loadLocalPdfDocs, syncPdfDocs, getPdfDoc, getAllPdfDocs, getPdfSectionText, updatePdfSection } from './services/pdfLibrary';
-import { pickPdfQuestion, applyGenerated, applyGeneratedCase, recordPdfAnswer, toQuizQuestion, newPdfId, pickFromPool, inPdfPool, PoolPick, PdfFormat, PdfOrder } from './services/pdfQuiz';
+import { pickPdfQuestion, applyGenerated, applyGeneratedCase, recordPdfAnswer, discardPdfQuestion, toQuizQuestion, newPdfId, pickFromPool, inPdfPool, PoolPick, PdfFormat, PdfOrder } from './services/pdfQuiz';
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 import { sanitizeHistory, historyKey, archiveCurrentSummary, trimHistory } from './services/summaryHistory';
@@ -676,7 +676,7 @@ const App: React.FC = () => {
                             }, quizState.language);
                             await updatePdfSection(pdfId, pick.section.key, prev => applyGeneratedCase(prev, pi, item, quizState.language, () => newPdfId('q_'), Date.now()));
                             if (quizSessionRef.current !== session) return;
-                            if (!item) throw new Error('AI가 케이스 문제를 만들지 못했습니다. 다시 시도해주세요.');
+                            // 못 만들었거나 정답 검증에 떨어지면(§5-82) 그 요점 실패 횟수만 올리고 다시 고름 (2번이면 그 요점은 건너뜀)
                             continue;
                         }
                         const items = await generatePdfOXBatch({
@@ -1017,6 +1017,30 @@ const App: React.FC = () => {
           }
       } catch (e) {
           console.error("Failed to save review result", e);
+      }
+  };
+
+  // "문제 오류 — 기록 없이 넘기기" (§5-82): 정답이 이상한 문제를 점수·복습 기록 없이 넘김
+  // - PDF 문제: 그 문제를 지우고(틀림으로 남았던 기록이면 되돌림) 요점은 다음에 새 문제로 다시
+  // - 오답 다시 풀기: 오답 노트에서 뺌 / 메모 새 문제: 기록 없이 넘김
+  const handleDiscardQuestion = async () => {
+      const q = quizState.currentQuestion;
+      setQuizState(prev => ({
+          ...prev,
+          currentQuestion: prev.questionQueue.length > 0 ? prev.questionQueue[0] : null,
+          questionQueue: prev.questionQueue.slice(1)
+      }));
+      if (!q) return;
+      try {
+          if (q.pdfRef) {
+              const ref = q.pdfRef;
+              await updatePdfSection(ref.docId, ref.sectionKey, prev => discardPdfQuestion(prev, q.id, ref.pointIndex, Date.now()));
+          } else if (q.replayOfNoteId) {
+              const holder = q.replayOfNoteId;
+              await patchNoteMeta(holder, latest => ({ wrongAnswers: removeWrongAnswer(latest.wrongAnswers, q.id) }));
+          }
+      } catch (e) {
+          console.error('문제 빼기 실패', e);
       }
   };
 
@@ -1811,6 +1835,7 @@ const App: React.FC = () => {
                         pdfDocs={pdfDocs}
                         onOpenPdfLibrary={() => setView(ViewMode.PDFS)}
                         onStartPdf={handleStartPdfQuiz}
+                        onDiscard={handleDiscardQuestion}
                     />
                 )}
                 {view === ViewMode.GUIDELINE_CHECK && (

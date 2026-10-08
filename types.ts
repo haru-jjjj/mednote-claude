@@ -209,6 +209,8 @@ export interface PdfPoint {
     at?: number; // 마지막으로 푼 시각
     wc?: number; // 틀린 횟수 (누적)
     wq?: string; // 마지막으로 틀린 문제 id (틀린 것 다시 풀기에서 그 문제 그대로, §5-79)
+    fa?: number; // 이 요점 문제가 정답 검증에 떨어졌거나 "문제 오류"로 빠진 횟수 (§5-82)
+    x?: boolean; // fa가 2번이면 이번 바퀴에서 건너뜀
 }
 
 export interface PdfQuestion {

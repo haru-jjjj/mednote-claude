@@ -1445,6 +1445,8 @@ export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 
             - The goal is to test whether a fellow *really* knows the details, not to catch a novice.
             ` : ''}
 
+            - Write "explanation" BEFORE deciding "isTrue", and make isTrue agree with it. If your statement turned out
+              to be correct although you aimed for false, rewrite it — the answer key must never contradict the explanation.
             - If False, provide an informative correction (2-3 sentences) explaining the correct medical reasoning.
             - If True, provide an informative confirmation (2-3 sentences) explaining why it is correct.
             - Do NOT be too brief. Give some context.
@@ -1461,12 +1463,12 @@ export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 
             schema: {
                 type: 'object',
                 properties: {
+                    topic: { type: 'string', description: 'Internal metadata: the exact point from the focus part this statement tests (≤ 12 words, Korean).' },
                     question: { type: 'string', description: `The true/false statement. ${langNote}` },
-                    isTrue: { type: 'boolean' },
-                    explanation: { type: 'string', description: langNote },
-                    topic: { type: 'string', description: 'Internal metadata: the exact point from the focus part this statement tests (≤ 12 words, Korean).' }
+                    explanation: { type: 'string', description: `What is actually correct, then whether the statement matches it. ${langNote}` },
+                    isTrue: { type: 'boolean', description: 'Decided LAST from the explanation: true only if the statement is correct.' }
                 },
-                required: ['question', 'isTrue', 'explanation', 'topic']
+                required: ['topic', 'question', 'explanation', 'isTrue']
             },
             maxTokens: 800
         }, x => [x?.question, x?.explanation].join(' '));
@@ -1508,7 +1510,7 @@ export interface PdfOXInput {
     text: string;
     points: string[] | null; // null = 요점 목록부터
 }
-export interface PdfOXItem { point: string; statement: string; isTrue: boolean; explanation: string }
+export interface PdfOXItem { point: string; statement: string; isTrue: boolean; explanation: string; ok?: boolean } // ok=false: 검증에서 정답이 안 맞아 문제로 쓰지 않음 (§5-82)
 
 export const generatePdfOXBatch = async (input: PdfOXInput, language: QuizLanguage = 'Korean'): Promise<PdfOXItem[]> => {
     const langRule = quizLanguageRule(language).replace("The reader's note below is written in Korean — read it, but", 'Read the document text below (any language), but');
@@ -1539,12 +1541,17 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
 
             RULES FOR STATEMENTS:
             - Base every statement on what THIS SECTION says (not outside knowledge). The answer key is the document.
-            - Make roughly half of the statements FALSE, in a mixed order (not alternating).
-            - A false statement must be a plausible near-miss, not a simple negation: a shifted threshold or number,
-              the wrong drug/class/trial, swapped indications, wrong direction of effect, wrong class of recommendation.
+            - Fill the fields IN ORDER for each item: "fact" (what the section says on this point, close to its wording)
+              → "statement" → "explanation" → "isTrue" LAST. Decide isTrue only by comparing the statement with "fact".
+            - THE ANSWER KEY MUST BE CORRECT. This matters far more than any true/false balance. If a statement you meant
+              to be false turns out to say the same thing as the section, rewrite it into a real near-miss — or mark it true.
+              Never mark a statement false just to balance the set, and never add notes like "(mis-keyed)".
+            - Aim for some false statements (about a third to a half), each a plausible near-miss, not a simple negation:
+              a shifted threshold or number, the wrong drug/class/trial, swapped indications, wrong direction of effect,
+              wrong class of recommendation. The changed detail must clearly contradict the section.
             - One idea per statement; specific enough that it is clearly true or false according to the section.
             - "explanation" (1–3 sentences): state what the section actually says (with the exact number or wording),
-              so a wrong answer teaches the correct fact.
+              then say whether the statement matches it — so a wrong answer teaches the correct fact.
             - "point": the point tested, ≤ 14 words, in Korean (internal metadata).
 
             FINAL CHECK — ${langRule} (Only "point" is internal metadata and stays in Korean.)
@@ -1564,11 +1571,12 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
                         type: 'object',
                         properties: {
                             point: { type: 'string', description: 'Internal metadata: the point tested (≤ 14 words, Korean).' },
+                            fact: { type: 'string', description: 'Internal: what the section says on this point, close to its own wording (any language).' },
                             statement: { type: 'string', description: `The true/false statement. ${langNote}` },
-                            isTrue: { type: 'boolean' },
-                            explanation: { type: 'string', description: `What the section actually says (1–3 sentences). ${langNote}` }
+                            explanation: { type: 'string', description: `What the section actually says, then whether the statement matches it (1–3 sentences). ${langNote}` },
+                            isTrue: { type: 'boolean', description: 'Decided LAST: true only if the statement agrees with "fact" / the section.' }
                         },
-                        required: ['point', 'statement', 'isTrue', 'explanation']
+                        required: ['point', 'fact', 'statement', 'explanation', 'isTrue']
                     },
                     maxItems: 16
                 }
@@ -1578,8 +1586,100 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
         maxTokens: 6000
     }, x => (Array.isArray(x?.items) ? x.items.map((it: any) => `${it?.statement || ''} ${it?.explanation || ''}`).join(' ') : ''),
        x => Array.isArray(x?.items) && x.items.length > 0);
-    const items: PdfOXItem[] = Array.isArray(out?.items) ? out.items : [];
-    return items.filter(it => it && typeof it.statement === 'string' && typeof it.isTrue === 'boolean');
+    const items: PdfOXItem[] = (Array.isArray(out?.items) ? out.items : [])
+        .filter((it: any) => it && typeof it.statement === 'string' && typeof it.isTrue === 'boolean')
+        .map((it: any) => ({ point: it.point, statement: it.statement, isTrue: it.isTrue, explanation: it.explanation }));
+    if (items.length === 0) return items;
+    // §5-82: 따로 한 번 더 채점 — 만든 쪽과 다르게(또는 애매하게) 판단되면 그 문제는 쓰지 않음(요점은 남겨 다음에 다시 만듦)
+    try {
+        const verdicts = await verifyStatementsAgainstText(input.text, items.map(it => it.statement));
+        return items.map((it, i) => ({ ...it, ok: verdicts[i] === (it.isTrue ? 'true' : 'false') }));
+    } catch (e) {
+        console.warn('OX 정답 검증 실패 — 검증 없이 사용', e);
+        return items;
+    }
+};
+
+// 참/거짓 문장들을 구간 글만 기준으로 다시 채점 (만든 호출과 별개, §5-82). 결과는 문장 순서대로 'true' | 'false' | 'unclear'
+export const verifyStatementsAgainstText = async (text: string, statements: string[]): Promise<('true' | 'false' | 'unclear')[]> => {
+    const prompt = [
+        'You are checking an answer key. Judge each statement ONLY against the SECTION below (not outside knowledge).',
+        '- "true": the section clearly states or directly implies it, including the numbers, drugs, classes and conditions.',
+        '- "false": the section clearly contradicts it (any changed number, drug, class, indication or direction counts).',
+        '- "unclear": the section does not settle it, or the statement is ambiguous.',
+        'Statements may be in a different language from the section; compare meaning.',
+        '',
+        'SECTION:',
+        '"""' + text + '"""',
+        '',
+        'STATEMENTS:',
+        ...statements.map((st, i) => `${i + 1}. ${st}`),
+    ].join('\n');
+    const input = await callForJson({
+        feature: 'pdf',
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        toolName: 'submit_verdicts',
+        toolDescription: 'Submit one verdict per statement, in order.',
+        schema: {
+            type: 'object',
+            properties: {
+                verdicts: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            n: { type: 'integer', description: 'Statement number (1-based).' },
+                            reason: { type: 'string', description: 'Very short: the deciding words of the section.' },
+                            verdict: { type: 'string', enum: ['true', 'false', 'unclear'] }
+                        },
+                        required: ['n', 'reason', 'verdict']
+                    }
+                }
+            },
+            required: ['verdicts']
+        },
+        maxTokens: 300 + statements.length * 120
+    });
+    const out: ('true' | 'false' | 'unclear')[] = statements.map(() => 'unclear');
+    (Array.isArray(input?.verdicts) ? input.verdicts : []).forEach((v: any) => {
+        const i = Number(v?.n) - 1;
+        if (i >= 0 && i < out.length && (v?.verdict === 'true' || v?.verdict === 'false' || v?.verdict === 'unclear')) out[i] = v.verdict;
+    });
+    return out;
+};
+
+// 케이스 문제 정답 검증: 구간 글만 보고 따로 풀게 해서, 만든 정답과 같으면 통과 (§5-82). 고를 수 없으면 -1
+export const verifyCaseAnswer = async (text: string, question: string, options: string[]): Promise<number> => {
+    const prompt = [
+        'Answer this multiple-choice question using ONLY the SECTION below as the authority (not outside knowledge).',
+        'If the section does not let you pick exactly one best answer, answer -1.',
+        '',
+        'SECTION:',
+        '"""' + text + '"""',
+        '',
+        'QUESTION:',
+        question,
+        ...options.map((o, i) => `${i}. ${o}`),
+    ].join('\n');
+    const input = await callForJson({
+        feature: 'pdf',
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        toolName: 'submit_answer',
+        toolDescription: 'Submit the index (0-based) of the best answer, or -1.',
+        schema: {
+            type: 'object',
+            properties: {
+                reason: { type: 'string', description: 'Very short: the deciding words of the section.' },
+                answerIndex: { type: 'integer', minimum: -1, maximum: options.length - 1 }
+            },
+            required: ['reason', 'answerIndex']
+        },
+        maxTokens: 400
+    });
+    const n = Number(input?.answerIndex);
+    return Number.isInteger(n) ? n : -1;
 };
 
 // PDF 요점 하나 → 임상 응용 케이스 문제(5지선다) (§5-79). 정답 근거는 그 구간 글
@@ -1644,7 +1744,18 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
         maxTokens: 2000
     }, x => [x?.question, ...(Array.isArray(x?.options) ? x.options : []), x?.explanation].join(' '));
     if (!out || typeof out.question !== 'string' || !Array.isArray(out.options) || out.options.length < 2) return null;
-    return { question: stripInlineOptions(out.question), options: out.options.map((o: any) => stripOptionLabel(String(o))), correctAnswerIndex: Number(out.correctAnswerIndex) || 0, explanation: String(out.explanation || '') };
+    const item = { question: stripInlineOptions(out.question), options: out.options.map((o: any) => stripOptionLabel(String(o))), correctAnswerIndex: Number(out.correctAnswerIndex) || 0, explanation: String(out.explanation || '') };
+    // §5-82: 구간 글만 보고 따로 풀게 해서 정답이 다르면 쓰지 않음 (null → 다음에 다시 만듦)
+    try {
+        const check = await verifyCaseAnswer(input.text, item.question, item.options);
+        if (check !== item.correctAnswerIndex) {
+            console.warn('케이스 문제 정답 검증 불일치 — 버림', { key: item.correctAnswerIndex, check });
+            return null;
+        }
+    } catch (e) {
+        console.warn('케이스 정답 검증 실패 — 검증 없이 사용', e);
+    }
+    return item;
 };
 
 // 올린 PDF의 제목·출처 제안 (첫 쪽 글로, 아주 짧은 호출) — 사용자가 고쳐서 저장

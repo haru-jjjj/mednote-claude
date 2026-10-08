@@ -33,6 +33,7 @@ interface QuizViewProps {
   isFetchingAll?: boolean;
   pdfDocs: PdfDoc[];
   onOpenPdfLibrary: () => void;
+  onDiscard: () => void; // 문제 오류 — 기록 없이 넘기기 (§5-82)
   onStartPdf: (pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format?: PdfQuizFormat, order?: PdfOrder) => void; // null = 전체 풀 (§5-76), order §5-81
 }
 
@@ -43,7 +44,7 @@ const hasKana = (s: string) => /[\u3040-\u30ff]/.test(s || '');
 const langAttrOf = (language: QuizLanguage | undefined, sample: string): 'ja' | 'en' | 'ko' =>
     hasKana(sample) || language === 'Japanese' ? 'ja' : language === 'English' ? 'en' : 'ko';
 
-const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, onStop, onEndSession, onRetry, onBack, reviewDueCount, onStartWrongReview, onDeleteWrongAnswer, onOpenNote, isFetchingAll, pdfDocs, onOpenPdfLibrary, onStartPdf }) => {
+const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, onStop, onEndSession, onRetry, onBack, reviewDueCount, onStartWrongReview, onDeleteWrongAnswer, onOpenNote, isFetchingAll, pdfDocs, onOpenPdfLibrary, onStartPdf, onDiscard }) => {
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
   const [isRevealed, setIsRevealed] = useState(false);
   
@@ -967,8 +968,22 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                             </p>
                         )}
 
-                        <div className="mt-8 flex justify-end">
-                            <button type="button" onClick={handleNext} className="bg-accent-700 hover:bg-accent-800 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex items-center gap-2">
+                        <div className="mt-8 flex flex-col-reverse sm:flex-row sm:items-center justify-between gap-4">
+                            {/* 정답·해설이 이상한 문제: 점수·복습 기록 없이 넘김 (§5-82) */}
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    const msg = currentQ.pdfRef
+                                        ? '이 문제를 기록 없이 넘길까요?\n문제는 지우고, 이 요점은 다음에 새 문제로 다시 나옵니다. (같은 요점에서 두 번 빼면 이번 바퀴에서 건너뜀)'
+                                        : currentQ.replayOfNoteId ? '이 문제를 오답 노트에서 빼고 넘길까요?' : '이 문제를 점수·복습 기록 없이 넘길까요?';
+                                    if (confirm(msg)) onDiscard();
+                                }}
+                                className="self-start sm:self-auto text-[11px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-1 shrink-0"
+                                title="정답이나 해설이 틀린 문제"
+                            >
+                                <AlertTriangle className="w-3.5 h-3.5" /> 문제 오류 · 기록 없이 넘기기
+                            </button>
+                            <button type="button" onClick={handleNext} className="self-end sm:self-auto whitespace-nowrap bg-accent-700 hover:bg-accent-800 text-white px-8 py-4 rounded-xl font-bold shadow-lg active:scale-95 transition-all flex items-center gap-2">
                                 {quizState.questionQueue.length === 0 && quizState.noMoreQuestions ? '결과 보기' : '다음 문제'} {quizState.questionQueue.length > 0 && <span className="text-xs bg-slate-700 px-1.5 py-0.5 rounded text-slate-300">{quizState.source === 'WRONG' ? `${quizState.questionQueue.length}개 남음` : 'Ready'}</span>} <ArrowRight className="w-4 h-4" />
                             </button>
                         </div>
