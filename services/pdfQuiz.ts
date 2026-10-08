@@ -10,15 +10,27 @@ import type { PdfDoc, PdfPoint, PdfQuestion, PdfSectionProgress, PdfSectionMeta,
 
 export type PdfPick =
     | { kind: 'question'; section: PdfSectionMeta; sectionIndex: number; sectionCount: number; question: PdfQuestion }
-    | { kind: 'generate'; section: PdfSectionMeta; sectionIndex: number; sectionCount: number; pointIndexes: number[] | null } // null = 요점 목록부터
+    // null = 요점 목록부터(OX와 함께 만듦). format MC = 그 요점 하나의 케이스(5지선다) 문제를 만듦 (§5-79)
+    | { kind: 'generate'; section: PdfSectionMeta; sectionIndex: number; sectionCount: number; pointIndexes: number[] | null; format: 'OX' | 'MC' }
     | { kind: 'done' };
+
+// 문제 형식 (§5-79): OX / 케이스(임상 응용 5지선다) / 섞어서(문제마다 반반)
+export type PdfFormat = 'OX' | 'MC' | 'MIX';
+export const qFormat = (q: PdfQuestion): 'OX' | 'MC' => (q.type === 'MC' ? 'MC' : 'OX');
 
 export const activeSections = (doc: PdfDoc): PdfSectionMeta[] =>
     doc.sections.filter(s => !s.excluded && !doc.progress?.[s.key]?.empty);
 
 // 다음에 낼 것: 앞 구간부터, 안 푼(wrong 모드는 틀린) 요점 중 이번 세션에 아직 안 꺼낸 것
 // reserved: 이번 세션에서 이미 꺼낸 "구간키#요점번호"
-export const pickPdfQuestion = (doc: PdfDoc, reserved: Set<string>, mode: 'all' | 'wrong', language: QuizLanguage): PdfPick => {
+export const pickPdfQuestion = (
+    doc: PdfDoc,
+    reserved: Set<string>,
+    mode: 'all' | 'wrong',
+    language: QuizLanguage,
+    format: PdfFormat = 'OX',
+    rand: () => number = Math.random
+): PdfPick => {
     const list = doc.sections.filter(s => !s.excluded);
     const counted = activeSections(doc);
     for (const s of list) {
@@ -29,17 +41,31 @@ export const pickPdfQuestion = (doc: PdfDoc, reserved: Set<string>, mode: 'all' 
         if (!prog?.pts) {
             if (mode === 'wrong') continue;
             if (reserved.has(`${s.key}#*`)) continue;
-            return { kind: 'generate', ...base, pointIndexes: null };
+            // 요점 목록은 OX 묶음 만들기로 함께 만듦 (케이스 형식이어도 먼저 요점이 필요)
+            return { kind: 'generate', ...base, pointIndexes: null, format: 'OX' };
         }
         const want = mode === 'wrong' ? 'wrong' : 'new';
         const pending = prog.pts.map((p, i) => ({ p, i })).filter(x => x.p.st === want && !reserved.has(`${s.key}#${x.i}`));
         if (pending.length === 0) continue;
-        for (const { i } of pending) {
-            // 틀린 문제 다시: 그때 문제 그대로(언어 무관). 새 문제: 고른 언어로 만든 것만
-            const q = (prog.qs || []).find(x => x.pi === i && (mode === 'wrong' || x.lang === language));
-            if (q) return { kind: 'question', ...base, question: q };
+        const qs = prog.qs || [];
+        if (mode === 'wrong') {
+            // 틀린 문제 다시: 그때 틀린 문제 그대로(형식·언어 무관)
+            for (const { p, i } of pending) {
+                const q = qs.find(x => x.id === p.wq) || qs.find(x => x.pi === i);
+                if (q) return { kind: 'question', ...base, question: q };
+            }
+            const first = pending[0].i;
+            return { kind: 'generate', ...base, pointIndexes: [first], format: format === 'MC' ? 'MC' : 'OX' };
         }
-        return { kind: 'generate', ...base, pointIndexes: pending.map(x => x.i) };
+        // 앞 요점부터. 형식은 고른 것(섞어서면 요점마다 반반)
+        const { i } = pending[0];
+        const fmt: 'OX' | 'MC' = format === 'MIX' ? (rand() < 0.5 ? 'MC' : 'OX') : format;
+        const q = qs.find(x => x.pi === i && x.lang === language && qFormat(x) === fmt);
+        if (q) return { kind: 'question', ...base, question: q };
+        if (fmt === 'MC') return { kind: 'generate', ...base, pointIndexes: [i], format: 'MC' };
+        // OX는 한 번에: 이 언어의 OX가 없는 안 푼 요점 전부
+        const missing = pending.filter(x => !qs.some(q2 => q2.pi === x.i && q2.lang === language && qFormat(q2) === 'OX')).map(x => x.i);
+        return { kind: 'generate', ...base, pointIndexes: missing.length ? missing : [i], format: 'OX' };
     }
     return { kind: 'done' };
 };
@@ -69,10 +95,27 @@ export const applyGenerated = (
     pointIndexes.forEach((pi, k) => {
         const it = valid[k];
         if (!it || !pts[pi]) return;
-        qs = qs.filter(q => !(q.pi === pi && (q.lang === language || pts[pi].st === 'new')));
+        qs = qs.filter(q => !(q.pi === pi && qFormat(q) === 'OX' && (q.lang === language || pts[pi].st === 'new')));
         qs.push({ id: makeId(), pi, q: it.statement.trim(), t: it.isTrue, ex: (it.explanation || '').trim(), lang: language });
     });
     return { ...(prev || {}), pts, qs, u: now };
+};
+
+// 케이스(5지선다) 문제 하나를 요점에 붙이기 (§5-79). 같은 요점·언어의 예전 케이스 문제는 바꿈
+export interface GeneratedCase { question: string; options: string[]; correctAnswerIndex: number; explanation: string }
+export const applyGeneratedCase = (
+    prev: PdfSectionProgress | undefined,
+    pointIndex: number,
+    item: GeneratedCase | null,
+    language: QuizLanguage,
+    makeId: () => string,
+    now: number
+): PdfSectionProgress => {
+    if (!item || !item.question || !Array.isArray(item.options) || item.options.length < 2) return { ...(prev || {}), u: now };
+    const qs = (prev?.qs || []).filter(q => !(q.pi === pointIndex && qFormat(q) === 'MC' && q.lang === language));
+    const ans = Math.min(Math.max(0, Math.round(item.correctAnswerIndex || 0)), item.options.length - 1);
+    qs.push({ id: makeId(), pi: pointIndex, type: 'MC', q: item.question.trim(), t: false, opts: item.options.map(o => String(o)), ans, ex: (item.explanation || '').trim(), lang: language });
+    return { ...(prev || {}), qs, u: now };
 };
 
 // 문제를 푼 결과 기록: 맞히면 요점 'ok' + 문제 지움, 틀리면 'wrong' + 문제 남김(다시 풀기용)
@@ -80,7 +123,7 @@ export const recordPdfAnswer = (prev: PdfSectionProgress | undefined, questionId
     const pts = [...(prev?.pts || [])];
     const pt = pts[pointIndex];
     if (!pt) return { ...(prev || {}), u: now };
-    pts[pointIndex] = { ...pt, st: correct ? 'ok' : 'wrong', at: now, wc: (pt.wc || 0) + (correct ? 0 : 1) };
+    pts[pointIndex] = { ...pt, st: correct ? 'ok' : 'wrong', at: now, wc: (pt.wc || 0) + (correct ? 0 : 1), wq: correct ? undefined : questionId };
     const qs = correct ? (prev?.qs || []).filter(q => q.id !== questionId && q.pi !== pointIndex) : (prev?.qs || []);
     return { ...(prev || {}), pts, qs, u: now };
 };
@@ -135,10 +178,10 @@ export const toQuizQuestion = (doc: PdfDoc, pick: Extract<PdfPick, { kind: 'ques
     const point = doc.progress?.[pick.section.key]?.pts?.[q.pi]?.p || '';
     return {
         id: q.id,
-        type: 'OX',
+        type: qFormat(q) === 'MC' ? 'MULTIPLE_CHOICE' : 'OX',
         question: q.q,
-        options: ['O', 'X'],
-        correctAnswerIndex: q.t ? 0 : 1,
+        options: qFormat(q) === 'MC' ? (q.opts || []) : ['O', 'X'],
+        correctAnswerIndex: qFormat(q) === 'MC' ? (q.ans || 0) : (q.t ? 0 : 1),
         explanation: q.ex,
         sources: [],
         relatedNoteIds: [],
@@ -186,8 +229,8 @@ export const sanitizePdfDoc = (x: any): PdfDoc | null => {
     Object.entries(x.progress && typeof x.progress === 'object' ? x.progress : {}).forEach(([k, p]: [string, any]) => {
         if (!/^s\d+$/.test(k) || !p || typeof p !== 'object') return;
         progress[k] = {
-            pts: Array.isArray(p.pts) ? p.pts.map((t: any) => ({ p: str(t?.p, 120), st: t?.st === 'ok' || t?.st === 'wrong' ? t.st : 'new', at: typeof t?.at === 'number' ? t.at : undefined, wc: typeof t?.wc === 'number' ? t.wc : undefined })) : undefined,
-            qs: Array.isArray(p.qs) ? p.qs.filter((q: any) => q && typeof q.id === 'string' && typeof q.q === 'string' && typeof q.pi === 'number').map((q: any) => ({ id: q.id, pi: q.pi, q: str(q.q, 2000), t: q.t === true, ex: str(q.ex, 4000), lang: LANGS.includes(q.lang) ? q.lang : 'Korean' })) : undefined,
+            pts: Array.isArray(p.pts) ? p.pts.map((t: any) => ({ p: str(t?.p, 120), st: t?.st === 'ok' || t?.st === 'wrong' ? t.st : 'new', at: typeof t?.at === 'number' ? t.at : undefined, wc: typeof t?.wc === 'number' ? t.wc : undefined, wq: typeof t?.wq === 'string' ? t.wq : undefined })) : undefined,
+            qs: Array.isArray(p.qs) ? p.qs.filter((q: any) => q && typeof q.id === 'string' && typeof q.q === 'string' && typeof q.pi === 'number').map((q: any) => ({ id: q.id, pi: q.pi, q: str(q.q, 2000), t: q.t === true, ex: str(q.ex, 4000), lang: LANGS.includes(q.lang) ? q.lang : 'Korean', ...(q.type === 'MC' && Array.isArray(q.opts) ? { type: 'MC' as const, opts: q.opts.map((o: any) => str(o, 1000)), ans: typeof q.ans === 'number' ? q.ans : 0 } : {}) })) : undefined,
             empty: p.empty === true ? true : undefined,
             u: typeof p.u === 'number' ? p.u : undefined,
         };
@@ -251,11 +294,12 @@ export const pickFromPool = (
     reserved: Map<string, Set<string>>,
     mode: 'all' | 'wrong',
     language: QuizLanguage,
-    rand: () => number = Math.random
+    rand: () => number = Math.random,
+    format: PdfFormat = 'OX'
 ): PoolPick | null => {
     const cands: { doc: PdfDoc; pick: PoolPick['pick']; w: number }[] = [];
     docs.forEach(doc => {
-        const pick = pickPdfQuestion(doc, reserved.get(doc.id) || new Set(), mode, language);
+        const pick = pickPdfQuestion(doc, reserved.get(doc.id) || new Set(), mode, language, format, rand);
         if (pick.kind === 'done') return;
         const st = pdfStats(doc);
         const remaining = mode === 'wrong' ? Math.max(1, st.wrong) : Math.max(1, st.sections - st.sectionsDone);
@@ -287,3 +331,12 @@ export const poolStats = (docs: PdfDoc[]) => {
         allDone: list.length > 0 && list.every(s => s.roundDone || s.sections === 0),
     };
 };
+
+// PDF 복습 문제 형식 기억 (퀴즈 첫 화면·자료실 공통, §5-79)
+export type PdfQuizFormat = 'QUICK_OX' | 'DETAILED' | 'MIXED';
+export const PDF_FORMAT_LABEL: Record<PdfQuizFormat, string> = { QUICK_OX: 'OX', DETAILED: '케이스', MIXED: '섞어서' };
+const PDF_FORMAT_KEY = 'medinote_pdf_format';
+export const readPdfQuizFormat = (): PdfQuizFormat => {
+    try { const v = localStorage.getItem(PDF_FORMAT_KEY); return v === 'DETAILED' || v === 'MIXED' ? v : 'QUICK_OX'; } catch { return 'QUICK_OX'; }
+};
+export const savePdfQuizFormat = (f: PdfQuizFormat) => { try { localStorage.setItem(PDF_FORMAT_KEY, f); } catch { /* 이번 화면에선 동작 */ } };

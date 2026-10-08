@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Note, QuizState, QuizQuestion, Source, QuizLanguage, PdfDoc } from '../types';
-import { BrainCircuit, CheckCircle2, XCircle, ArrowRight, AlertTriangle, BookOpen, RotateCw, ExternalLink, Sparkles, Loader2, Zap, Trophy, Play, ArrowLeft, Layers, Microscope, Languages, FileText, X, Calendar, ChevronDown, ChevronUp, Trash2, FileUp } from 'lucide-react';
+import { BrainCircuit, CheckCircle2, XCircle, ArrowRight, AlertTriangle, BookOpen, RotateCw, ExternalLink, Sparkles, Loader2, Zap, Trophy, Play, ArrowLeft, Layers, Microscope, Languages, FileText, X, Calendar, ChevronDown, ChevronUp, Trash2, FileUp, Shuffle } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { generateDetailedQuizExplanation, formatMedicalMarkdown } from '../services/claudeService';
@@ -9,7 +9,7 @@ import { getNoteFromDB } from '../services/storage';
 import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/sourceKind';
 import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo } from '../services/studyUtils';
 import { isRestingUntilDue } from '../services/quizCoverage';
-import { pdfStats, resetPdfRound, poolStats, inPdfPool } from '../services/pdfQuiz';
+import { pdfStats, resetPdfRound, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, readPdfQuizFormat, savePdfQuizFormat } from '../services/pdfQuiz';
 import { getPdfDoc, getPdfSectionText, updatePdfMeta, openPdfOriginal } from '../services/pdfLibrary';
 
 const PERIOD_KEY = 'medinote_quiz_period';
@@ -20,7 +20,7 @@ const readPeriod = (): ReviewPeriod => {
 interface QuizViewProps {
   notes: Note[];
   quizState: QuizState;
-  onStart: (mode: 'DETAILED' | 'QUICK_OX', language: QuizLanguage, source?: 'RANDOM' | 'REVIEW' | 'PERIOD', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => void;
+  onStart: (mode: 'DETAILED' | 'QUICK_OX' | 'MIXED', language: QuizLanguage, source?: 'RANDOM' | 'REVIEW' | 'PERIOD', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => void;
   onNext: (wasCorrect: boolean, chosenIndex: number | null) => void;
   onStop: () => void;
   onEndSession: () => void;
@@ -33,7 +33,7 @@ interface QuizViewProps {
   isFetchingAll?: boolean;
   pdfDocs: PdfDoc[];
   onOpenPdfLibrary: () => void;
-  onStartPdf: (pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage) => void; // null = 전체 풀 (§5-76)
+  onStartPdf: (pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format?: PdfQuizFormat) => void; // null = 전체 풀 (§5-76)
 }
 
 const WRONG_LIST_PAGE = 10;
@@ -80,6 +80,10 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   const [showSourceNotes, setShowSourceNotes] = useState(false);
   const [hydratedSourceNotes, setHydratedSourceNotes] = useState<Note[]>([]);
   
+  // PDF 복습 문제 형식 (§5-79): OX / 케이스 / 섞어서 — 자료실과 공통으로 기억
+  const [pdfFormat, setPdfFormatState] = useState<PdfQuizFormat>(readPdfQuizFormat);
+  const setPdfFormat = (f: PdfQuizFormat) => { setPdfFormatState(f); savePdfQuizFormat(f); };
+
   // PDF 문제: 근거가 된 PDF 구간 원문 보기 (§5-75)
   const [pdfSourceText, setPdfSourceText] = useState<{ label: string; text: string | null; error?: string } | null>(null);
   const openPdfSource = async (q: QuizQuestion) => {
@@ -326,6 +330,15 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                       >
                                           <Zap className="w-4 h-4" /> {periodCounts[period] === 0 && periodStats[period].all > 0 ? '맞힌 메모도 OX로' : 'OX로 빠르게'}
                                       </button>
+                                      <button
+                                          type="button"
+                                          onClick={() => onStart('MIXED', selectedLanguage, 'PERIOD', period, { periodAll: periodCounts[period] === 0 })}
+                                          disabled={periodStats[period].all === 0}
+                                          className="px-4 py-2 rounded-xl bg-white border border-accent-300 text-accent-700 text-sm font-bold hover:bg-accent-100 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                                          title="문제마다 케이스 문제와 OX가 반반씩 섞여 나옵니다"
+                                      >
+                                          <Shuffle className="w-4 h-4" /> {periodCounts[period] === 0 && periodStats[period].all > 0 ? '맞힌 메모도 섞어서' : '케이스+OX 섞어서'}
+                                      </button>
                                   </div>
                               </div>
                           </div>
@@ -350,8 +363,8 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                           </div>
                                           <p className="text-sm text-slate-500 leading-relaxed mt-1">
                                               {pdfDocs.length === 0
-                                                  ? 'PDF를 올리면 구간마다 요점을 정리해 요점 하나당 OX 한 문제로, 처음부터 끝까지 빠짐없이 냅니다.'
-                                                  : `올린 PDF ${ps.docs}개를 섞어서 OX로 냅니다. 각 PDF는 앞에서부터 안 푼 요점을 빠짐없이, 맞힌 요점은 이번 바퀴에 다시 안 나와요.`}
+                                                  ? 'PDF를 올리면 구간마다 요점을 정리해 요점 하나당 한 문제(OX 또는 임상 케이스)로, 처음부터 끝까지 빠짐없이 냅니다.'
+                                                  : `올린 PDF ${ps.docs}개를 섞어서 냅니다(OX·케이스·섞어서 중 선택). 각 PDF는 앞에서부터 안 푼 요점을 빠짐없이, 맞힌 요점은 이번 바퀴에 다시 안 나와요.`}
                                           </p>
                                           {pdfDocs.length > 0 && (
                                               <>
@@ -364,17 +377,30 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                   <p className="text-[11px] text-slate-400 mt-1">
                                                       구간 {ps.sectionsDone}/{ps.sections} · 맞힘 {ps.ok} · 틀림 {ps.wrong}{outCount > 0 ? ` · 복습에서 뺀 PDF ${outCount}개` : ''}
                                                   </p>
+                                                  <div className="flex flex-wrap items-center gap-1.5 mt-3">
+                                                      <span className="text-[11px] text-slate-400 mr-1">문제 형식</span>
+                                                      {(['QUICK_OX', 'DETAILED', 'MIXED'] as PdfQuizFormat[]).map(f => (
+                                                          <button
+                                                              key={f}
+                                                              type="button"
+                                                              onClick={() => setPdfFormat(f)}
+                                                              className={`px-2.5 py-1 rounded-lg border text-xs font-bold ${pdfFormat === f ? 'bg-accent-50 border-accent-300 text-accent-700' : 'bg-white border-slate-200 text-slate-500'}`}
+                                                          >
+                                                              {PDF_FORMAT_LABEL[f]}
+                                                          </button>
+                                                      ))}
+                                                  </div>
                                                   <div className="flex flex-wrap gap-2 mt-3">
                                                       <button
                                                           type="button"
-                                                          onClick={() => (ps.allDone ? onOpenPdfLibrary() : onStartPdf(null, 'all', selectedLanguage))}
+                                                          onClick={() => (ps.allDone ? onOpenPdfLibrary() : onStartPdf(null, 'all', selectedLanguage, pdfFormat))}
                                                           disabled={ps.docs === 0}
                                                           className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 transition-colors flex items-center gap-1.5 disabled:opacity-40"
                                                       >
-                                                          <Zap className="w-4 h-4" /> {ps.allDone ? '다 풀었어요 — 자료실에서 다시' : ps.sectionsDone + ps.ok + ps.wrong === 0 ? 'PDF 전체로 OX' : '이어서 풀기'}
+                                                          <Zap className="w-4 h-4" /> {ps.allDone ? '다 풀었어요 — 자료실에서 다시' : ps.sectionsDone + ps.ok + ps.wrong === 0 ? 'PDF 전체 풀기' : '이어서 풀기'}
                                                       </button>
                                                       {ps.wrong > 0 && (
-                                                          <button type="button" onClick={() => onStartPdf(null, 'wrong', selectedLanguage)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
+                                                          <button type="button" onClick={() => onStartPdf(null, 'wrong', selectedLanguage, pdfFormat)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
                                                               <RotateCw className="w-4 h-4" /> 틀린 것 {ps.wrong}개
                                                           </button>
                                                       )}
@@ -553,7 +579,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
           if (!confirm(isPool ? '다 푼 PDF를 처음부터 다시 풀까요? 같은 요점을 새 문장으로 다시 냅니다.' : '처음부터 다시 풀까요? 같은 요점을 새 문장으로 다시 냅니다.')) return;
           const targets = isPool ? pdfDocs.filter(d => inPdfPool(d) && pdfStats(d).roundDone) : (currentPdf ? [currentPdf] : []);
           for (const d of targets) await updatePdfMeta(d.id, x => ({ progress: resetPdfRound(x, Date.now()), round: (x.round || 0) + 1 }));
-          onStartPdf(startId, 'all', quizState.language);
+          onStartPdf(startId, 'all', quizState.language, (quizState.mode || 'QUICK_OX') as PdfQuizFormat);
       };
       return (
           <div className="flex flex-col items-center justify-center h-full bg-slate-50 p-6 text-center animate-in fade-in">
@@ -575,12 +601,12 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
               )}
               <div className="flex flex-col gap-3 w-full max-w-xs">
                   {sum && sum.wrong > 0 && (
-                      <button type="button" onClick={() => onStartPdf(startId, 'wrong', quizState.language)} className="w-full bg-white border border-clay-300 text-clay-600 hover:bg-clay-50 py-3 rounded-xl font-bold transition-all">
+                      <button type="button" onClick={() => onStartPdf(startId, 'wrong', quizState.language, (quizState.mode || 'QUICK_OX') as PdfQuizFormat)} className="w-full bg-white border border-clay-300 text-clay-600 hover:bg-clay-50 py-3 rounded-xl font-bold transition-all">
                           틀린 것 {sum.wrong}개 다시 풀기
                       </button>
                   )}
                   {sum && !sum.roundDone && (
-                      <button type="button" onClick={() => onStartPdf(startId, 'all', quizState.language)} className="w-full bg-white border border-accent-300 text-accent-700 hover:bg-accent-50 py-3 rounded-xl font-bold transition-all">
+                      <button type="button" onClick={() => onStartPdf(startId, 'all', quizState.language, (quizState.mode || 'QUICK_OX') as PdfQuizFormat)} className="w-full bg-white border border-accent-300 text-accent-700 hover:bg-accent-50 py-3 rounded-xl font-bold transition-all">
                           남은 구간 이어서 풀기
                       </button>
                   )}
@@ -663,7 +689,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                   </div>
               </div>
               <h2 className="text-xl font-bold text-slate-800 mb-2">
-                  {quizState.error ? '문제가 발생했습니다' : (quizState.mode === 'QUICK_OX' ? 'OX 문제 만드는 중...' : '케이스 문제 만드는 중...')}
+                  {quizState.error ? '문제가 발생했습니다' : (quizState.mode === 'QUICK_OX' ? 'OX 문제 만드는 중...' : quizState.mode === 'MIXED' ? '문제 만드는 중...' : '케이스 문제 만드는 중...')}
               </h2>
               <p className="text-slate-400 text-sm mb-8">
                   {quizState.error ? quizState.error : quizState.source === 'PDF' ? 'PDF 구간의 요점을 정리해 문제를 만들고 있습니다.\n구간마다 처음 한 번만 시간이 걸려요 (10~30초).' : 'AI가 메모를 분석하여 문제를 만들고 있습니다.\n잠시만 기다려주세요.'}

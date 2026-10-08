@@ -1580,6 +1580,70 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
     return items.filter(it => it && typeof it.statement === 'string' && typeof it.isTrue === 'boolean');
 };
 
+// PDF 요점 하나 → 임상 응용 케이스 문제(5지선다) (§5-79). 정답 근거는 그 구간 글
+export interface PdfCaseInput {
+    docTitle: string;
+    docSource: string;
+    sectionLabel: string;
+    sectionIndex: number;
+    sectionCount: number;
+    text: string;
+    point: string;
+}
+export interface PdfCaseItem { question: string; options: string[]; correctAnswerIndex: number; explanation: string }
+
+export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: QuizLanguage = 'Korean'): Promise<PdfCaseItem | null> => {
+    const langRule = quizLanguageRule(language).replace("The reader's note below is written in Korean — read it, but", 'Read the document text below (any language), but');
+    const prompt = `
+            ${langRule}
+            You are an attending physician writing subspecialty board-level questions.
+            ${READER_PROFILE}
+            Write ONE clinical application multiple-choice question from a PDF the reader uploaded.
+
+            DOCUMENT: ${input.docTitle || 'Untitled'}${input.docSource ? ` — ${input.docSource}` : ''}
+            THIS SECTION: ${input.sectionLabel} (section ${input.sectionIndex + 1} of ${input.sectionCount})
+            """${input.text}"""
+
+            THE POINT TO TEST: ${input.point}
+
+            QUESTION DESIGN:
+            - A realistic clinical vignette (age/sex, presentation, the data an expert would use — ECG/EGM, echo,
+              hemodynamics, labs, prior therapy) that requires APPLYING the point to make a decision, not recalling it.
+              Where natural, integrate related details from the same section so the case is comprehensive.
+            - The keyed answer must follow from what THIS SECTION says (the answer key is the document).
+              Do not key an answer the section does not support.
+            - Exactly 5 options (A–E). Distractors are plausible near-misses a less experienced physician would pick
+              (a threshold just off, the right drug in the wrong setting, a correct step in the wrong order,
+              a lower class of recommendation).
+            - Level: cardiovascular subspecialty board / fellowship in-training exam for cardiology content;
+              internal medicine board level otherwise.
+            - "explanation": why the answer is correct, quoting what the section states (exact number, criterion
+              or recommendation class), then one short line on why each distractor is wrong.
+
+            FINAL CHECK — ${langRule}
+        `;
+    const langNote = `Written in ${LANGUAGE_LABEL[language]}.`;
+    const out = await callQuizWithLanguage(language, extra => [{ type: 'text', text: prompt + extra }], {
+        feature: 'pdf',
+        model: MODEL_FAST,
+        toolName: 'submit_pdf_case_question',
+        toolDescription: 'Submit the clinical application multiple-choice question.',
+        schema: {
+            type: 'object',
+            properties: {
+                question: { type: 'string', description: `Clinical vignette and question. ${langNote}` },
+                options: { type: 'array', items: { type: 'string', description: langNote }, minItems: 5, maxItems: 5 },
+                correctAnswerIndex: { type: 'integer', minimum: 0, maximum: 4 },
+                explanation: { type: 'string', description: langNote }
+            },
+            required: ['question', 'options', 'correctAnswerIndex', 'explanation']
+        },
+        maxTokens: 2000
+    }, x => [x?.question, ...(Array.isArray(x?.options) ? x.options : []), x?.explanation].join(' '));
+    if (!out || typeof out.question !== 'string' || !Array.isArray(out.options) || out.options.length < 2) return null;
+    return { question: out.question, options: out.options.map((o: any) => String(o)), correctAnswerIndex: Number(out.correctAnswerIndex) || 0, explanation: String(out.explanation || '') };
+};
+
 // 올린 PDF의 제목·출처 제안 (첫 쪽 글로, 아주 짧은 호출) — 사용자가 고쳐서 저장
 export const suggestPdfInfo = async (firstText: string, fileName: string, metaTitle?: string): Promise<{ title: string; source: string }> => {
     const input = await callForJson({

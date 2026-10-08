@@ -295,6 +295,13 @@ export const uploadPdfOriginal = (id: string, onProgress?: (done: number, total:
     return job;
 };
 
+// 원본만 지우기 (§5-78): 보관 공간만 비우고 뽑은 글·푼 기록·문제는 그대로 (이 기기 사본도 지워 다시 올라가지 않게)
+export const deletePdfOriginal = async (d: PdfDoc): Promise<void> => {
+    await deletePdfFileFromStorage(d.file?.path || pdfFilePath(d.id));
+    await idbDelete(FILES, d.id).catch(() => undefined);
+    await updatePdfMeta(d.id, () => ({ file: undefined }));
+};
+
 // 원본 열기: 클라우드 사본(어느 기기에서나) → 없으면 이 기기 사본. page가 있으면 그 쪽으로(#page=, 지원하는 뷰어에서)
 // 팝업 차단을 피하려고 창은 누른 순간 먼저 열어 두고 주소를 나중에 넣음
 export const openPdfOriginal = async (d: PdfDoc, page?: number): Promise<void> => {

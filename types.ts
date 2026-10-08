@@ -208,13 +208,17 @@ export interface PdfPoint {
     st: 'new' | 'ok' | 'wrong'; // 이번 바퀴에서: 아직 / 맞힘 / 틀림
     at?: number; // 마지막으로 푼 시각
     wc?: number; // 틀린 횟수 (누적)
+    wq?: string; // 마지막으로 틀린 문제 id (틀린 것 다시 풀기에서 그 문제 그대로, §5-79)
 }
 
 export interface PdfQuestion {
     id: string;
     pi: number; // 요점 번호 (pts 인덱스)
-    q: string; // 참/거짓 문장
-    t: boolean; // 참이면 true
+    q: string; // 참/거짓 문장 (케이스면 임상 상황+질문)
+    t: boolean; // 참이면 true (OX만)
+    type?: 'MC'; // 케이스(임상 응용 5지선다) 문제면 'MC', 없으면 OX (§5-79)
+    opts?: string[]; // 케이스: 보기 5개
+    ans?: number; // 케이스: 정답 번호(0부터)
     ex: string; // 해설
     lang: QuizLanguage;
 }
@@ -248,7 +252,7 @@ export interface PdfDoc {
 
 export interface QuizState {
     isActive: boolean;
-    mode: 'DETAILED' | 'QUICK_OX' | null;
+    mode: 'DETAILED' | 'QUICK_OX' | 'MIXED' | null; // MIXED: 문제마다 케이스/OX 반반 (§5-79)
     // RANDOM: 무작위(복습 예정·안 푼 메모 우선) / REVIEW: 오늘 복습할 메모만 / WRONG: 오답 다시 풀기
     // PERIOD: 기간별 복습(선택한 기간에 쓰거나 고친 메모만, 메모를 한 바퀴 돌면 다시 처음부터)
     // PDF: PDF 자료실의 PDF 하나로 OX (요점마다 한 문제, 빠짐없이) (§5-75)

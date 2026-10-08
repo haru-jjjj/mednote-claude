@@ -3,8 +3,8 @@ import { ArrowLeft, FileText, Loader2, Upload, Zap, RotateCw, ChevronDown, Chevr
 import { PdfDoc, QuizLanguage } from '../types';
 import { extractPdfText, buildPdfSections, looksScanned, renderPageJpeg, MAX_OCR_PAGES, MAX_PDF_BYTES, BuiltSections, openPdf } from '../services/pdfExtract';
 import { suggestPdfInfo, transcribePdfPages } from '../services/claudeService';
-import { saveNewPdf, updatePdfMeta, deletePdf, openPdfOriginal, uploadPdfOriginal, storeLocalPdfFile, hasLocalPdfFile, describeStorageError } from '../services/pdfLibrary';
-import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool } from '../services/pdfQuiz';
+import { saveNewPdf, updatePdfMeta, deletePdf, deletePdfOriginal, openPdfOriginal, uploadPdfOriginal, storeLocalPdfFile, hasLocalPdfFile, describeStorageError } from '../services/pdfLibrary';
+import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, readPdfQuizFormat, savePdfQuizFormat } from '../services/pdfQuiz';
 
 // ============================================================================
 // PDF 자료실 (§5-75)
@@ -17,7 +17,7 @@ interface Props {
     loading: boolean;
     syncError: string | null;
     onBack: () => void;
-    onStart: (id: string | null, mode: 'all' | 'wrong', language: QuizLanguage) => void; // null = PDF 전체 풀 (§5-76)
+    onStart: (id: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format?: PdfQuizFormat) => void; // null = PDF 전체 풀 (§5-76), format §5-79
 }
 
 type Upload =
@@ -41,6 +41,8 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
     const [openId, setOpenId] = useState<string | null>(null);
     const [editing, setEditing] = useState<{ id: string; title: string; source: string } | null>(null);
     const [language, setLanguageState] = useState<QuizLanguage>(readLang);
+    const [format, setFormatState] = useState<PdfQuizFormat>(readPdfQuizFormat);
+    const setFormat = (f: PdfQuizFormat) => { setFormatState(f); savePdfQuizFormat(f); };
     const setLanguage = (l: QuizLanguage) => { setLanguageState(l); try { localStorage.setItem(LANG_KEY, l); } catch { /* 이번 화면에선 동작 */ } };
     const cancelRef = useRef(false);
     const pdfRef = useRef<any>(null);
@@ -166,8 +168,13 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
     };
 
     const remove = async (d: PdfDoc) => {
-        if (!confirm(`"${d.title}"을 PDF 자료실에서 지울까요?\n뽑아 둔 글과 푼 기록이 모든 기기에서 지워집니다.`)) return;
-        try { await deletePdf(d); } catch (e: any) { alert(`클라우드에서 지우지 못했습니다: ${e?.message || e}`); }
+        if (!confirm(`"${d.title}"을 PDF 자료실에서 지울까요?\n뽑아 둔 글·푼 기록·원본 PDF가 모든 기기에서 지워지고 되돌릴 수 없습니다.\n(공간만 비우려면 "원본만 지우기"를 쓰세요 — 문제는 계속 풀 수 있어요.)`)) return;
+        try { await deletePdf(d); setNotice(`"${d.title}"을 지웠어요.`); } catch (e: any) { setError(`클라우드에서 지우지 못했습니다: ${e?.message || e}`); }
+    };
+    // 원본만 지우기 (§5-78): 공간만 비우고 글·기록·문제는 유지
+    const removeOriginal = async (d: PdfDoc) => {
+        if (!confirm(`"${d.title}"의 원본 PDF(${d.file ? fmtMB(d.file.size) : ''})만 지울까요?\n뽑아 둔 글·푼 기록·문제는 그대로 남아 계속 풀 수 있고, "이 구간 원문 보기"도 됩니다. 원본은 나중에 다시 올릴 수 있어요.`)) return;
+        try { await deletePdfOriginal(d); setNotice(`"${d.title}" 원본 PDF를 지웠어요 (글·기록은 그대로).`); } catch (e: any) { setError(`원본을 지우지 못했습니다: ${e?.message || e}`); }
     };
 
     const toggleExclude = (d: PdfDoc, key: string) =>
@@ -271,6 +278,22 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                 <Languages className="w-3 h-3" />{l === 'Korean' ? '한국어' : l === 'English' ? 'English' : <span lang="ja">日本語</span>}
                             </button>
                         ))}
+                    </div>
+
+                    {/* 문제 형식 (§5-79) */}
+                    <div className="flex flex-wrap items-center gap-2 text-[12px] text-slate-500 -mt-2">
+                        <span>문제 형식</span>
+                        {(['QUICK_OX', 'DETAILED', 'MIXED'] as PdfQuizFormat[]).map(f => (
+                            <button
+                                key={f}
+                                type="button"
+                                onClick={() => setFormat(f)}
+                                className={`px-2.5 py-1 rounded-lg border font-bold ${format === f ? 'bg-accent-50 border-accent-300 text-accent-700' : 'bg-white border-slate-200 text-slate-500'}`}
+                            >
+                                {PDF_FORMAT_LABEL[f]}
+                            </button>
+                        ))}
+                        <span className="text-[11px] text-slate-400">{format === 'DETAILED' ? '요점마다 임상 상황 5지선다' : format === 'MIXED' ? '요점마다 케이스·OX 반반' : '요점마다 참/거짓'}</span>
                     </div>
 
                     {error && (
@@ -382,21 +405,32 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                             if (!confirm('복습에 넣은 PDF를 모두 처음부터 다시 풀까요? 같은 요점을 새 문장으로 다시 냅니다.')) return;
                                             for (const d of docs.filter(inPdfPool)) await updatePdfMeta(d.id, x => ({ progress: resetPdfRound(x, Date.now()), round: (x.round || 0) + 1 }));
                                         }
-                                        onStart(null, 'all', language);
+                                        onStart(null, 'all', language, format);
                                     }}
                                     disabled={pool.docs === 0}
                                     className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 flex items-center gap-1.5 disabled:opacity-40"
                                 >
-                                    <Zap className="w-4 h-4" /> {pool.allDone ? '모두 처음부터 다시' : pool.sectionsDone + pool.ok + pool.wrong === 0 ? 'PDF 전체로 OX' : '이어서 풀기'}
+                                    <Zap className="w-4 h-4" /> {pool.allDone ? '모두 처음부터 다시' : pool.sectionsDone + pool.ok + pool.wrong === 0 ? 'PDF 전체 풀기' : '이어서 풀기'}
                                 </button>
                                 {pool.wrong > 0 && (
-                                    <button onClick={() => onStart(null, 'wrong', language)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
+                                    <button onClick={() => onStart(null, 'wrong', language, format)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
                                         <RotateCw className="w-4 h-4" /> 틀린 것 {pool.wrong}개
                                     </button>
                                 )}
                             </div>
                         </div>
                     )}
+
+                    {/* 원본 보관 용량 (§5-78) */}
+                    {docs.some(d => d.file) && (() => {
+                        const total = docs.reduce((a, d) => a + (d.file?.size || 0), 0);
+                        const n = docs.filter(d => d.file).length;
+                        return (
+                            <p className="text-[12px] text-slate-500 px-1">
+                                원본 PDF {n}개 보관 중 · {fmtMB(total)} <span className="text-slate-400">(무료 5GB 중 {Math.max(0.1, Math.round((total / (5 * 1024 ** 3)) * 1000) / 10)}%)</span>
+                            </p>
+                        );
+                    })()}
 
                     {/* 목록 */}
                     {docs.length === 0 && !upload ? (
@@ -432,7 +466,12 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                         </div>
                                     ) : (
                                         <>
-                                            <h3 className="font-bold text-slate-900 leading-snug">{d.title}</h3>
+                                            <div className="flex items-start gap-2">
+                                                <h3 className="flex-1 min-w-0 font-bold text-slate-900 leading-snug">{d.title}</h3>
+                                                <button onClick={() => remove(d)} className="shrink-0 -mr-1 -mt-1 p-1.5 rounded-lg text-slate-300 hover:text-red-500 hover:bg-red-50" title="이 PDF 지우기 (글·기록·원본 모두)">
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            </div>
                                             {d.source && <p className="text-[12px] text-slate-500 mt-1 break-words">{d.source}</p>}
                                         </>
                                     )}
@@ -447,9 +486,12 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                         {typeof fileBusy[d.id] === 'number' ? (
                                             <span className="text-[12px] text-slate-500 inline-flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 원본 올리는 중 {fileBusy[d.id]}%</span>
                                         ) : d.file ? (
-                                            <button onClick={() => openOriginal(d)} className="text-[12px] font-bold text-accent-700 hover:text-accent-800 inline-flex items-center gap-1">
-                                                <ExternalLink className="w-3.5 h-3.5" /> 원본 PDF 열기 <span className="font-normal text-slate-400">({fmtMB(d.file.size)})</span>
-                                            </button>
+                                            <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
+                                                <button onClick={() => openOriginal(d)} className="text-[12px] font-bold text-accent-700 hover:text-accent-800 inline-flex items-center gap-1">
+                                                    <ExternalLink className="w-3.5 h-3.5" /> 원본 PDF 열기 <span className="font-normal text-slate-400">({fmtMB(d.file.size)})</span>
+                                                </button>
+                                                <button onClick={() => removeOriginal(d)} className="text-[12px] text-slate-400 hover:text-red-500">원본만 지우기</button>
+                                            </span>
                                         ) : (
                                             <button onClick={() => addOriginal(d)} className="text-[12px] font-bold text-slate-500 hover:text-accent-700 inline-flex items-center gap-1">
                                                 <FileUp className="w-3.5 h-3.5" /> 원본 없음 · 원본 PDF 올리기
@@ -470,14 +512,14 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
 
                                     <div className="flex flex-wrap gap-2 mt-3">
                                         <button
-                                            onClick={async () => { if (st.roundDone) { if (await restart(d)) onStart(d.id, 'all', language); } else onStart(d.id, 'all', language); }}
+                                            onClick={async () => { if (st.roundDone) { if (await restart(d)) onStart(d.id, 'all', language, format); } else onStart(d.id, 'all', language, format); }}
                                             disabled={st.sections === 0}
                                             className="px-4 py-2 rounded-xl bg-white border border-accent-300 text-accent-700 text-sm font-bold hover:bg-accent-50 flex items-center gap-1.5 disabled:opacity-40"
                                         >
                                             <Zap className="w-4 h-4" /> {notStarted ? '이 PDF만 풀기' : st.roundDone ? '처음부터 다시' : '이 PDF만 이어서'}
                                         </button>
                                         {st.wrong > 0 && (
-                                            <button onClick={() => onStart(d.id, 'wrong', language)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
+                                            <button onClick={() => onStart(d.id, 'wrong', language, format)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
                                                 <RotateCw className="w-4 h-4" /> 틀린 것 {st.wrong}개
                                             </button>
                                         )}
@@ -518,7 +560,6 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                                 {!notStarted && !st.roundDone && (
                                                     <button onClick={() => restart(d)} className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs font-bold text-slate-500 hover:text-slate-800 flex items-center gap-1"><RotateCw className="w-3 h-3" /> 처음부터 다시</button>
                                                 )}
-                                                <button onClick={() => remove(d)} className="ml-auto px-3 py-1.5 rounded-lg text-xs font-bold text-slate-400 hover:text-red-500 flex items-center gap-1"><Trash2 className="w-3 h-3" /> 지우기</button>
                                             </div>
                                             <p className="text-[11px] text-slate-400 mt-2">{d.fileName} · {d.charCount.toLocaleString()}자</p>
                                         </div>
@@ -532,6 +573,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
 
                     <div className="text-[11px] text-slate-400 leading-relaxed space-y-1 px-1">
                         <p>PDF 전체로 복습: 여러 PDF를 섞어 내되, PDF마다 앞 구간부터 안 푼 요점이 없어질 때까지 냅니다. 특정 PDF만 집중하려면 그 PDF의 "이 PDF만 풀기"를, 다 본 PDF는 "PDF 복습에 넣기"를 꺼 두세요.</p>
+                        <p>문제 형식: OX는 구간의 요점을 한 번에 만들어 빠르고, 케이스는 요점 하나마다 임상 상황 5지선다를 따로 만들어 문제마다 몇 초 더 걸립니다(요점당 약 $0.001). 어느 형식으로 풀어도 같은 요점 진도에 기록됩니다.</p>
                         <p>문제 만드는 방식: 처음 푸는 구간마다 AI(Haiku)가 그 구간의 요점(수치·권고·기준·기전·결과 등)을 모두 뽑아 요점마다 OX 한 문제를 씁니다. 앞 구간부터 안 푼 요점이 없어질 때까지 내고, 맞힌 요점은 이번 바퀴에서 다시 나오지 않습니다. 정답 근거는 그 PDF 구간이고, 문제 화면에서 원문 구간을 바로 볼 수 있습니다.</p>
                         <p>원본 PDF는 Firebase Storage에 보관되어 어느 기기에서나 열 수 있습니다(문제 해설의 근거에서도 그 쪽으로 열림). 비용은 보관 5GB·내려받기 월 100GB까지 무료(미국 지역 저장소), 넘으면 GB당 월 약 $0.02.</p>
                         <p>한계: 그림·그래프 속 정보와 표의 칸 구조는 글로 뽑히는 만큼만 들어갑니다. 요점은 AI가 고르므로 아주 사소한 문장까지 하나하나 문제가 되지는 않습니다. 비용은 구간 하나에 약 $0.002 (30쪽 리뷰 약 $0.02~0.03).</p>
