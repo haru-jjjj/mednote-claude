@@ -1279,6 +1279,24 @@
 - 바뀐 파일: `services/usageTracker.ts`(**새 파일**), `components/UsageView.tsx`(**새 파일**), `services/claudeService.ts`(호출마다 `feature`·usage 기록),
   `services/voyageService.ts`, `services/firebaseService.ts`(`addUsageToFirestore`, `fetchUsageMonth`), `types.ts`(`ViewMode.USAGE`), `App.tsx`.
 
+## 5-71. 가벼운 작업 모델 Haiku 4.5 → Haiku 5.5 (요청: 새 모델로 가성비 개선)
+
+- 대상: 퀴즈(케이스·OX), 질문 노트 제목, 이번 주 돌아보기, 케이스·시술 기록 추출 (`MODEL_FAST`).
+- 이유: 요금 $1/$5 → **$0.10/$0.50**(100만 토큰당, 프롬프트 10만 토큰 이하). 같은 글이 토큰 약 30% 더 많게 세어져도
+  같은 작업이 대략 1/7 수준. 그리고 Haiku 4.5는 **2026-10-15 이후 언제든 종료될 수 있음**(공식 일정) → 어차피 옮겨야 함.
+- Haiku 5.5 맞춤 변경 (`callClaude`)
+  - 생각(adaptive thinking)이 기본으로 켜지고 생각 토큰도 max_tokens에 포함 → 글 작업은 한도 최소 8,000 + effort `low`
+    (이번 주 돌아보기만 `medium`). 실제 쓴 만큼만 과금. 그래도 생각하다 한도에 걸리면 한도를 늘려 1회 재시도(기존 Sonnet 방식 확장).
+  - 퀴즈처럼 도구를 강제로 부르는 요청은 생각 없이 바로 답함 → 한도만 1.4배(새 토크나이저).
+  - temperature는 기본값 외 400 → 모든 모델에 보내지 않음(남아 있던 호출부 값은 무시).
+  - 응답 첫 블록이 생각 블록일 수 있음 → 기존 코드가 이미 종류(type)로 골라 읽어 수정 없음.
+- 사용량 계산: Haiku 5.5 요금(프롬프트 10만 토큰 초과 시 $0.5/$2.5), Sonnet 5.5 요금(캐시 읽기 $0.1)도 추가.
+- **그대로 둔 것: 질문 노트 답변·요약·주제 탐구 등은 Sonnet 5 유지.** Sonnet 5.5는 요금이 같고 캐시 읽기만 절반이라
+  절감 폭이 작은 반면, ① 도구 강제 호출(`tool_choice: tool`)이 400(주제 탐구 제안이 씀), ② 검색 사이에 쓴 1~2문장 넘는 글이
+  보이지 않는 "진행 메모"(thinking 블록)로 바뀌어 근거·인용 흐름에 영향 가능, ③ 거절 범주 확대 등 바뀌는 점이 많고
+  실제 API로 시험하지 못해서. Sonnet 5는 최소 2027-06-30까지 지원.
+- 바뀐 파일: `services/claudeService.ts`, `services/usageTracker.ts`, `components/UsageView.tsx`.
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.

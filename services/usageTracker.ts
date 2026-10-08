@@ -25,15 +25,27 @@ export const USAGE_FEATURE_LABELS: Record<UsageFeature, string> = {
 };
 
 // 가격 (USD / 100만 토큰) — https://platform.claude.com/docs/en/about-claude/pricing
-// 캐시: 5분 쓰기 1.25배, 1시간 쓰기 2배, 읽기 0.1배
-const PRICES = {
-    sonnet: { input: 2, output: 10, write5m: 2.5, write1h: 4, read: 0.2 },
-    haiku: { input: 1, output: 5, write5m: 1.25, write1h: 2, read: 0.1 },
+// 캐시: 5분 쓰기 1.25배, 1시간 쓰기 2배, 읽기 0.1배(Sonnet 5.5는 0.05배)
+type Price = { input: number; output: number; write5m: number; write1h: number; read: number };
+const PRICES: Record<string, Price> = {
+    sonnet5: { input: 2, output: 10, write5m: 2.5, write1h: 4, read: 0.2 },
+    sonnet55: { input: 2, output: 10, write5m: 2.5, write1h: 4, read: 0.1 },
+    haiku45: { input: 1, output: 5, write5m: 1.25, write1h: 2, read: 0.1 },
+    // Haiku 5.5는 프롬프트(입력+캐시) 10만 토큰을 넘으면 비싼 요금
+    haiku55: { input: 0.1, output: 0.5, write5m: 0.125, write1h: 0.2, read: 0.01 },
+    haiku55Long: { input: 0.5, output: 2.5, write5m: 0.625, write1h: 1, read: 0.05 },
 };
 const WEB_SEARCH_USD = 10 / 1000; // 검색 1회
 const VOYAGE_USD_PER_M = 0.02; // voyage-4-lite (무료 제공량이 있으면 실제 청구는 더 적음)
 
-const priceOf = (model: string) => (/haiku/i.test(model || '') ? PRICES.haiku : PRICES.sonnet); // 모르는 모델은 비싼 쪽으로
+// 모르는 모델은 비싼 쪽(Sonnet)으로
+const priceOf = (model: string, promptTokens: number): Price => {
+    const m = (model || '').toLowerCase();
+    if (m.includes('haiku-5-5')) return promptTokens > 100000 ? PRICES.haiku55Long : PRICES.haiku55;
+    if (m.includes('haiku')) return PRICES.haiku45;
+    if (m.includes('sonnet-5-5')) return PRICES.sonnet55;
+    return PRICES.sonnet5;
+};
 
 export const monthKeyOf = (t: number = Date.now()) => {
     const d = new Date(t);
@@ -44,7 +56,6 @@ const n = (v: any) => (typeof v === 'number' && isFinite(v) && v > 0 ? v : 0);
 
 // Claude usage → 비용·토큰 (캐시 쓰기는 5분/1시간 구분이 있으면 그대로, 없으면 1시간으로 — 이 앱의 캐시는 1시간)
 export const costOfClaudeUsage = (model: string, usage: any) => {
-    const p = priceOf(model);
     const input = n(usage?.input_tokens);
     const output = n(usage?.output_tokens);
     const read = n(usage?.cache_read_input_tokens);
@@ -54,6 +65,7 @@ export const costOfClaudeUsage = (model: string, usage: any) => {
     const write5m = w5;
     const write1h = w5 || w1h ? w1h : wTotal;
     const searches = n(usage?.server_tool_use?.web_search_requests);
+    const p = priceOf(model, input + read + write5m + write1h);
     const cost = (input * p.input + output * p.output + read * p.read + write5m * p.write5m + write1h * p.write1h) / 1e6
         + searches * WEB_SEARCH_USD;
     return { cost, input, output, cacheWrite: write5m + write1h, cacheRead: read, searches };

@@ -30,8 +30,11 @@ import { recordClaudeUsage, UsageFeature } from './usageTracker';
 const ANTHROPIC_VERSION = '2023-06-01';
 const API_URL = 'https://api.anthropic.com/v1/messages';
 
-// 속도가 중요한 백그라운드 퀴즈 생성용 (빠르고 저렴한 모델)
-const MODEL_FAST = 'claude-haiku-4-5-20251001';
+// 빠르고 저렴한 작업용 (퀴즈·질문 노트 제목·이번 주 돌아보기·케이스 기록 추출)
+// §5-71: Haiku 4.5 → Haiku 5.5. 요금 1/10($0.10/$0.50, 프롬프트 10만 토큰 이하), Haiku 4.5는 2026-10-15 이후 종료 예정.
+// Haiku 5.5는 생각(adaptive thinking)이 기본으로 켜지고 생각 토큰도 max_tokens에 포함, temperature는 기본값 외 400,
+// 같은 글이 토큰 약 30% 더 많음 → callClaude에서 한도·effort를 맞춤
+const MODEL_FAST = 'claude-haiku-5-5';
 // 품질이 중요한 요약/주제탐구/OCR/상세설명용
 const MODEL_SMART = 'claude-sonnet-5';
 
@@ -99,7 +102,7 @@ interface CallParams {
     tool_choice?: any;
     max_tokens?: number;
     temperature?: number;
-    // 생각(thinking) 깊이. Sonnet 5 이상에서만 보냄(Haiku 4.5는 지원 안 함). 미지정 시 모델 기본값(high).
+    // 생각(thinking) 깊이(Sonnet 5·Haiku 5.5). 미지정 시: Sonnet은 모델 기본값(high), Haiku 5.5의 글 작업은 callClaude가 low로.
     effort?: 'low' | 'medium' | 'high';
     // 사용량 집계용 기능 이름 (§5-70) — API로는 보내지 않음
     feature?: UsageFeature;
@@ -113,22 +116,36 @@ interface CallParams {
 // 참고: https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
 const SMART_MIN_MAX_TOKENS = 16000;
 const RETRY_MAX_TOKENS = 32000;
+// Haiku 5.5: 생각할 여유(실제 쓴 만큼만 과금). 도구를 강제로 부르게 한 요청(퀴즈 등)은 생각 없이 바로 답하므로
+// 한도만 새 토크나이저(약 30% 더 많음)에 맞춰 늘림
+const FAST_MIN_MAX_TOKENS = 8000;
+const FAST_TOKENIZER_FACTOR = 1.4;
+const isForcedTool = (p: CallParams) => !!p.tool_choice && (p.tool_choice.type === 'tool' || p.tool_choice.type === 'any');
 
 const hasTextOrTool = (data: any) =>
     (data?.content || []).some((b: any) => (b.type === 'text' && (b.text || '').trim()) || b.type === 'tool_use');
 
 const callClaude = async (params: CallParams): Promise<any> => {
     const isSmart = params.model === MODEL_SMART;
+    const isFast = params.model === MODEL_FAST;
+    const forced = isForcedTool(params);
+    const base = params.max_tokens ?? 2048;
     const first = await callClaudeOnce({
         ...params,
-        max_tokens: isSmart ? Math.max(params.max_tokens ?? 2048, SMART_MIN_MAX_TOKENS) : params.max_tokens
+        max_tokens: isSmart
+            ? Math.max(base, SMART_MIN_MAX_TOKENS)
+            : isFast
+                ? (forced ? Math.ceil(base * FAST_TOKENIZER_FACTOR) : Math.max(Math.ceil(base * FAST_TOKENIZER_FACTOR), FAST_MIN_MAX_TOKENS))
+                : params.max_tokens,
+        // Haiku 5.5의 가벼운 글 작업은 생각을 짧게(지정한 곳은 그대로). 강제 도구 호출엔 생각이 없어 보내지 않음
+        effort: params.effort ?? (isFast && !forced ? 'low' : undefined)
     });
     if (hasTextOrTool(first) || first?.stop_reason !== 'max_tokens') return first;
     console.warn('생각 단계에서 max_tokens에 걸려 본문이 비어 있어, 한도를 늘리고 effort를 낮춰 다시 요청합니다.');
     return callClaudeOnce({
         ...params,
         max_tokens: RETRY_MAX_TOKENS,
-        effort: isSmart ? 'low' : params.effort
+        effort: (isSmart || isFast) && !forced ? 'low' : params.effort
     });
 };
 
@@ -140,7 +157,7 @@ const callClaudeOnce = async (params: CallParams): Promise<any> => {
         max_tokens: params.max_tokens ?? 2048,
         messages: params.messages,
     };
-    if (params.effort && params.model !== MODEL_FAST) body.output_config = { effort: params.effort };
+    if (params.effort) body.output_config = { effort: params.effort };
     if (params.system) body.system = params.system;
     if (params.tools) body.tools = params.tools;
     if (params.tool_choice) body.tool_choice = params.tool_choice;
@@ -149,14 +166,8 @@ const callClaudeOnce = async (params: CallParams): Promise<any> => {
     // "temperature is deprecated for this model" 400 에러로 요청 자체가 거부되는 것을
     // 실사용 중 확인했습니다. 앞으로 어떤 호출부가 실수로 web_search + temperature를
     // 같이 넘기더라도 조용히 무시하고 계속 동작하도록, 여기서 한 번 더 걸러줍니다.
-    const usesServerTool = Array.isArray(params.tools) && params.tools.some((t: any) => t?.type === 'web_search_20250305');
-    if (typeof params.temperature === 'number' && usesServerTool) {
-        console.warn("web_search 툴과 temperature를 함께 요청해 temperature를 무시합니다 (API가 400으로 거부함).");
-    } else if (typeof params.temperature === 'number' && params.model === MODEL_SMART) {
-        // Sonnet 5는 temperature를 기본값이 아닌 값으로 보내면 400 → 보내지 않음
-    } else if (typeof params.temperature === 'number') {
-        body.temperature = Math.min(params.temperature, 1);
-    }
+    // §5-71: 지금 쓰는 두 모델(Sonnet 5, Haiku 5.5) 모두 temperature를 기본값이 아닌 값으로 보내면 400 → 아예 보내지 않음
+    // (호출부에 남아 있는 temperature 값은 무시됨)
 
     const response = await fetch(API_URL, {
         method: 'POST',
@@ -1843,7 +1854,8 @@ export const generateWeeklyDigest = async (
         feature: 'insights',
         model: MODEL_FAST,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-        max_tokens: 3000
+        max_tokens: 3000,
+        effort: 'medium' // 한 주 메모를 묶어 돌아보는 글이라 생각을 조금 더
     });
     const text = extractText(data);
     if (!text) throw new Error('돌아보기 결과가 비어 있습니다.');

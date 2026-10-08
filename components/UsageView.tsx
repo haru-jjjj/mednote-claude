@@ -130,7 +130,7 @@ const UsageView: React.FC<Props> = ({ onBack, liveMonthCost }) => {
                     <div className="text-[11px] text-slate-400 leading-relaxed space-y-1 px-1">
                         <p>앱이 AI 응답마다 받은 토큰 수·웹 검색 횟수에 공개 요금표를 곱해 계산한 <b className="text-slate-500">추정치</b>입니다. 실제 청구 금액은 Anthropic Console(Claude)과 Voyage 대시보드가 기준입니다.</p>
                         <p>이 기능을 넣기 전의 사용량, 다른 앱·Claude 구독 사용량은 들어 있지 않습니다. 모든 기기의 사용량이 합쳐지며, 달은 이 기기의 날짜 기준입니다.</p>
-                        <p>요금(100만 토큰당): Sonnet 5 입력 $2 · 출력 $10 · 캐시 읽기 $0.2 · 1시간 캐시 쓰기 $4 / Haiku 4.5 입력 $1 · 출력 $5 / 웹 검색 1회 $0.01 / Voyage 임베딩 $0.02.</p>
+                        <p>요금(100만 토큰당): Sonnet 5 입력 $2 · 출력 $10 · 캐시 읽기 $0.2 · 1시간 캐시 쓰기 $4 / Haiku 5.5 입력 $0.1 · 출력 $0.5(프롬프트 10만 토큰 초과 시 $0.5 · $2.5) / 웹 검색 1회 $0.01 / Voyage 임베딩 $0.02. 생각(thinking) 토큰은 출력으로 계산.</p>
                     </div>
                 </div>
             </div>
