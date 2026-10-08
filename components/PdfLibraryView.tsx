@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, FileText, Loader2, Upload, Zap, RotateCw, ChevronDown, ChevronUp, Trash2, Pencil, Check, X, Languages, ScanText } from 'lucide-react';
+import { ArrowLeft, FileText, Loader2, Upload, Zap, RotateCw, ChevronDown, ChevronUp, Trash2, Pencil, Check, X, Languages, ScanText, ExternalLink, FileUp } from 'lucide-react';
 import { PdfDoc, QuizLanguage } from '../types';
-import { extractPdfText, buildPdfSections, looksScanned, renderPageJpeg, MAX_OCR_PAGES, BuiltSections } from '../services/pdfExtract';
+import { extractPdfText, buildPdfSections, looksScanned, renderPageJpeg, MAX_OCR_PAGES, MAX_PDF_BYTES, BuiltSections, openPdf } from '../services/pdfExtract';
 import { suggestPdfInfo, transcribePdfPages } from '../services/claudeService';
-import { saveNewPdf, updatePdfMeta, deletePdf } from '../services/pdfLibrary';
+import { saveNewPdf, updatePdfMeta, deletePdf, openPdfOriginal, uploadPdfOriginal, storeLocalPdfFile, hasLocalPdfFile, describeStorageError } from '../services/pdfLibrary';
 import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool } from '../services/pdfQuiz';
 
 // ============================================================================
@@ -24,13 +24,14 @@ type Upload =
     | { step: 'reading'; fileName: string; done: number; total: number }
     | { step: 'scanned'; fileName: string; pages: number; file: File }
     | { step: 'ocr'; fileName: string; done: number; total: number }
-    | { step: 'form'; fileName: string; pageCount: number; built: BuiltSections; ocr: boolean; title: string; source: string; suggesting: boolean; edited: boolean }
-    | { step: 'saving'; fileName: string };
+    | { step: 'form'; fileName: string; file: File; pageCount: number; built: BuiltSections; ocr: boolean; title: string; source: string; suggesting: boolean; edited: boolean }
+    | { step: 'saving'; fileName: string; percent?: number };
 
 const LANG_KEY = 'medinote_quiz_language';
 const readLang = (): QuizLanguage => { try { const v = localStorage.getItem(LANG_KEY); return v === 'English' || v === 'Japanese' ? v : 'Korean'; } catch { return 'Korean'; } };
 
 const fmtDate = (t: number) => new Date(t).toLocaleDateString();
+const fmtMB = (b: number) => (b < 1024 * 1024 ? `${Math.max(1, Math.round(b / 1024))}KB` : `${(b / 1024 / 1024).toFixed(b < 10 * 1024 * 1024 ? 1 : 0)}MB`);
 
 const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onStart }) => {
     const fileRef = useRef<HTMLInputElement>(null);
@@ -53,7 +54,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
         setUpload(null);
     };
 
-    const toForm = (fileName: string, pageCount: number, pages: string[], info: { title?: string }, ocr: boolean) => {
+    const toForm = (fileName: string, file: File, pageCount: number, pages: string[], info: { title?: string }, ocr: boolean) => {
         const built = buildPdfSections(pages);
         if (built.sections.length === 0) {
             setError('PDF에서 글을 찾지 못했습니다.');
@@ -61,7 +62,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
             return;
         }
         const fallbackTitle = (info.title && info.title.length > 3 && !/^untitled|microsoft word/i.test(info.title)) ? info.title : fileName.replace(/\.pdf$/i, '');
-        setUpload({ step: 'form', fileName, pageCount, built, ocr, title: fallbackTitle, source: '', suggesting: true, edited: false });
+        setUpload({ step: 'form', fileName, file, pageCount, built, ocr, title: fallbackTitle, source: '', suggesting: true, edited: false });
         // 제목·출처 제안 (첫 두 구간 글로, 짧은 AI 호출) — 그 사이 직접 고쳤으면 덮지 않음
         const first = built.sections.slice(0, 2).map(s => built.texts[s.key]).join('\n\n');
         suggestPdfInfo(first, fileName, info.title)
@@ -85,7 +86,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                 return;
             }
             ex.doc.destroy?.(); pdfRef.current = null;
-            toForm(file.name, ex.pageCount, ex.pages, ex.info, false);
+            toForm(file.name, file, ex.pageCount, ex.pages, ex.info, false);
         } catch (e: any) {
             console.error(e);
             setError(e?.message || 'PDF를 읽지 못했습니다.');
@@ -94,7 +95,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
     };
 
     // 사진(스캔) PDF: 쪽을 그림으로 만들어 3쪽씩 AI가 글자를 읽음
-    const runOcr = async (fileName: string, pageCount: number) => {
+    const runOcr = async (fileName: string, file: File, pageCount: number) => {
         const doc = pdfRef.current;
         if (!doc) { closeUpload(); return; }
         const total = Math.min(pageCount, MAX_OCR_PAGES);
@@ -113,7 +114,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
             }
             doc.destroy?.(); pdfRef.current = null;
             if (pageCount > total) setNotice(`앞 ${total}쪽만 읽었습니다 (사진 PDF는 ${MAX_OCR_PAGES}쪽까지).`);
-            toForm(fileName, pageCount, pages, {}, true);
+            toForm(fileName, file, pageCount, pages, {}, true);
         } catch (e: any) {
             console.error(e);
             setError(`글자 읽기 중 오류: ${e?.message || '알 수 없는 오류'}`);
@@ -142,10 +143,14 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
         };
         setUpload({ step: 'saving', fileName: u.fileName });
         try {
-            const r = await saveNewPdf(doc, u.built.texts);
+            const r = await saveNewPdf(doc, u.built.texts, u.file, (done, total) =>
+                setUpload(x => (x && x.step === 'saving' ? { ...x, percent: total ? Math.round((done / total) * 100) : 0 } : x)));
             setUpload(null);
             setOpenId(null);
-            setNotice(r.cloudOk ? `"${doc.title}" 저장됨 · 구간 ${doc.sections.length}개` : `"${doc.title}"을 이 기기에 저장했어요. 클라우드 저장은 인터넷이 연결되면 다시 시도합니다.`);
+            setNotice(r.cloudOk
+                ? `"${doc.title}" 저장됨 · 구간 ${doc.sections.length}개${r.fileError ? '' : ` · 원본 ${fmtMB(u.file.size)} 보관`}`
+                : `"${doc.title}"을 이 기기에 저장했어요(원본 포함). 클라우드 저장은 인터넷이 연결되면 다시 시도합니다.`);
+            if (r.fileError) setError(r.fileError);
         } catch (e: any) {
             console.error(e);
             setError(`저장 실패: ${e?.message || '알 수 없는 오류'}`);
@@ -176,6 +181,50 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
     };
 
     const busy = !!upload && upload.step !== 'form' && upload.step !== 'scanned';
+
+    // 원본 PDF (§5-77): 열기 / 없으면 올리기(이 기기에 남은 사본이 있으면 그걸, 없으면 파일 고르기)
+    const [fileBusy, setFileBusy] = useState<Record<string, number>>({}); // PDF id → 올리는 중 %
+    const attachRef = useRef<HTMLInputElement>(null);
+    const attachTarget = useRef<PdfDoc | null>(null);
+    const setBusyPct = (id: string, pct: number | null) =>
+        setFileBusy(m => { const n = { ...m }; if (pct === null) delete n[id]; else n[id] = pct; return n; });
+    const openOriginal = (d: PdfDoc) => { openPdfOriginal(d).catch(e => setError(e?.message || '원본을 열지 못했습니다.')); };
+    const uploadOriginal = async (d: PdfDoc) => {
+        setError(null);
+        setBusyPct(d.id, 0);
+        try {
+            await uploadPdfOriginal(d.id, (done, total) => setBusyPct(d.id, total ? Math.round((done / total) * 100) : 0));
+            setNotice(`"${d.title}" 원본 PDF를 보관했어요.`);
+        } catch (e) {
+            setError(describeStorageError(e));
+        } finally {
+            setBusyPct(d.id, null);
+        }
+    };
+    const addOriginal = async (d: PdfDoc) => {
+        if (await hasLocalPdfFile(d.id)) { uploadOriginal(d); return; }
+        attachTarget.current = d;
+        attachRef.current?.click();
+    };
+    const onAttachFile = async (file: File) => {
+        const d = attachTarget.current;
+        attachTarget.current = null;
+        if (!d) return;
+        if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { setError('PDF 파일만 올릴 수 있어요.'); return; }
+        if (file.size > MAX_PDF_BYTES) { setError(`파일이 너무 큽니다 (${fmtMB(file.size)}).`); return; }
+        // 같은 PDF인지 쪽 수로 확인
+        try {
+            const pdf = await openPdf(file);
+            const n = pdf.numPages;
+            pdf.destroy?.();
+            if (n !== d.pageCount && !confirm(`올린 파일은 ${n}쪽인데 "${d.title}"은 ${d.pageCount}쪽이에요. 그래도 원본으로 붙일까요?`)) return;
+        } catch (e: any) {
+            setError(e?.message || 'PDF를 열지 못했습니다.');
+            return;
+        }
+        await storeLocalPdfFile(d.id, file);
+        uploadOriginal(d);
+    };
     const pool = poolStats(docs);
     const togglePool = (d: PdfDoc) => updatePdfMeta(d.id, x => ({ inPool: x.inPool === false ? undefined : false }));
 
@@ -197,6 +246,13 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                     accept="application/pdf,.pdf"
                     className="hidden"
                     onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) handleFile(f); }}
+                />
+                <input
+                    ref={attachRef}
+                    type="file"
+                    accept="application/pdf,.pdf"
+                    className="hidden"
+                    onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onAttachFile(f); }}
                 />
             </div>
 
@@ -249,7 +305,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                         표·그림 안 글자는 틀릴 수 있어요.
                                     </p>
                                     <div className="flex gap-2 mt-3">
-                                        <button onClick={() => runOcr(upload.fileName, upload.pages)} className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold flex items-center gap-1.5">
+                                        <button onClick={() => runOcr(upload.fileName, upload.file, upload.pages)} className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold flex items-center gap-1.5">
                                             <ScanText className="w-4 h-4" /> AI로 글자 읽기
                                         </button>
                                         <button onClick={closeUpload} className="px-4 py-2 rounded-xl border border-slate-200 text-sm font-bold text-slate-500">취소</button>
@@ -262,7 +318,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                 </p>
                             )}
                             {upload.step === 'saving' && (
-                                <p className="mt-2 text-sm text-slate-600 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin text-accent-600" /> 저장 중…</p>
+                                <p className="mt-2 text-sm text-slate-600 flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin text-accent-600" /> {typeof upload.percent === 'number' ? `원본 PDF 올리는 중 ${upload.percent}%` : '저장 중…'}</p>
                             )}
                             {upload.step === 'form' && (
                                 <div className="mt-3 space-y-3">
@@ -271,6 +327,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                         {upload.ocr && ' · AI로 읽은 글'}
                                         {upload.built.refsFromPage ? ` · 참고문헌(p.${upload.built.refsFromPage}~)은 출제에서 뺌` : ''}
                                         {upload.built.truncated && ' · 너무 길어 뒷부분은 잘림'}
+                                        {` · 원본 ${fmtMB(upload.file.size)}도 함께 보관`}
                                     </p>
                                     <label className="block">
                                         <span className="text-xs font-bold text-slate-500 flex items-center gap-1.5">
@@ -386,6 +443,19 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                     <p className="text-[11px] text-slate-400 mt-1.5">
                                         {d.pageCount}쪽 · 구간 {st.sections}개 · {fmtDate(d.createdAt)} 올림{d.ocr ? ' · AI로 읽은 글' : ''}{(d.round || 0) > 0 ? ` · ${(d.round || 0) + 1}바퀴째` : ''}
                                     </p>
+                                    <div className="mt-1.5">
+                                        {typeof fileBusy[d.id] === 'number' ? (
+                                            <span className="text-[12px] text-slate-500 inline-flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 원본 올리는 중 {fileBusy[d.id]}%</span>
+                                        ) : d.file ? (
+                                            <button onClick={() => openOriginal(d)} className="text-[12px] font-bold text-accent-700 hover:text-accent-800 inline-flex items-center gap-1">
+                                                <ExternalLink className="w-3.5 h-3.5" /> 원본 PDF 열기 <span className="font-normal text-slate-400">({fmtMB(d.file.size)})</span>
+                                            </button>
+                                        ) : (
+                                            <button onClick={() => addOriginal(d)} className="text-[12px] font-bold text-slate-500 hover:text-accent-700 inline-flex items-center gap-1">
+                                                <FileUp className="w-3.5 h-3.5" /> 원본 없음 · 원본 PDF 올리기
+                                            </button>
+                                        )}
+                                    </div>
 
                                     <div className="mt-3 h-1.5 rounded-full bg-slate-100 overflow-hidden">
                                         <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${st.percent}%` }} />
@@ -463,6 +533,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                     <div className="text-[11px] text-slate-400 leading-relaxed space-y-1 px-1">
                         <p>PDF 전체로 복습: 여러 PDF를 섞어 내되, PDF마다 앞 구간부터 안 푼 요점이 없어질 때까지 냅니다. 특정 PDF만 집중하려면 그 PDF의 "이 PDF만 풀기"를, 다 본 PDF는 "PDF 복습에 넣기"를 꺼 두세요.</p>
                         <p>문제 만드는 방식: 처음 푸는 구간마다 AI(Haiku)가 그 구간의 요점(수치·권고·기준·기전·결과 등)을 모두 뽑아 요점마다 OX 한 문제를 씁니다. 앞 구간부터 안 푼 요점이 없어질 때까지 내고, 맞힌 요점은 이번 바퀴에서 다시 나오지 않습니다. 정답 근거는 그 PDF 구간이고, 문제 화면에서 원문 구간을 바로 볼 수 있습니다.</p>
+                        <p>원본 PDF는 Firebase Storage에 보관되어 어느 기기에서나 열 수 있습니다(문제 해설의 근거에서도 그 쪽으로 열림). 비용은 보관 5GB·내려받기 월 100GB까지 무료(미국 지역 저장소), 넘으면 GB당 월 약 $0.02.</p>
                         <p>한계: 그림·그래프 속 정보와 표의 칸 구조는 글로 뽑히는 만큼만 들어갑니다. 요점은 AI가 고르므로 아주 사소한 문장까지 하나하나 문제가 되지는 않습니다. 비용은 구간 하나에 약 $0.002 (30쪽 리뷰 약 $0.02~0.03).</p>
                     </div>
                 </div>

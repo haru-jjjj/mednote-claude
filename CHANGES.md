@@ -1389,6 +1389,42 @@
 - 저장: PDF 정보에 `inPool`(false일 때만 저장) 추가, 진행 기록 방식은 그대로.
 - 바뀐 파일: `App.tsx`, `types.ts`, `components/QuizView.tsx`, `components/PdfLibraryView.tsx`, `services/pdfQuiz.ts`, `services/pdfLibrary.ts` (새 파일 없음)
 
+## 5-77. 원본 PDF 보관 (Firebase Storage, Blaze) (요청)
+
+- PDF를 저장할 때 원본 파일도 Firebase Storage `pdfs/<PDF id>.pdf`에 올림(올리는 중 % 표시). 원본은 이 기기 IndexedDB에도 넣어 두어,
+  올리기가 실패하면(오프라인·권한 문제) 다음에 퀴즈·자료실 화면을 열 때 다시 올림.
+- 열기: 자료실 카드 "원본 PDF 열기", 문제 해설의 근거 칸 "원본 PDF p.N"(근거 구간의 첫 쪽으로 — `#page=N`, PDF 뷰어가 지원하면 그 쪽으로 열림).
+  클라우드 사본을 새 창으로 열고(어느 기기에서나), 없으면 이 기기 사본으로.
+- 예전에 올린 PDF: 카드의 "원본 없음 · 원본 PDF 올리기"로 같은 파일을 붙일 수 있음(쪽 수가 다르면 확인을 물음).
+- PDF를 지우면 Storage의 원본도 지움.
+- 새 패키지 없음(`firebase` 안의 `firebase/storage` 사용, 설정의 `storageBucket` 그대로).
+
+### 꼭 해야 할 설정 (Firebase 콘솔, 한 번만)
+
+1. **Storage 시작**: Firebase 콘솔 → 빌드 → Storage → "시작하기". 이미 버킷이 있으면 건너뜀.
+   위치는 `us-central1`(또는 us-east1·us-west1)을 고르면 무료 사용량(보관 5GB, 내려받기 월 100GB)이 적용됨. 서울 등 다른 지역은 무료 사용량 없음(그래도 GB당 월 약 $0.02).
+2. **Storage 규칙**: Storage → 규칙 탭에 아래를 붙여 넣고 "게시". (PDF만, 파일당 60MB 미만, 앱에 로그인한 기기만)
+
+```
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /pdfs/{fileName} {
+      allow read, delete: if request.auth != null;
+      allow create, update: if request.auth != null
+        && request.resource.size < 60 * 1024 * 1024
+        && request.resource.contentType == 'application/pdf';
+    }
+  }
+}
+```
+
+3. **예산 알림(권장)**: Google Cloud 콘솔 → 결제 → 예산 및 알림 → 월 $1~5 예산. 알림만 오고 자동으로 멈추지는 않음.
+   이 앱은 익명 로그인 공용 구조라 설정값을 아는 사람이 쓰면 막을 수 없으므로, 이상 사용을 빨리 알아채는 용도.
+
+- 규칙을 안 바꾸면 저장할 때 "원본 PDF를 올릴 권한이 없습니다" 안내가 뜨고, 글·문제는 그대로 저장되며 원본은 이 기기에 남아 나중에 다시 올림.
+- 바뀐 파일: `services/firebaseService.ts`, `services/pdfLibrary.ts`, `services/pdfQuiz.ts`, `types.ts`, `components/PdfLibraryView.tsx`, `components/QuizView.tsx` (새 파일 없음)
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.

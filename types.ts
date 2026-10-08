@@ -241,6 +241,7 @@ export interface PdfDoc {
     round?: number; // "처음부터 다시"를 누른 횟수 (1바퀴 = 0)
     ocr?: boolean; // 사진(스캔) PDF라 AI로 글자를 읽음
     refsFromPage?: number; // 참고문헌이 시작돼 출제에서 뺀 쪽
+    file?: { path: string; size: number; at: number }; // 원본 PDF (Firebase Storage, §5-77). 없으면 원본 없음(글만)
     inPool?: boolean; // false면 "PDF 복습"(전체 풀)에서 뺌 (§5-76). 없으면 포함
     deleted?: boolean;
 }

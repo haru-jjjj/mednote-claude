@@ -10,7 +10,7 @@ import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/so
 import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo } from '../services/studyUtils';
 import { isRestingUntilDue } from '../services/quizCoverage';
 import { pdfStats, resetPdfRound, poolStats, inPdfPool } from '../services/pdfQuiz';
-import { getPdfDoc, getPdfSectionText, updatePdfMeta } from '../services/pdfLibrary';
+import { getPdfDoc, getPdfSectionText, updatePdfMeta, openPdfOriginal } from '../services/pdfLibrary';
 
 const PERIOD_KEY = 'medinote_quiz_period';
 const readPeriod = (): ReviewPeriod => {
@@ -889,13 +889,31 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                     {currentQ.pdfRef.sectionLabel} · 구간 {currentQ.pdfRef.sectionIndex + 1}/{currentQ.pdfRef.sectionCount}
                                     {currentQ.pdfRef.point ? ` · 요점: ${currentQ.pdfRef.point}` : ''}
                                 </p>
-                                <button
-                                    type="button"
-                                    onClick={() => openPdfSource(currentQ)}
-                                    className="mt-2 text-[11px] font-bold text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"
-                                >
-                                    <FileText className="w-3.5 h-3.5" /> 이 구간 원문 보기
-                                </button>
+                                <div className="mt-2 flex flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => openPdfSource(currentQ)}
+                                        className="text-[11px] font-bold text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"
+                                    >
+                                        <FileText className="w-3.5 h-3.5" /> 이 구간 원문 보기
+                                    </button>
+                                    {(() => {
+                                        // 원본 PDF가 보관돼 있으면 그 쪽으로 열기 (§5-77)
+                                        const ref = currentQ.pdfRef!;
+                                        const d = pdfDocs.find(x => x.id === ref.docId);
+                                        if (!d?.file) return null;
+                                        const page = d.sections.find(x => x.key === ref.sectionKey)?.pageFrom;
+                                        return (
+                                            <button
+                                                type="button"
+                                                onClick={() => openPdfOriginal(d, page).catch(e => alert(e?.message || '원본을 열지 못했습니다.'))}
+                                                className="text-[11px] font-bold text-accent-700 bg-white hover:bg-accent-50 border border-accent-200 px-3 py-1.5 rounded-full inline-flex items-center gap-1.5"
+                                            >
+                                                <ExternalLink className="w-3.5 h-3.5" /> 원본 PDF{page ? ` p.${page}` : ''}
+                                            </button>
+                                        );
+                                    })()}
+                                </div>
                             </div>
                         )}
 

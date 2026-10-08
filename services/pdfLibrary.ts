@@ -3,6 +3,8 @@
 // - 이 기기: 메모와 다른 IndexedDB(MediNotePdfDB)에 보관 → 메모 저장소 버전을 건드리지 않음
 // - 클라우드: Firestore appSettings의 pdfm-/pdft- 문서 (services/firebaseService.ts)
 // - 진행 기록은 구간 단위로 고치고 구간마다 시각(u)을 남겨, 두 기기에서 다른 구간을 풀어도 서로 덮지 않음
+// - 원본 PDF(§5-77): 이 기기 IndexedDB(files)에 먼저 넣고 Firebase Storage(pdfs/<id>.pdf)에 올림.
+//   올리기에 실패하면 이 기기 사본으로 다음 동기화 때 다시 올림
 // ============================================================================
 
 import type { PdfDoc, PdfSectionProgress } from '../types';
@@ -10,24 +12,29 @@ import { mergePdfDocs, sanitizePdfDoc, splitTextsForCloud } from './pdfQuiz';
 import {
     savePdfMetaToFirestore, updatePdfFieldsInFirestore, fetchPdfMetasFromFirestore,
     savePdfTextToFirestore, fetchPdfTextFromFirestore, deletePdfFromFirestore,
+    pdfFilePath, uploadPdfFileToStorage, getPdfFileUrl, deletePdfFileFromStorage,
 } from './firebaseService';
 
 const DB_NAME = 'MediNotePdfDB';
 const DOCS = 'docs';
 const TEXTS = 'texts';
+const FILES = 'files'; // 원본 PDF {id, blob} (§5-77)
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 const openDB = (): Promise<IDBDatabase> => {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 1);
+        const req = indexedDB.open(DB_NAME, 2);
         req.onerror = () => { dbPromise = null; reject(req.error); };
         req.onsuccess = () => resolve(req.result);
         req.onupgradeneeded = () => {
             const db = req.result;
             if (!db.objectStoreNames.contains(DOCS)) db.createObjectStore(DOCS, { keyPath: 'id' });
             if (!db.objectStoreNames.contains(TEXTS)) db.createObjectStore(TEXTS, { keyPath: 'id' });
+            if (!db.objectStoreNames.contains(FILES)) db.createObjectStore(FILES, { keyPath: 'id' });
         };
+        // 다른 탭이 옛 버전으로 열고 있으면 그쪽을 닫게 함
+        req.onblocked = () => console.warn('PDF 저장소 업그레이드가 다른 탭 때문에 대기 중입니다. 다른 MediNote 탭을 닫아 주세요.');
     });
     return dbPromise;
 };
@@ -119,6 +126,12 @@ export const syncPdfDocs = (): Promise<PdfDoc[]> => {
             if (merged.updatedAt > r.updatedAt) Object.assign(push, metaFields(merged));
             if (Object.keys(push).length) updatePdfFieldsInFirestore(r.id, push).catch(e => console.warn('PDF 기록 올리기 실패', e));
         }
+        // 원본 PDF를 이 기기에만 갖고 있고 아직 못 올린 것 → 다시 올림 (§5-77)
+        for (const d of await idbAll<any>(DOCS).catch(() => [])) {
+            const doc = sanitizePdfDoc(d);
+            if (!doc || doc.deleted || doc.file) continue;
+            if (await hasLocalPdfFile(doc.id)) await uploadPdfOriginal(doc.id).catch(e => console.warn('원본 PDF 다시 올리기 실패', e));
+        }
         // 클라우드에 없는 것(처음 저장 때 올리기 실패) → 다시 올림
         for (const l of localAll.values()) {
             if (remoteIds.has(l.id) || l.deleted) continue;
@@ -131,7 +144,7 @@ export const syncPdfDocs = (): Promise<PdfDoc[]> => {
 };
 
 const metaFields = (d: PdfDoc) => ({
-    title: d.title, source: d.source, sections: d.sections, round: d.round ?? null, inPool: d.inPool === false ? false : null, updatedAt: d.updatedAt,
+    title: d.title, source: d.source, sections: d.sections, round: d.round ?? null, inPool: d.inPool === false ? false : null, file: d.file ?? null, updatedAt: d.updatedAt,
 });
 
 const uploadNew = async (d: PdfDoc, texts: Record<string, string>): Promise<PdfDoc> => {
@@ -143,19 +156,36 @@ const uploadNew = async (d: PdfDoc, texts: Record<string, string>): Promise<PdfD
 };
 
 // 새 PDF 저장 (이 기기 먼저, 그다음 클라우드). 클라우드 실패는 다음 동기화 때 다시 올림
-export const saveNewPdf = async (d: PdfDoc, texts: Record<string, string>): Promise<{ doc: PdfDoc; cloudOk: boolean }> => {
+// file이 있으면 원본 PDF도 이 기기에 넣고 Storage에 올림 (§5-77)
+export const saveNewPdf = async (
+    d: PdfDoc,
+    texts: Record<string, string>,
+    file?: Blob,
+    onFileProgress?: (done: number, total: number) => void
+): Promise<{ doc: PdfDoc; cloudOk: boolean; fileError?: string }> => {
     const parts = splitTextsForCloud(d.sections, texts).length;
     const local = { ...d, textParts: parts };
     await idbPut(TEXTS, { id: d.id, texts });
     await idbPut(DOCS, local);
+    if (file) await storeLocalPdfFile(d.id, file).catch(e => console.warn('원본 PDF를 이 기기에 넣지 못함', e));
     setCached(local);
+    let cloudOk = true;
     try {
         await uploadNew(local, texts);
-        return { doc: local, cloudOk: true };
     } catch (e) {
         console.warn('PDF 클라우드 저장 실패 (이 기기에는 저장됨)', e);
-        return { doc: local, cloudOk: false };
+        cloudOk = false;
     }
+    let fileError: string | undefined;
+    if (file && cloudOk) {
+        try {
+            await uploadPdfOriginal(d.id, onFileProgress);
+        } catch (e) {
+            console.warn('원본 PDF 올리기 실패', e);
+            fileError = describeStorageError(e);
+        }
+    }
+    return { doc: (await getPdfDoc(d.id)) || local, cloudOk, fileError };
 };
 
 // 이 기기의 PDF 전부 (최신 기록, 퀴즈 출제용)
@@ -224,7 +254,64 @@ export const getPdfSectionText = async (d: PdfDoc, key: string): Promise<string>
 export const deletePdf = async (d: PdfDoc): Promise<void> => {
     await idbDelete(DOCS, d.id).catch(() => undefined);
     await idbDelete(TEXTS, d.id).catch(() => undefined);
+    await idbDelete(FILES, d.id).catch(() => undefined);
     cache = cache.filter(x => x.id !== d.id);
     emit();
     await deletePdfFromFirestore(d.id, d.textParts);
+    await deletePdfFileFromStorage(d.file?.path || pdfFilePath(d.id)).catch(e => console.warn('원본 PDF 지우기 실패', e));
+};
+
+// ---------------------------------------------------------------------------
+// 원본 PDF (§5-77)
+// ---------------------------------------------------------------------------
+export const hasLocalPdfFile = async (id: string): Promise<boolean> =>
+    !!(await idbGet<{ id: string; blob: Blob }>(FILES, id).catch(() => undefined))?.blob;
+
+export const storeLocalPdfFile = (id: string, blob: Blob): Promise<void> => idbPut(FILES, { id, blob });
+
+// 올리기 실패 이유를 알아듣게
+export const describeStorageError = (e: any): string => {
+    const code = String(e?.code || '');
+    if (code === 'storage/unauthorized') return '원본 PDF를 올릴 권한이 없습니다. Firebase 콘솔 → Storage → 규칙을 CHANGES.md §5-77대로 바꿔 주세요.';
+    if (code === 'storage/unknown' || code === 'storage/bucket-not-found' || code === 'storage/project-not-found') return 'Firebase Storage가 아직 준비되지 않았어요. Firebase 콘솔 → Storage → "시작하기"를 눌러 주세요 (위치는 us-central1 권장: 무료 사용량 적용).';
+    if (code === 'storage/quota-exceeded') return 'Storage 사용 한도를 넘었습니다. Firebase 콘솔의 사용량·요금을 확인해 주세요.';
+    if (code === 'storage/retry-limit-exceeded' || code === 'storage/canceled') return '인터넷 연결이 불안정해 원본 PDF를 올리지 못했습니다. 다음에 앱을 열 때 다시 올립니다.';
+    return `원본 PDF를 올리지 못했습니다 (${code || e?.message || e}). 이 기기에 남겨 두고 다음에 다시 올립니다.`;
+};
+
+// 이 기기에 넣어 둔 원본을 Storage에 올리고, PDF 정보에 기록 (모든 기기에서 열 수 있게)
+const uploadingNow = new Map<string, Promise<PdfDoc | null>>();
+export const uploadPdfOriginal = (id: string, onProgress?: (done: number, total: number) => void): Promise<PdfDoc | null> => {
+    const running = uploadingNow.get(id);
+    if (running) return running;
+    const job = (async () => {
+        const local = await idbGet<{ id: string; blob: Blob }>(FILES, id);
+        if (!local?.blob) throw new Error('이 기기에 원본 PDF가 없습니다.');
+        const path = pdfFilePath(id);
+        await uploadPdfFileToStorage(path, local.blob, onProgress);
+        return updatePdfMeta(id, () => ({ file: { path, size: local.blob.size, at: Date.now() } }));
+    })().finally(() => uploadingNow.delete(id));
+    uploadingNow.set(id, job);
+    return job;
+};
+
+// 원본 열기: 클라우드 사본(어느 기기에서나) → 없으면 이 기기 사본. page가 있으면 그 쪽으로(#page=, 지원하는 뷰어에서)
+// 팝업 차단을 피하려고 창은 누른 순간 먼저 열어 두고 주소를 나중에 넣음
+export const openPdfOriginal = async (d: PdfDoc, page?: number): Promise<void> => {
+    const win = window.open('', '_blank');
+    const hash = page && page > 1 ? `#page=${page}` : '';
+    try {
+        let url: string | null = null;
+        if (d.file?.path) url = await getPdfFileUrl(d.file.path).catch(() => null);
+        if (!url) {
+            const local = await idbGet<{ id: string; blob: Blob }>(FILES, d.id).catch(() => undefined);
+            if (local?.blob) url = URL.createObjectURL(local.blob);
+        }
+        if (!url) throw new Error(d.file ? '원본 PDF 주소를 받지 못했습니다. 인터넷 연결을 확인해 주세요.' : '이 PDF는 원본이 저장되어 있지 않습니다.');
+        if (!win) throw new Error('새 창이 차단됐어요. 브라우저의 팝업 차단을 이 사이트에 대해 풀어 주세요.');
+        win.location.href = url + hash;
+    } catch (e) {
+        win?.close();
+        throw e;
+    }
 };

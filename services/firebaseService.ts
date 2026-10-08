@@ -20,6 +20,7 @@ import {
   increment
 } from "firebase/firestore";
 import { getAuth, signInAnonymously } from "firebase/auth";
+import { getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from "firebase/storage";
 import { v4 as uuidv4 } from 'uuid';
 import { Note } from "../types";
 
@@ -680,5 +681,36 @@ export const deletePdfFromFirestore = async (id: string, textParts: number): Pro
     await setDoc(doc(db, SETTINGS_COLLECTION, pdfMetaId(id)), { id, deleted: true, sections: [], progress: {}, updatedAt: Date.now() });
     for (let n = 0; n < Math.max(1, textParts); n++) {
         await deleteDoc(doc(db, SETTINGS_COLLECTION, pdfTextId(id, n))).catch(() => undefined);
+    }
+};
+
+// ----------------------------------------------------------------------------
+// 원본 PDF 파일 (§5-77): Cloud Storage for Firebase (Blaze 요금제 필요) — pdfs/<id>.pdf
+// 보안 규칙은 CHANGES.md §5-77 참고 (PDF만, 60MB 이하, 로그인한 기기만)
+// ----------------------------------------------------------------------------
+let storageInst: ReturnType<typeof getStorage> | null = null;
+const getStorageInst = () => (storageInst ||= getStorage(app));
+
+export const pdfFilePath = (id: string) => `pdfs/${id}.pdf`;
+
+export const uploadPdfFileToStorage = async (path: string, file: Blob, onProgress?: (done: number, total: number) => void): Promise<void> => {
+    await ensureAuth();
+    const task = uploadBytesResumable(storageRef(getStorageInst(), path), file, { contentType: 'application/pdf' });
+    await new Promise<void>((resolve, reject) => {
+        task.on('state_changed', snap => onProgress?.(snap.bytesTransferred, snap.totalBytes), reject, () => resolve());
+    });
+};
+
+export const getPdfFileUrl = async (path: string): Promise<string> => {
+    await ensureAuth();
+    return getDownloadURL(storageRef(getStorageInst(), path));
+};
+
+export const deletePdfFileFromStorage = async (path: string): Promise<void> => {
+    await ensureAuth();
+    try {
+        await deleteObject(storageRef(getStorageInst(), path));
+    } catch (e: any) {
+        if (e?.code !== 'storage/object-not-found') throw e;
     }
 };
