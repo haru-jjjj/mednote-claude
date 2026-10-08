@@ -1758,6 +1758,35 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
     return item;
 };
 
+// PDF 구간 글 → 읽기 좋은 마크다운 (§5-83). 내용은 그대로, 배치만(끊긴 줄 잇기·문단·제목·목록·확실한 표).
+// 결과가 원래 글과 같은 내용인지는 호출부에서 mdLooksFaithful로 확인 (실패하면 저장하지 않고 원래 글을 보여 줌)
+export const formatPdfSectionMarkdown = async (text: string, context: { docTitle: string; sectionLabel: string }): Promise<string> => {
+    const prompt = [
+        'Reformat the following text extracted from a PDF into clean, readable Markdown.',
+        `DOCUMENT: ${context.docTitle || 'Untitled'} — ${context.sectionLabel}`,
+        '',
+        'STRICT RULES — this is a faithful re-layout, NOT an edit:',
+        '- Keep EVERY sentence, word, number, unit, abbreviation, drug name, recommendation class/level and citation number exactly as written, in the original language and order. Do not summarize, translate, explain, reorder, add or drop anything.',
+        '- Only fix layout: join lines broken in the middle of a sentence, remove hyphenation from line breaks, restore paragraphs.',
+        '- Use "##"/"###" only for lines that are clearly headings in the text (section titles, numbered headings). Do not invent headings.',
+        '- Use "-" lists for bulleted items and "1." only for items that are already numbered in the text — never add numbers that are not in the text.',
+        '- Make a Markdown table ONLY when rows and columns are unambiguous from the text. If the column alignment is uncertain, keep the lines as plain lines instead — never guess which value belongs to which column.',
+        '- Keep figure/table captions as plain paragraphs. You may drop repeated running headers/footers and lone page numbers.',
+        '- Bold (**...**) only what is already a label in the text (e.g. "Recommendation", "Class I"). No other emphasis.',
+        '- Output ONLY the Markdown, no code fences, no comments.',
+        '',
+        'TEXT:',
+        '"""' + text + '"""',
+    ].join('\n');
+    const data = await callClaude({
+        feature: 'pdf',
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        max_tokens: Math.min(14000, Math.ceil(text.length * 1.1) + 1000)
+    });
+    return extractText(data).replace(/^```(?:markdown|md)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+};
+
 // 올린 PDF의 제목·출처 제안 (첫 쪽 글로, 아주 짧은 호출) — 사용자가 고쳐서 저장
 export const suggestPdfInfo = async (firstText: string, fileName: string, metaTitle?: string): Promise<{ title: string; source: string }> => {
     const input = await callForJson({

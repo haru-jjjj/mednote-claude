@@ -714,3 +714,20 @@ export const deletePdfFileFromStorage = async (path: string): Promise<void> => {
         if (e?.code !== 'storage/object-not-found') throw e;
     }
 };
+
+// PDF 구간 읽기용 마크다운 (§5-83): appSettings/pdfmd-<id>-<구간키> (구간 하나에 문서 하나, 보통 수 KB)
+const pdfMdId = (id: string, key: string) => `pdfmd-${id}-${key}`;
+export const savePdfMdToFirestore = async (id: string, key: string, md: string): Promise<void> => {
+    await ensureAuth();
+    await setDoc(doc(db, SETTINGS_COLLECTION, pdfMdId(id, key)), { id, key, md });
+};
+export const fetchPdfMdFromFirestore = async (id: string, key: string): Promise<string | null> => {
+    await ensureAuth();
+    const snap = await getDoc(doc(db, SETTINGS_COLLECTION, pdfMdId(id, key)));
+    const md = snap.exists() ? (snap.data() as any)?.md : null;
+    return typeof md === 'string' ? md : null;
+};
+export const deletePdfMdFromFirestore = async (id: string, keys: string[]): Promise<void> => {
+    await ensureAuth();
+    for (const k of keys) await deleteDoc(doc(db, SETTINGS_COLLECTION, pdfMdId(id, k))).catch(() => undefined);
+};

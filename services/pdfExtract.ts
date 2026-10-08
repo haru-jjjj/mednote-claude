@@ -262,3 +262,36 @@ export const buildPdfSections = (rawPages: string[]): BuiltSections => {
         truncated,
     };
 };
+
+// ----------------------------------------------------------------------------
+// 읽기용 마크다운 정리본이 원래 글과 같은 내용인지 (§5-83) — 순수 함수
+// - 글자(문자·숫자) 양이 원래 글의 88~112% 안
+// - 원래 글의 숫자(수치·용량·기간·쪽 등)가 빠지거나 바뀌지 않았는지: 빠진 숫자 ≤ max(1, 2%), 새로 생긴 숫자 ≤ 2%(50개 미만이면 0)
+// ----------------------------------------------------------------------------
+const stripMd = (md: string) => md
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*>\s?/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/^\s*:?-{3,}:?(\s+:?-{3,}:?)*\s*$/gm, '')
+    .replace(/[*_`~]/g, '');
+const letterCount = (t: string) => (t.match(/[\p{L}\p{N}]/gu) || []).length;
+const numbersOf = (t: string) => (t.match(/\d+(?:[.,]\d+)*/g) || []).map(x => x.replace(/,/g, ''));
+
+export const mdLooksFaithful = (raw: string, md: string): { ok: boolean; ratio: number; missing: number; extra: number } => {
+    const plain = stripMd(md || '');
+    const a = letterCount(raw || '');
+    const b = letterCount(plain);
+    const ratio = a ? b / a : 0;
+    const bag = new Map<string, number>();
+    numbersOf(plain).forEach(n => bag.set(n, (bag.get(n) || 0) + 1));
+    let missing = 0;
+    const rawNums = numbersOf(raw || '');
+    rawNums.forEach(n => { const c = bag.get(n) || 0; if (c > 0) bag.set(n, c - 1); else missing++; });
+    let extra = 0;
+    bag.forEach(c => { extra += c; });
+    const ok = a > 0 && ratio >= 0.88 && ratio <= 1.12
+        && missing <= Math.max(1, Math.ceil(rawNums.length * 0.02))
+        && extra <= Math.floor(rawNums.length * 0.02); // 새로 생긴 숫자는 사실상 0 — 숫자 하나만 바뀌어도 걸러짐
+    return { ok, ratio, missing, extra };
+};

@@ -317,6 +317,7 @@ export const sanitizePdfDoc = (x: any): PdfDoc | null => {
         ocr: x.ocr === true ? true : undefined,
         refsFromPage: typeof x.refsFromPage === 'number' ? x.refsFromPage : undefined,
         inPool: x.inPool === false ? false : undefined,
+        mdKeys: Array.isArray(x.mdKeys) ? x.mdKeys.filter((k: any) => typeof k === 'string' && /^s\d+$/.test(k)) : undefined,
         file: x.file && typeof x.file.path === 'string' ? { path: x.file.path, size: num(x.file.size), at: num(x.file.at) } : undefined,
         deleted: x.deleted === true ? true : undefined,
     };

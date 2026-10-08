@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, FileText, Loader2, Upload, Zap, RotateCw, ChevronDown, ChevronUp, Trash2, Pencil, Check, X, Languages, ScanText, ExternalLink, FileUp } from 'lucide-react';
+import { ArrowLeft, FileText, Loader2, Upload, Zap, RotateCw, ChevronDown, ChevronUp, Trash2, Pencil, Check, X, Languages, ScanText, ExternalLink, FileUp, BookOpen, Sparkles } from 'lucide-react';
 import { PdfDoc, QuizLanguage } from '../types';
 import { extractPdfText, buildPdfSections, looksScanned, renderPageJpeg, MAX_OCR_PAGES, MAX_PDF_BYTES, BuiltSections, openPdf } from '../services/pdfExtract';
-import { suggestPdfInfo, transcribePdfPages } from '../services/claudeService';
-import { saveNewPdf, updatePdfMeta, deletePdf, deletePdfOriginal, openPdfOriginal, uploadPdfOriginal, storeLocalPdfFile, hasLocalPdfFile, describeStorageError } from '../services/pdfLibrary';
+import { suggestPdfInfo, transcribePdfPages, formatMedicalMarkdown } from '../services/claudeService';
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import { saveNewPdf, updatePdfMeta, deletePdf, deletePdfOriginal, openPdfOriginal, uploadPdfOriginal, storeLocalPdfFile, hasLocalPdfFile, describeStorageError, formatPdfForReading, subscribePdfFormat, getPdfFormatState, sectionsToFormat, getPdfSectionMd, getPdfSectionText } from '../services/pdfLibrary';
 import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder } from '../services/pdfQuiz';
 
 // ============================================================================
@@ -50,6 +52,29 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
     const pdfRef = useRef<any>(null);
 
     useEffect(() => () => { cancelRef.current = true; pdfRef.current?.destroy?.(); }, []);
+
+    // 읽기용 정리 진행 상태 (§5-83) — 바뀔 때마다 다시 그림
+    const [, setFmtTick] = useState(0);
+    useEffect(() => subscribePdfFormat(() => setFmtTick(t => t + 1)), []);
+    const startFormat = (d: PdfDoc) => { formatPdfForReading(d.id).catch(e => setError(`정리 중 오류: ${e?.message || e}`)); };
+
+    // 본문 읽기 (§5-83): 구간마다 정리본(없으면 원래 글)
+    const [reader, setReader] = useState<{ doc: PdfDoc; items: { key: string; label: string; md: string | null; raw: string | null }[]; loading: boolean } | null>(null);
+    const openReader = async (d: PdfDoc) => {
+        const secs = d.sections.filter(x => !x.excluded);
+        const items = secs.map(x => ({ key: x.key, label: x.label, md: null as string | null, raw: null as string | null }));
+        setReader({ doc: d, items, loading: true });
+        for (let i = 0; i < secs.length; i++) {
+            const md = await getPdfSectionMd(d, secs[i].key).catch(() => null);
+            const raw = md ? null : await getPdfSectionText(d, secs[i].key).catch(() => '(글을 불러오지 못했습니다)');
+            items[i] = { ...items[i], md, raw };
+            setReader(r => (r && r.doc.id === d.id ? { ...r, items: [...items] } : r));
+        }
+        setReader(r => (r && r.doc.id === d.id ? { ...r, loading: false } : r));
+    };
+    const mdHtml = (md: string) => {
+        try { return { __html: DOMPurify.sanitize(marked.parse(formatMedicalMarkdown(md), { breaks: false, gfm: true }) as string) }; } catch { return { __html: DOMPurify.sanitize(md) }; }
+    };
 
     const closeUpload = () => {
         cancelRef.current = true;
@@ -155,6 +180,8 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                 ? `"${doc.title}" 저장됨 · 구간 ${doc.sections.length}개${r.fileError ? '' : ` · 원본 ${fmtMB(u.file.size)} 보관`}`
                 : `"${doc.title}"을 이 기기에 저장했어요(원본 포함). 클라우드 저장은 인터넷이 연결되면 다시 시도합니다.`);
             if (r.fileError) setError(r.fileError);
+            // 읽기용 정리는 뒤에서 (문제 풀기는 바로 가능 — 출제는 원래 글로) §5-83
+            formatPdfForReading(doc.id).catch(e => console.warn('정리 시작 실패', e));
         } catch (e: any) {
             console.error(e);
             setError(`저장 실패: ${e?.message || '알 수 없는 오류'}`);
@@ -516,6 +543,29 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                             </button>
                                         )}
                                     </div>
+                                    {/* 읽기용 정리 + 본문 읽기 (§5-83) */}
+                                    {(() => {
+                                        const fs = getPdfFormatState(d.id);
+                                        const left = sectionsToFormat(d).length;
+                                        const doneN = (d.mdKeys || []).length;
+                                        return (
+                                            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+                                                <button onClick={() => openReader(d)} className="font-bold text-accent-700 hover:text-accent-800 inline-flex items-center gap-1">
+                                                    <BookOpen className="w-3.5 h-3.5" /> 본문 읽기
+                                                </button>
+                                                {fs?.running ? (
+                                                    <span className="text-slate-500 inline-flex items-center gap-1"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 읽기 좋게 정리 중 {fs.done}/{fs.total}</span>
+                                                ) : left > 0 ? (
+                                                    <button onClick={() => startFormat(d)} className="text-slate-500 hover:text-accent-700 inline-flex items-center gap-1" title="구간마다 AI가 제목·목록·문단으로 정리 (내용·숫자는 그대로인지 확인)">
+                                                        <Sparkles className="w-3.5 h-3.5" /> {doneN > 0 ? `정리 안 된 구간 ${left}개 정리` : '읽기 좋게 정리'} <span className="text-slate-400">(약 ${Math.max(0.01, left * 0.002).toFixed(2)})</span>
+                                                    </button>
+                                                ) : doneN > 0 ? (
+                                                    <span className="text-slate-400">읽기 좋게 정리됨</span>
+                                                ) : null}
+                                                {fs && !fs.running && fs.failed > 0 && <span className="text-clay-500">{fs.failed}구간은 원래 글과 달라 정리본을 쓰지 않음</span>}
+                                            </div>
+                                        );
+                                    })()}
 
                                     <div className="mt-3 h-1.5 rounded-full bg-slate-100 overflow-hidden">
                                         <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${st.percent}%` }} />
@@ -594,10 +644,43 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                         <p>문제 형식: OX는 구간의 요점을 한 번에 만들어 빠르고, 케이스는 요점 하나마다 임상 상황 5지선다를 따로 만들어 문제마다 몇 초 더 걸립니다(요점당 약 $0.001). 어느 형식으로 풀어도 같은 요점 진도에 기록됩니다.</p>
                         <p>문제 만드는 방식: 처음 푸는 구간마다 AI(Haiku)가 그 구간의 요점(수치·권고·기준·기전·결과 등)을 모두 뽑아 요점마다 OX 한 문제를 씁니다. 안 푼 요점이 없어질 때까지 내고(무작위여도 빠지는 요점 없음), 맞힌 요점은 이번 바퀴에서 다시 나오지 않습니다. 정답 근거는 그 PDF 구간이고, 문제 화면에서 원문 구간을 바로 볼 수 있습니다.</p>
                         <p>원본 PDF는 Firebase Storage에 보관되어 어느 기기에서나 열 수 있습니다(문제 해설의 근거에서도 그 쪽으로 열림). 비용은 보관 5GB·내려받기 월 100GB까지 무료(미국 지역 저장소), 넘으면 GB당 월 약 $0.02.</p>
+                        <p>본문 읽기: 구간마다 AI가 끊긴 줄을 잇고 제목·목록·문단(칸이 확실한 표만 표로)으로 정리한 글을 보여 줍니다. 글자 양과 숫자가 원래 글과 같은지 확인한 것만 저장하고, 문제 출제·채점은 계속 원래 뽑은 글로 합니다. 구간당 약 $0.002.</p>
                         <p>한계: 그림·그래프 속 정보와 표의 칸 구조는 글로 뽑히는 만큼만 들어갑니다. 요점은 AI가 고르므로 아주 사소한 문장까지 하나하나 문제가 되지는 않습니다. 정답은 만든 뒤 구간 글로 한 번 더 따로 채점해, 맞지 않으면 버리고 다시 만듭니다. 비용은 검증 포함 구간 하나에 약 $0.003 (30쪽 리뷰 약 $0.03~0.04).</p>
                     </div>
                 </div>
             </div>
+
+            {/* 본문 읽기 (§5-83) */}
+            {reader && (
+                <div className="fixed inset-0 z-50 bg-white flex flex-col">
+                    <div className="h-12 px-2 border-b border-slate-100 flex items-center gap-1 flex-none">
+                        <button onClick={() => setReader(null)} className="p-2 text-slate-500 hover:text-slate-800" title="닫기"><ArrowLeft className="w-5 h-5" /></button>
+                        <h2 className="font-bold text-slate-800 truncate text-[15px]">{reader.doc.title}</h2>
+                        {reader.loading && <Loader2 className="ml-auto mr-2 w-4 h-4 animate-spin text-slate-400" />}
+                    </div>
+                    <div className="flex-1 overflow-y-auto">
+                        <div className="max-w-2xl mx-auto px-4 md:px-6 py-5">
+                            {reader.doc.source && <p className="text-[12px] text-slate-500 mb-4">{reader.doc.source}</p>}
+                            {reader.items.map(it => (
+                                <section key={it.key} className="mb-8">
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <span className="text-[11px] font-bold text-slate-400">{it.label}</span>
+                                        {it.raw !== null && !it.md && <span className="text-[10px] text-slate-400 border border-slate-200 rounded px-1">정리 전 글</span>}
+                                        <div className="flex-1 border-t border-slate-100" />
+                                    </div>
+                                    {it.md ? (
+                                        <div className="prose prose-sm prose-slate max-w-none" lang={/[\u3040-\u30ff]/.test(it.md) ? 'ja' : undefined} dangerouslySetInnerHTML={mdHtml(it.md)} />
+                                    ) : it.raw !== null ? (
+                                        <p className="text-[13px] text-slate-700 leading-relaxed whitespace-pre-wrap">{it.raw}</p>
+                                    ) : (
+                                        <p className="text-[12px] text-slate-400 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 불러오는 중…</p>
+                                    )}
+                                </section>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

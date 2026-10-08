@@ -5,6 +5,7 @@
 // - 진행 기록은 구간 단위로 고치고 구간마다 시각(u)을 남겨, 두 기기에서 다른 구간을 풀어도 서로 덮지 않음
 // - 원본 PDF(§5-77): 이 기기 IndexedDB(files)에 먼저 넣고 Firebase Storage(pdfs/<id>.pdf)에 올림.
 //   올리기에 실패하면 이 기기 사본으로 다음 동기화 때 다시 올림
+// - 읽기용 마크다운 정리본(§5-83): 구간마다 IndexedDB(md) + Firestore pdfmd-<id>-<구간키>. 출제·채점은 계속 원래 뽑은 글로
 // ============================================================================
 
 import type { PdfDoc, PdfSectionProgress } from '../types';
@@ -13,18 +14,22 @@ import {
     savePdfMetaToFirestore, updatePdfFieldsInFirestore, fetchPdfMetasFromFirestore,
     savePdfTextToFirestore, fetchPdfTextFromFirestore, deletePdfFromFirestore,
     pdfFilePath, uploadPdfFileToStorage, getPdfFileUrl, deletePdfFileFromStorage,
+    savePdfMdToFirestore, fetchPdfMdFromFirestore, deletePdfMdFromFirestore,
 } from './firebaseService';
+import { formatPdfSectionMarkdown } from './claudeService';
+import { mdLooksFaithful } from './pdfExtract';
 
 const DB_NAME = 'MediNotePdfDB';
 const DOCS = 'docs';
 const TEXTS = 'texts';
 const FILES = 'files'; // 원본 PDF {id, blob} (§5-77)
+const MD = 'md'; // 읽기용 마크다운 {k: "<id>:<구간키>", md} (§5-83)
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 const openDB = (): Promise<IDBDatabase> => {
     if (dbPromise) return dbPromise;
     dbPromise = new Promise((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 2);
+        const req = indexedDB.open(DB_NAME, 3);
         req.onerror = () => { dbPromise = null; reject(req.error); };
         req.onsuccess = () => resolve(req.result);
         req.onupgradeneeded = () => {
@@ -32,6 +37,7 @@ const openDB = (): Promise<IDBDatabase> => {
             if (!db.objectStoreNames.contains(DOCS)) db.createObjectStore(DOCS, { keyPath: 'id' });
             if (!db.objectStoreNames.contains(TEXTS)) db.createObjectStore(TEXTS, { keyPath: 'id' });
             if (!db.objectStoreNames.contains(FILES)) db.createObjectStore(FILES, { keyPath: 'id' });
+            if (!db.objectStoreNames.contains(MD)) db.createObjectStore(MD, { keyPath: 'k' });
         };
         // 다른 탭이 옛 버전으로 열고 있으면 그쪽을 닫게 함
         req.onblocked = () => console.warn('PDF 저장소 업그레이드가 다른 탭 때문에 대기 중입니다. 다른 MediNote 탭을 닫아 주세요.');
@@ -144,7 +150,7 @@ export const syncPdfDocs = (): Promise<PdfDoc[]> => {
 };
 
 const metaFields = (d: PdfDoc) => ({
-    title: d.title, source: d.source, sections: d.sections, round: d.round ?? null, inPool: d.inPool === false ? false : null, file: d.file ?? null, updatedAt: d.updatedAt,
+    title: d.title, source: d.source, sections: d.sections, round: d.round ?? null, inPool: d.inPool === false ? false : null, file: d.file ?? null, mdKeys: d.mdKeys ?? null, updatedAt: d.updatedAt,
 });
 
 const uploadNew = async (d: PdfDoc, texts: Record<string, string>): Promise<PdfDoc> => {
@@ -255,10 +261,12 @@ export const deletePdf = async (d: PdfDoc): Promise<void> => {
     await idbDelete(DOCS, d.id).catch(() => undefined);
     await idbDelete(TEXTS, d.id).catch(() => undefined);
     await idbDelete(FILES, d.id).catch(() => undefined);
+    for (const s2 of d.sections) await idbDelete(MD, `${d.id}:${s2.key}`).catch(() => undefined);
     cache = cache.filter(x => x.id !== d.id);
     emit();
     await deletePdfFromFirestore(d.id, d.textParts);
     await deletePdfFileFromStorage(d.file?.path || pdfFilePath(d.id)).catch(e => console.warn('원본 PDF 지우기 실패', e));
+    await deletePdfMdFromFirestore(d.id, d.mdKeys || []).catch(e => console.warn('정리본 지우기 실패', e));
 };
 
 // ---------------------------------------------------------------------------
@@ -321,4 +329,71 @@ export const openPdfOriginal = async (d: PdfDoc, page?: number): Promise<void> =
         win?.close();
         throw e;
     }
+};
+
+// ---------------------------------------------------------------------------
+// 읽기용 마크다운 정리본 (§5-83)
+// ---------------------------------------------------------------------------
+// 구간 정리본 (없으면 null → 원래 글을 보여 줌). 이 기기에 없고 정리된 구간이면 클라우드에서 받아 보관
+export const getPdfSectionMd = async (d: PdfDoc, key: string): Promise<string | null> => {
+    const local = await idbGet<{ k: string; md: string }>(MD, `${d.id}:${key}`).catch(() => undefined);
+    if (typeof local?.md === 'string') return local.md;
+    if (!(d.mdKeys || []).includes(key)) return null;
+    const md = await fetchPdfMdFromFirestore(d.id, key).catch(() => null);
+    if (md) await idbPut(MD, { k: `${d.id}:${key}`, md }).catch(() => undefined);
+    return md;
+};
+
+export interface PdfFormatState { done: number; total: number; failed: number; running: boolean }
+const fmtStates = new Map<string, PdfFormatState>();
+const fmtListeners = new Set<() => void>();
+const fmtEmit = () => fmtListeners.forEach(fn => fn());
+export const subscribePdfFormat = (fn: () => void): (() => void) => { fmtListeners.add(fn); return () => { fmtListeners.delete(fn); }; };
+export const getPdfFormatState = (id: string): PdfFormatState | undefined => fmtStates.get(id);
+
+// 정리할 구간 (출제에서 뺀 구간·낼 내용 없는 구간은 건너뜀)
+export const sectionsToFormat = (d: PdfDoc) =>
+    d.sections.filter(s2 => !s2.excluded && !d.progress?.[s2.key]?.empty && !(d.mdKeys || []).includes(s2.key));
+
+// 구간마다 AI로 정리 (2개씩 동시에). 원래 글과 같은 내용(글자 양·숫자)으로 확인된 것만 저장
+export const formatPdfForReading = async (id: string): Promise<PdfFormatState | undefined> => {
+    if (fmtStates.get(id)?.running) return fmtStates.get(id);
+    const d = await getPdfDoc(id);
+    if (!d) return undefined;
+    const targets = sectionsToFormat(d);
+    const state: PdfFormatState = { done: 0, total: targets.length, failed: 0, running: targets.length > 0 };
+    fmtStates.set(id, state);
+    fmtEmit();
+    let next = 0;
+    const worker = async () => {
+        while (next < targets.length) {
+            const sec = targets[next++];
+            try {
+                const latest = (await getPdfDoc(id)) || d;
+                const raw = await getPdfSectionText(latest, sec.key);
+                const md = await formatPdfSectionMarkdown(raw, { docTitle: latest.title, sectionLabel: sec.label });
+                const check = mdLooksFaithful(raw, md);
+                if (!check.ok) {
+                    console.warn('정리본이 원래 글과 달라 저장하지 않음', sec.label, check);
+                    state.failed++;
+                } else {
+                    await idbPut(MD, { k: `${id}:${sec.key}`, md });
+                    await savePdfMdToFirestore(id, sec.key, md).catch(e => console.warn('정리본 클라우드 저장 실패', e));
+                    await updatePdfMeta(id, x => ({ mdKeys: Array.from(new Set([...(x.mdKeys || []), sec.key])) }));
+                }
+            } catch (e) {
+                console.warn('구간 정리 실패', sec.label, e);
+                state.failed++;
+            }
+            state.done++;
+            fmtEmit();
+        }
+    };
+    try {
+        await Promise.all([worker(), worker()]);
+    } finally {
+        state.running = false;
+        fmtEmit();
+    }
+    return state;
 };

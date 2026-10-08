@@ -1485,6 +1485,25 @@ service firebase.storage {
 - 이미 만들어 둔 PDF 문제는 검증 전에 만든 것이라 이상한 문제가 남아 있을 수 있음 → 위 버튼으로 빼면 새로(검증 거쳐) 만듦.
 - 바뀐 파일: `services/claudeService.ts`, `services/pdfQuiz.ts`, `types.ts`, `App.tsx`, `components/QuizView.tsx`, `components/PdfLibraryView.tsx` (새 파일 없음)
 
+## 5-83. PDF 글을 읽기 좋은 마크다운으로 정리해 보관 (요청)
+
+- PDF에서 뽑은 글은 줄이 중간에 끊기고 제목·목록 구분이 없어 읽기 불편 → 구간마다 AI(Haiku)가 **읽기용 정리본**을 만들어 따로 보관.
+  - 정리 방식: 끊긴 줄 잇기·하이픈 제거·문단 복원, 글에 있는 제목만 `##`/`###`, 글머리표·번호 목록, **칸이 확실할 때만** 표
+    (값이 어느 칸인지 애매하면 표로 만들지 않고 줄 그대로). 문장·단어·숫자·약어·권고 등급·인용 번호는 원래 그대로, 요약·번역·추가 금지.
+  - **같은 내용인지 확인 후에만 저장**(`mdLooksFaithful`): 글자 양이 원래의 88~112%, 원래 글의 숫자가 빠진 것 ≤ max(1, 2%),
+    새로 생긴 숫자 ≤ 2%(50개 미만이면 0) → 숫자 하나만 바뀌어도 그 구간 정리본은 버리고 원래 글을 보여 줌.
+  - **문제 출제·정답 채점은 계속 원래 뽑은 글로**(정리본은 읽기 전용).
+- 언제 만드나: 새로 올린 PDF는 저장 직후 뒤에서 자동(2구간씩 동시에, 그동안 문제 풀기 가능). 이미 올린 PDF는 카드의 "읽기 좋게 정리"(예상 비용 표시).
+  출제에서 뺀 구간·낼 내용 없는 구간은 건너뜀. 실패한 구간은 "정리 안 된 구간 n개 정리"로 다시.
+- 보는 곳
+  - 자료실 카드 **"본문 읽기"**: PDF 전체를 구간 순서대로(정리본, 없으면 "정리 전 글" 표시와 함께 원래 글).
+  - 문제 해설의 **"이 구간 원문 보기"**: 정리본이 기본, "원래 뽑은 글로 보기"로 전환.
+- 저장: 이 기기 IndexedDB `MediNotePdfDB` v3 `md` 저장소, 클라우드 `appSettings/pdfmd-<PDF id>-<구간키>`(구간 하나에 문서 하나), PDF 정보 `mdKeys`.
+  PDF를 지우면 정리본도 지움.
+- 비용: 구간당 약 $0.002(입력·출력 각 약 3천 토큰, Haiku 5.5) → 30쪽 리뷰 약 $0.02~0.03.
+- 바뀐 파일: `services/pdfExtract.ts`, `services/pdfLibrary.ts`, `services/claudeService.ts`, `services/firebaseService.ts`, `services/pdfQuiz.ts`, `types.ts`,
+  `components/PdfLibraryView.tsx`, `components/QuizView.tsx` (새 파일 없음)
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.

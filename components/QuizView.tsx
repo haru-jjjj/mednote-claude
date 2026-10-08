@@ -10,7 +10,7 @@ import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/so
 import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo, stripInlineOptions, stripOptionLabel } from '../services/studyUtils';
 import { isRestingUntilDue } from '../services/quizCoverage';
 import { pdfStats, resetPdfRound, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder } from '../services/pdfQuiz';
-import { getPdfDoc, getPdfSectionText, updatePdfMeta, openPdfOriginal } from '../services/pdfLibrary';
+import { getPdfDoc, getPdfSectionText, getPdfSectionMd, updatePdfMeta, openPdfOriginal } from '../services/pdfLibrary';
 
 const PERIOD_KEY = 'medinote_quiz_period';
 const readPeriod = (): ReviewPeriod => {
@@ -89,7 +89,8 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   const setPdfOrder = (o: PdfOrder) => { setPdfOrderState(o); savePdfOrder(o); };
 
   // PDF 문제: 근거가 된 PDF 구간 원문 보기 (§5-75)
-  const [pdfSourceText, setPdfSourceText] = useState<{ label: string; text: string | null; error?: string } | null>(null);
+  // md: 읽기용 정리본(§5-83, 있으면 기본으로 보여 줌), showRaw: 원래 뽑은 글로 보기
+  const [pdfSourceText, setPdfSourceText] = useState<{ label: string; text: string | null; md?: string | null; showRaw?: boolean; error?: string } | null>(null);
   const openPdfSource = async (q: QuizQuestion) => {
       const ref = q.pdfRef;
       if (!ref) return;
@@ -98,7 +99,8 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
           const d = await getPdfDoc(ref.docId);
           if (!d) throw new Error('PDF를 찾지 못했습니다 (지워졌을 수 있어요).');
           const text = await getPdfSectionText(d, ref.sectionKey);
-          setPdfSourceText({ label: `${ref.docTitle} · ${ref.sectionLabel}`, text });
+          const md = await getPdfSectionMd(d, ref.sectionKey).catch(() => null);
+          setPdfSourceText({ label: `${ref.docTitle} · ${ref.sectionLabel}`, text, md });
       } catch (e: any) {
           setPdfSourceText({ label: `${ref.docTitle} · ${ref.sectionLabel}`, text: '', error: e?.message || '원문을 불러오지 못했습니다.' });
       }
@@ -1065,9 +1067,22 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                         ) : pdfSourceText.error ? (
                             <p className="text-sm text-red-500">{pdfSourceText.error}</p>
                         ) : (
-                            <p className="text-[13px] text-slate-700 leading-relaxed whitespace-pre-wrap" lang={hasKana(pdfSourceText.text) ? 'ja' : undefined}>{pdfSourceText.text}</p>
+                            pdfSourceText.md && !pdfSourceText.showRaw
+                                ? <div className="prose prose-sm prose-slate max-w-none" lang={hasKana(pdfSourceText.md) ? 'ja' : undefined} dangerouslySetInnerHTML={renderMarkdown(pdfSourceText.md)} />
+                                : <p className="text-[13px] text-slate-700 leading-relaxed whitespace-pre-wrap" lang={hasKana(pdfSourceText.text) ? 'ja' : undefined}>{pdfSourceText.text}</p>
                         )}
-                        <p className="text-[11px] text-slate-400 mt-4">PDF에서 뽑은 글 그대로입니다 (머리말·쪽 번호 등은 뺌). 표는 줄이 섞여 보일 수 있어요.</p>
+                        <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                            <span>
+                                {pdfSourceText.md && !pdfSourceText.showRaw
+                                    ? '읽기 좋게 정리한 글입니다 (내용·숫자는 원래 글과 같은지 확인한 것만). 문제의 정답 근거는 원래 뽑은 글입니다.'
+                                    : 'PDF에서 뽑은 글 그대로입니다 (머리말·쪽 번호 등은 뺌). 표는 줄이 섞여 보일 수 있어요.'}
+                            </span>
+                            {pdfSourceText.md && (
+                                <button type="button" onClick={() => setPdfSourceText(x => (x ? { ...x, showRaw: !x.showRaw } : x))} className="font-bold text-accent-700 hover:text-accent-800">
+                                    {pdfSourceText.showRaw ? '정리한 글로 보기' : '원래 뽑은 글로 보기'}
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
              </div>
