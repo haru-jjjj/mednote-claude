@@ -259,6 +259,7 @@ export interface QuizState {
     source: 'RANDOM' | 'REVIEW' | 'WRONG' | 'PERIOD' | 'PDF';
     pdfId?: string; // source가 PDF일 때: 이 PDF만. 없으면 전체 풀(PDF 복습에 넣어 둔 모든 PDF) (§5-76)
     pdfMode?: 'all' | 'wrong'; // all: 안 푼 요점부터 / wrong: 틀린 요점만 다시
+    pdfOrder?: 'seq' | 'random'; // 출제 순서: 앞에서부터 / 구간 무작위 (§5-81)
     period?: 'today' | '1w' | '2w' | '1m' | '3m'; // source가 PERIOD일 때
     periodAll?: boolean; // 기간별 복습: 맞혀서 쉬는 메모까지 포함 (§5-72)
     // 더 낼 문제가 없음(오늘 복습을 다 만들었거나, 오답 다시 풀기 목록이 끝남)

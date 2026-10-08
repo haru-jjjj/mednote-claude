@@ -4,7 +4,7 @@ import { PdfDoc, QuizLanguage } from '../types';
 import { extractPdfText, buildPdfSections, looksScanned, renderPageJpeg, MAX_OCR_PAGES, MAX_PDF_BYTES, BuiltSections, openPdf } from '../services/pdfExtract';
 import { suggestPdfInfo, transcribePdfPages } from '../services/claudeService';
 import { saveNewPdf, updatePdfMeta, deletePdf, deletePdfOriginal, openPdfOriginal, uploadPdfOriginal, storeLocalPdfFile, hasLocalPdfFile, describeStorageError } from '../services/pdfLibrary';
-import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, readPdfQuizFormat, savePdfQuizFormat } from '../services/pdfQuiz';
+import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder } from '../services/pdfQuiz';
 
 // ============================================================================
 // PDF 자료실 (§5-75)
@@ -17,7 +17,7 @@ interface Props {
     loading: boolean;
     syncError: string | null;
     onBack: () => void;
-    onStart: (id: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format?: PdfQuizFormat) => void; // null = PDF 전체 풀 (§5-76), format §5-79
+    onStart: (id: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format?: PdfQuizFormat, order?: PdfOrder) => void; // null = PDF 전체 풀 (§5-76), format §5-79, order §5-81
 }
 
 type Upload =
@@ -43,6 +43,8 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
     const [language, setLanguageState] = useState<QuizLanguage>(readLang);
     const [format, setFormatState] = useState<PdfQuizFormat>(readPdfQuizFormat);
     const setFormat = (f: PdfQuizFormat) => { setFormatState(f); savePdfQuizFormat(f); };
+    const [order, setOrderState] = useState<PdfOrder>(readPdfOrder);
+    const setOrder = (o: PdfOrder) => { setOrderState(o); savePdfOrder(o); };
     const setLanguage = (l: QuizLanguage) => { setLanguageState(l); try { localStorage.setItem(LANG_KEY, l); } catch { /* 이번 화면에선 동작 */ } };
     const cancelRef = useRef(false);
     const pdfRef = useRef<any>(null);
@@ -296,6 +298,22 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                         <span className="text-[11px] text-slate-400">{format === 'DETAILED' ? '요점마다 임상 상황 5지선다' : format === 'MIXED' ? '요점마다 케이스·OX 반반' : '요점마다 참/거짓'}</span>
                     </div>
 
+                    {/* 출제 순서 (§5-81) */}
+                    <div className="flex flex-wrap items-center gap-2 text-[12px] text-slate-500 -mt-2">
+                        <span>출제 순서</span>
+                        {(['random', 'seq'] as PdfOrder[]).map(o => (
+                            <button
+                                key={o}
+                                type="button"
+                                onClick={() => setOrder(o)}
+                                className={`px-2.5 py-1 rounded-lg border font-bold ${order === o ? 'bg-accent-50 border-accent-300 text-accent-700' : 'bg-white border-slate-200 text-slate-500'}`}
+                            >
+                                {o === 'random' ? '무작위' : '앞에서부터'}
+                            </button>
+                        ))}
+                        <span className="text-[11px] text-slate-400">{order === 'random' ? '구간 순서를 섞고, 펼친 구간은 마저 풀고 다음 구간으로' : 'p.1부터 차례로'}</span>
+                    </div>
+
                     {error && (
                         <div className="p-3 rounded-xl bg-red-50 border border-red-100 text-sm text-red-600 flex items-start gap-2">
                             <span className="flex-1">{error}</span>
@@ -390,7 +408,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                         <div className="bg-white border border-accent-200 rounded-2xl p-5">
                             <h3 className="font-bold text-slate-900">PDF 전체로 복습</h3>
                             <p className="text-[12px] text-slate-500 mt-1 leading-relaxed">
-                                "PDF 복습에 넣기"가 켜진 PDF {pool.docs}개를 섞어서 냅니다. 각 PDF 안에서는 앞 구간부터 빠짐없이, 남은 양이 많은 PDF가 더 자주 나와요.
+                                "PDF 복습에 넣기"가 켜진 PDF {pool.docs}개를 섞어서 냅니다. 안 푼 요점만 내서 빠짐없이, 남은 양이 많은 PDF가 더 자주 나와요.
                             </p>
                             <div className="mt-3 h-1.5 rounded-full bg-slate-100 overflow-hidden">
                                 <div className="h-full rounded-full bg-accent-500 transition-all" style={{ width: `${pool.percent}%` }} />
@@ -405,7 +423,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                             if (!confirm('복습에 넣은 PDF를 모두 처음부터 다시 풀까요? 같은 요점을 새 문장으로 다시 냅니다.')) return;
                                             for (const d of docs.filter(inPdfPool)) await updatePdfMeta(d.id, x => ({ progress: resetPdfRound(x, Date.now()), round: (x.round || 0) + 1 }));
                                         }
-                                        onStart(null, 'all', language, format);
+                                        onStart(null, 'all', language, format, order);
                                     }}
                                     disabled={pool.docs === 0}
                                     className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 flex items-center gap-1.5 disabled:opacity-40"
@@ -413,7 +431,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                     <Zap className="w-4 h-4" /> {pool.allDone ? '모두 처음부터 다시' : pool.sectionsDone + pool.ok + pool.wrong === 0 ? 'PDF 전체 풀기' : '이어서 풀기'}
                                 </button>
                                 {pool.wrong > 0 && (
-                                    <button onClick={() => onStart(null, 'wrong', language, format)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
+                                    <button onClick={() => onStart(null, 'wrong', language, format, order)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
                                         <RotateCw className="w-4 h-4" /> 틀린 것 {pool.wrong}개
                                     </button>
                                 )}
@@ -512,14 +530,14 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
 
                                     <div className="flex flex-wrap gap-2 mt-3">
                                         <button
-                                            onClick={async () => { if (st.roundDone) { if (await restart(d)) onStart(d.id, 'all', language, format); } else onStart(d.id, 'all', language, format); }}
+                                            onClick={async () => { if (st.roundDone) { if (await restart(d)) onStart(d.id, 'all', language, format, order); } else onStart(d.id, 'all', language, format, order); }}
                                             disabled={st.sections === 0}
                                             className="px-4 py-2 rounded-xl bg-white border border-accent-300 text-accent-700 text-sm font-bold hover:bg-accent-50 flex items-center gap-1.5 disabled:opacity-40"
                                         >
                                             <Zap className="w-4 h-4" /> {notStarted ? '이 PDF만 풀기' : st.roundDone ? '처음부터 다시' : '이 PDF만 이어서'}
                                         </button>
                                         {st.wrong > 0 && (
-                                            <button onClick={() => onStart(d.id, 'wrong', language, format)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
+                                            <button onClick={() => onStart(d.id, 'wrong', language, format, order)} className="px-4 py-2 rounded-xl bg-white border border-clay-300 text-clay-600 text-sm font-bold hover:bg-clay-50 flex items-center gap-1.5">
                                                 <RotateCw className="w-4 h-4" /> 틀린 것 {st.wrong}개
                                             </button>
                                         )}
@@ -572,9 +590,9 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                     {syncError && <p className="text-[11px] text-clay-500 px-1">{syncError}</p>}
 
                     <div className="text-[11px] text-slate-400 leading-relaxed space-y-1 px-1">
-                        <p>PDF 전체로 복습: 여러 PDF를 섞어 내되, PDF마다 앞 구간부터 안 푼 요점이 없어질 때까지 냅니다. 특정 PDF만 집중하려면 그 PDF의 "이 PDF만 풀기"를, 다 본 PDF는 "PDF 복습에 넣기"를 꺼 두세요.</p>
+                        <p>PDF 전체로 복습: 여러 PDF를 섞어 내되, PDF마다 안 푼 요점이 없어질 때까지 냅니다(출제 순서: 무작위 = 구간 순서를 섞음, 앞에서부터 = p.1부터). 특정 PDF만 집중하려면 그 PDF의 "이 PDF만 풀기"를, 다 본 PDF는 "PDF 복습에 넣기"를 꺼 두세요.</p>
                         <p>문제 형식: OX는 구간의 요점을 한 번에 만들어 빠르고, 케이스는 요점 하나마다 임상 상황 5지선다를 따로 만들어 문제마다 몇 초 더 걸립니다(요점당 약 $0.001). 어느 형식으로 풀어도 같은 요점 진도에 기록됩니다.</p>
-                        <p>문제 만드는 방식: 처음 푸는 구간마다 AI(Haiku)가 그 구간의 요점(수치·권고·기준·기전·결과 등)을 모두 뽑아 요점마다 OX 한 문제를 씁니다. 앞 구간부터 안 푼 요점이 없어질 때까지 내고, 맞힌 요점은 이번 바퀴에서 다시 나오지 않습니다. 정답 근거는 그 PDF 구간이고, 문제 화면에서 원문 구간을 바로 볼 수 있습니다.</p>
+                        <p>문제 만드는 방식: 처음 푸는 구간마다 AI(Haiku)가 그 구간의 요점(수치·권고·기준·기전·결과 등)을 모두 뽑아 요점마다 OX 한 문제를 씁니다. 안 푼 요점이 없어질 때까지 내고(무작위여도 빠지는 요점 없음), 맞힌 요점은 이번 바퀴에서 다시 나오지 않습니다. 정답 근거는 그 PDF 구간이고, 문제 화면에서 원문 구간을 바로 볼 수 있습니다.</p>
                         <p>원본 PDF는 Firebase Storage에 보관되어 어느 기기에서나 열 수 있습니다(문제 해설의 근거에서도 그 쪽으로 열림). 비용은 보관 5GB·내려받기 월 100GB까지 무료(미국 지역 저장소), 넘으면 GB당 월 약 $0.02.</p>
                         <p>한계: 그림·그래프 속 정보와 표의 칸 구조는 글로 뽑히는 만큼만 들어갑니다. 요점은 AI가 고르므로 아주 사소한 문장까지 하나하나 문제가 되지는 않습니다. 비용은 구간 하나에 약 $0.002 (30쪽 리뷰 약 $0.02~0.03).</p>
                     </div>

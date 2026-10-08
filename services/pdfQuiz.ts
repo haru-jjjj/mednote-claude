@@ -23,42 +23,52 @@ export const activeSections = (doc: PdfDoc): PdfSectionMeta[] =>
 
 // 다음에 낼 것: 앞 구간부터, 안 푼(wrong 모드는 틀린) 요점 중 이번 세션에 아직 안 꺼낸 것
 // reserved: 이번 세션에서 이미 꺼낸 "구간키#요점번호"
+// 출제 순서 (§5-81): seq = 앞 구간·앞 요점부터 / random = 안 푼 요점이 남은 구간 중 무작위, 구간 안에서도 무작위
+// 어느 쪽이든 안 푼 요점만 내므로 한 바퀴 돌면 모든 요점을 한 번씩 만남 ("빠짐없이"는 그대로)
+export type PdfOrder = 'seq' | 'random';
+
 export const pickPdfQuestion = (
     doc: PdfDoc,
     reserved: Set<string>,
     mode: 'all' | 'wrong',
     language: QuizLanguage,
     format: PdfFormat = 'OX',
-    rand: () => number = Math.random
+    rand: () => number = Math.random,
+    order: PdfOrder = 'seq',
+    preferKey?: string | null // 무작위일 때: 방금 문제를 만든 구간을 먼저 (이어서 다른 구간을 또 만들며 기다리지 않게)
 ): PdfPick => {
     const list = doc.sections.filter(s => !s.excluded);
     const counted = activeSections(doc);
-    for (const s of list) {
+    const pickIn = (arr: { p: PdfPoint; i: number }[]) => (order === 'random' ? arr[Math.floor(rand() * arr.length) % arr.length] : arr[0]);
+
+    // 구간 하나에서 낼 것 (없으면 null)
+    const sectionPick = (s: PdfSectionMeta): Exclude<PdfPick, { kind: 'done' }> | null => {
         const prog = doc.progress?.[s.key];
-        if (prog?.empty) continue;
+        if (prog?.empty) return null;
         const sectionIndex = counted.indexOf(s);
         const base = { section: s, sectionIndex: Math.max(0, sectionIndex), sectionCount: counted.length };
         if (!prog?.pts) {
-            if (mode === 'wrong') continue;
-            if (reserved.has(`${s.key}#*`)) continue;
+            if (mode === 'wrong') return null;
+            if (reserved.has(`${s.key}#*`)) return null;
             // 요점 목록은 OX 묶음 만들기로 함께 만듦 (케이스 형식이어도 먼저 요점이 필요)
             return { kind: 'generate', ...base, pointIndexes: null, format: 'OX' };
         }
         const want = mode === 'wrong' ? 'wrong' : 'new';
         const pending = prog.pts.map((p, i) => ({ p, i })).filter(x => x.p.st === want && !reserved.has(`${s.key}#${x.i}`));
-        if (pending.length === 0) continue;
+        if (pending.length === 0) return null;
         const qs = prog.qs || [];
         if (mode === 'wrong') {
             // 틀린 문제 다시: 그때 틀린 문제 그대로(형식·언어 무관)
-            for (const { p, i } of pending) {
-                const q = qs.find(x => x.id === p.wq) || qs.find(x => x.pi === i);
-                if (q) return { kind: 'question', ...base, question: q };
+            const withQ = pending.filter(({ p, i }) => qs.some(x => x.id === p.wq || x.pi === i));
+            if (withQ.length) {
+                const { p, i } = pickIn(withQ);
+                const q = qs.find(x => x.id === p.wq) || qs.find(x => x.pi === i)!;
+                return { kind: 'question', ...base, question: q };
             }
-            const first = pending[0].i;
-            return { kind: 'generate', ...base, pointIndexes: [first], format: format === 'MC' ? 'MC' : 'OX' };
+            return { kind: 'generate', ...base, pointIndexes: [pending[0].i], format: format === 'MC' ? 'MC' : 'OX' };
         }
-        // 앞 요점부터. 형식은 고른 것(섞어서면 요점마다 반반)
-        const { i } = pending[0];
+        // 형식은 고른 것(섞어서면 요점마다 반반)
+        const { i } = pickIn(pending);
         const fmt: 'OX' | 'MC' = format === 'MIX' ? (rand() < 0.5 ? 'MC' : 'OX') : format;
         const q = qs.find(x => x.pi === i && x.lang === language && qFormat(x) === fmt);
         if (q) return { kind: 'question', ...base, question: q };
@@ -66,8 +76,29 @@ export const pickPdfQuestion = (
         // OX는 한 번에: 이 언어의 OX가 없는 안 푼 요점 전부
         const missing = pending.filter(x => !qs.some(q2 => q2.pi === x.i && q2.lang === language && qFormat(q2) === 'OX')).map(x => x.i);
         return { kind: 'generate', ...base, pointIndexes: missing.length ? missing : [i], format: 'OX' };
+    };
+
+    if (order === 'seq') {
+        for (const s of list) {
+            const r = sectionPick(s);
+            if (r) return r;
+        }
+        return { kind: 'done' };
     }
-    return { kind: 'done' };
+
+    // 무작위: 구간 순서를 섞음 — 이미 펼친(요점 목록을 만든) 구간에 안 푼 요점이 있으면 그 구간을 마저 풀고,
+    // 없으면 아직 안 펼친 구간 중 무작위. 구간 안의 요점 순서도 무작위.
+    // (문제마다 새 구간으로 뛰면 거의 매 문제 문제 만들기를 기다려야 하고, 만들어 두고 안 푼 문제가 쌓임)
+    if (preferKey) {
+        const ps = list.find(s => s.key === preferKey);
+        const r = ps ? sectionPick(ps) : null;
+        if (r) return r;
+    }
+    const cands = list.map(sectionPick).filter((x): x is Exclude<PdfPick, { kind: 'done' }> => !!x);
+    if (cands.length === 0) return { kind: 'done' };
+    const open = cands.filter(c => !(c.kind === 'generate' && c.pointIndexes === null));
+    const pool = open.length ? open : cands;
+    return pool[Math.floor(rand() * pool.length) % pool.length];
 };
 
 export interface GeneratedItem { point: string; statement: string; isTrue: boolean; explanation: string }
@@ -295,11 +326,13 @@ export const pickFromPool = (
     mode: 'all' | 'wrong',
     language: QuizLanguage,
     rand: () => number = Math.random,
-    format: PdfFormat = 'OX'
+    format: PdfFormat = 'OX',
+    order: PdfOrder = 'seq',
+    prefer?: { docId: string; key: string } | null
 ): PoolPick | null => {
     const cands: { doc: PdfDoc; pick: PoolPick['pick']; w: number }[] = [];
     docs.forEach(doc => {
-        const pick = pickPdfQuestion(doc, reserved.get(doc.id) || new Set(), mode, language, format, rand);
+        const pick = pickPdfQuestion(doc, reserved.get(doc.id) || new Set(), mode, language, format, rand, order, prefer && prefer.docId === doc.id ? prefer.key : null);
         if (pick.kind === 'done') return;
         const st = pdfStats(doc);
         const remaining = mode === 'wrong' ? Math.max(1, st.wrong) : Math.max(1, st.sections - st.sectionsDone);
@@ -340,3 +373,10 @@ export const readPdfQuizFormat = (): PdfQuizFormat => {
     try { const v = localStorage.getItem(PDF_FORMAT_KEY); return v === 'DETAILED' || v === 'MIXED' ? v : 'QUICK_OX'; } catch { return 'QUICK_OX'; }
 };
 export const savePdfQuizFormat = (f: PdfQuizFormat) => { try { localStorage.setItem(PDF_FORMAT_KEY, f); } catch { /* 이번 화면에선 동작 */ } };
+
+// PDF 출제 순서 기억 (§5-81) — 처음 기본값은 무작위
+const PDF_ORDER_KEY = 'medinote_pdf_order';
+export const readPdfOrder = (): PdfOrder => {
+    try { return localStorage.getItem(PDF_ORDER_KEY) === 'seq' ? 'seq' : 'random'; } catch { return 'random'; }
+};
+export const savePdfOrder = (o: PdfOrder) => { try { localStorage.setItem(PDF_ORDER_KEY, o); } catch { /* 이번 화면에선 동작 */ } };

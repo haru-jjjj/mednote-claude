@@ -22,7 +22,7 @@ import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, qui
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
 import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines, generatePdfOXBatch, generatePdfCaseQuestion } from './services/claudeService';
 import { subscribePdfDocs, loadLocalPdfDocs, syncPdfDocs, getPdfDoc, getAllPdfDocs, getPdfSectionText, updatePdfSection } from './services/pdfLibrary';
-import { pickPdfQuestion, applyGenerated, applyGeneratedCase, recordPdfAnswer, toQuizQuestion, newPdfId, pickFromPool, inPdfPool, PoolPick, PdfFormat } from './services/pdfQuiz';
+import { pickPdfQuestion, applyGenerated, applyGeneratedCase, recordPdfAnswer, toQuizQuestion, newPdfId, pickFromPool, inPdfPool, PoolPick, PdfFormat, PdfOrder } from './services/pdfQuiz';
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 import { sanitizeHistory, historyKey, archiveCurrentSummary, trimHistory } from './services/summaryHistory';
@@ -620,24 +620,27 @@ const App: React.FC = () => {
                 const singleId = quizState.pdfId || null;
                 // 문제 형식 (§5-79): 케이스 문제 = MC, 섞어서 = 요점마다 반반
                 const pdfFormat: PdfFormat = quizState.mode === 'DETAILED' ? 'MC' : quizState.mode === 'MIXED' ? 'MIX' : 'OX';
+                const pdfOrder: PdfOrder = quizState.pdfOrder || 'seq'; // §5-81
                 const mode = quizState.pdfMode || 'all';
                 const reservedMap = pdfReservedRef.current;
                 let pdfQuestion: QuizQuestion | null = null;
                 // 풀에서 한 PDF의 구간 문제를 막 만들었으면, 다음은 그 PDF에서 바로 꺼냄 (연달아 여러 PDF를 만들며 기다리지 않게)
                 let stickId: string | null = null;
+                let stickKey: string | null = null; // 방금 문제를 만든 구간 (§5-81)
                 try {
                     for (let attempt = 0; attempt < 6 && !pdfQuestion; attempt++) {
                         let chosen: PoolPick | null = null;
                         if (singleId) {
                             const d = await getPdfDoc(singleId);
                             if (!d) throw new Error('PDF를 찾지 못했습니다 (지워졌을 수 있어요).');
-                            const p1 = pickPdfQuestion(d, reservedMap.get(d.id) || new Set(), mode, quizState.language, pdfFormat);
+                            const p1 = pickPdfQuestion(d, reservedMap.get(d.id) || new Set(), mode, quizState.language, pdfFormat, Math.random, pdfOrder, stickKey);
                             chosen = p1.kind === 'done' ? null : { doc: d, pick: p1 };
                         } else {
                             const all = (await getAllPdfDocs()).filter(inPdfPool);
                             const stick = stickId ? all.filter(d => d.id === stickId) : [];
-                            chosen = (stick.length ? pickFromPool(stick, reservedMap, mode, quizState.language, Math.random, pdfFormat) : null)
-                                || pickFromPool(all, reservedMap, mode, quizState.language, Math.random, pdfFormat);
+                            const prefer = stickId && stickKey ? { docId: stickId, key: stickKey } : null;
+                            chosen = (stick.length ? pickFromPool(stick, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder, prefer) : null)
+                                || pickFromPool(all, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder);
                             if (all.length === 0) throw new Error('PDF 복습에 넣어 둔 PDF가 없습니다. PDF 자료실에서 PDF를 올리거나 "PDF 복습에 넣기"를 켜 주세요.');
                         }
                         if (quizSessionRef.current !== session) return;
@@ -656,6 +659,7 @@ const App: React.FC = () => {
                             break;
                         }
                         stickId = pdfId;
+                        stickKey = pick.section.key;
                         const text = await getPdfSectionText(doc, pick.section.key);
                         const pts = doc.progress[pick.section.key]?.pts || [];
                         if (pick.format === 'MC' && pick.pointIndexes && pick.pointIndexes.length) {
@@ -850,7 +854,7 @@ const App: React.FC = () => {
 
     fetchNext();
 
-  }, [quizState.isActive, quizState.mode, quizState.source, quizState.period, quizState.periodAll, quizState.pdfId, quizState.pdfMode, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
+  }, [quizState.isActive, quizState.mode, quizState.source, quizState.period, quizState.periodAll, quizState.pdfId, quizState.pdfMode, quizState.pdfOrder, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
 
 
   const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX' | 'MIXED', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' | 'PERIOD' = 'RANDOM', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => {
@@ -877,7 +881,7 @@ const App: React.FC = () => {
   // PDF 자료로 OX (§5-75): mode all = 안 푼 요점부터 빠짐없이 / wrong = 틀린 요점의 문제를 그대로 다시
   // pdfId가 null이면 전체 풀(PDF 복습에 넣어 둔 모든 PDF) (§5-76)
   // format: OX / 케이스(DETAILED) / 섞어서(MIXED) (§5-79)
-  const handleStartPdfQuiz = React.useCallback((pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format: 'QUICK_OX' | 'DETAILED' | 'MIXED' = 'QUICK_OX') => {
+  const handleStartPdfQuiz = React.useCallback((pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format: 'QUICK_OX' | 'DETAILED' | 'MIXED' = 'QUICK_OX', order: PdfOrder = 'seq') => {
       quizSessionRef.current += 1;
       pdfReservedRef.current = new Map();
       setQuizState({
@@ -886,6 +890,7 @@ const App: React.FC = () => {
           source: 'PDF',
           pdfId: pdfId || undefined,
           pdfMode: mode,
+          pdfOrder: order,
           noMoreQuestions: false,
           language,
           isGenerating: false,
