@@ -22,6 +22,7 @@
 
 import { Note, Source, QuizQuestion, QuizLanguage, GuidelineCheck } from "../types";
 import { applySectionPatch } from "./handoverPatch";
+import { stripInlineOptions, stripOptionLabel } from "./studyUtils";
 import { threadPlainText, uncitedClaims } from "./threadFormat";
 import { v4 as uuidv4 } from 'uuid';
 import { marked } from 'marked';
@@ -1350,7 +1351,8 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
             Task:
             1. Create a challenging clinical scenario testing one point of the FOCUS PART.
             2. Provide exactly 5 options (A-E).
-            3. CRITICAL: Provide an explanation that states why the answer is correct (with the guideline
+            3. Put ONLY the vignette and question stem in "question"; the five choices go ONLY in "options" (no "A." prefixes).
+            4. CRITICAL: Provide an explanation that states why the answer is correct (with the guideline
                threshold or trial behind it) and, briefly, why each distractor is wrong.
 
             FINAL CHECK — ${langRule} (Only "topic" is internal metadata and stays in Korean.)
@@ -1365,8 +1367,8 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
             schema: {
                 type: 'object',
                 properties: {
-                    question: { type: 'string', description: `Clinical vignette and question. ${langNote}` },
-                    options: { type: 'array', items: { type: 'string', description: langNote }, minItems: 5, maxItems: 5 },
+                    question: { type: 'string', description: `Clinical vignette and the question stem ONLY — do NOT list the answer choices here (they go in "options"). ${langNote}` },
+                    options: { type: 'array', items: { type: 'string', description: `One answer choice, without a leading letter like "A.". ${langNote}` }, minItems: 5, maxItems: 5 },
                     correctAnswerIndex: { type: 'integer', minimum: 0, maximum: 4 },
                     explanation: { type: 'string', description: langNote },
                     topic: { type: 'string', description: 'Internal metadata: the exact point from the focus part this question tests (≤ 12 words, Korean).' },
@@ -1390,8 +1392,8 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
         }
 
         return {
-            question: input.question,
-            options: input.options,
+            question: stripInlineOptions(input.question),
+            options: input.options.map((o: any) => stripOptionLabel(String(o))),
             correctAnswerIndex: input.correctAnswerIndex,
             explanation: input.explanation,
             sources: input.sources || [],
@@ -1612,7 +1614,8 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
               Where natural, integrate related details from the same section so the case is comprehensive.
             - The keyed answer must follow from what THIS SECTION says (the answer key is the document).
               Do not key an answer the section does not support.
-            - Exactly 5 options (A–E). Distractors are plausible near-misses a less experienced physician would pick
+            - "question" holds ONLY the vignette and the question stem — never list the choices in it.
+            - Exactly 5 options in "options" (no "A." prefixes). Distractors are plausible near-misses a less experienced physician would pick
               (a threshold just off, the right drug in the wrong setting, a correct step in the wrong order,
               a lower class of recommendation).
             - Level: cardiovascular subspecialty board / fellowship in-training exam for cardiology content;
@@ -1631,8 +1634,8 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
         schema: {
             type: 'object',
             properties: {
-                question: { type: 'string', description: `Clinical vignette and question. ${langNote}` },
-                options: { type: 'array', items: { type: 'string', description: langNote }, minItems: 5, maxItems: 5 },
+                question: { type: 'string', description: `Clinical vignette and the question stem ONLY — do NOT list the answer choices here (they go in "options"). ${langNote}` },
+                options: { type: 'array', items: { type: 'string', description: `One answer choice, without a leading letter like "A.". ${langNote}` }, minItems: 5, maxItems: 5 },
                 correctAnswerIndex: { type: 'integer', minimum: 0, maximum: 4 },
                 explanation: { type: 'string', description: langNote }
             },
@@ -1641,7 +1644,7 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
         maxTokens: 2000
     }, x => [x?.question, ...(Array.isArray(x?.options) ? x.options : []), x?.explanation].join(' '));
     if (!out || typeof out.question !== 'string' || !Array.isArray(out.options) || out.options.length < 2) return null;
-    return { question: out.question, options: out.options.map((o: any) => String(o)), correctAnswerIndex: Number(out.correctAnswerIndex) || 0, explanation: String(out.explanation || '') };
+    return { question: stripInlineOptions(out.question), options: out.options.map((o: any) => stripOptionLabel(String(o))), correctAnswerIndex: Number(out.correctAnswerIndex) || 0, explanation: String(out.explanation || '') };
 };
 
 // 올린 PDF의 제목·출처 제안 (첫 쪽 글로, 아주 짧은 호출) — 사용자가 고쳐서 저장

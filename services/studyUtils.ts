@@ -188,3 +188,37 @@ export const looksLikePaper = (text: string): boolean => {
     if (t.length < 400) return false;
     return PAPER_MARKERS.reduce((c, re) => c + (re.test(t) ? 1 : 0), 0) >= 4;
 };
+
+// ----------------------------------------------------------------------------
+// 케이스(5지선다) 문제 본문에 AI가 보기(A. … B. … C. …)까지 써 넣은 경우 잘라냄 (§5-80)
+// - A → B → C 표시가 순서대로 3개 이상 있을 때만 A 앞에서 자름 (본문의 "type A." 같은 글자는 건드리지 않음)
+// - 이미 저장된 문제(PDF 문제·오답 노트)도 화면에 보일 때 같은 함수로 정리
+// ----------------------------------------------------------------------------
+const OPTION_LABELS = [['A', 'Ａ'], ['B', 'Ｂ'], ['C', 'Ｃ'], ['D', 'Ｄ'], ['E', 'Ｅ']];
+const labelRe = (i: number) => new RegExp(`(^|[\\s\\u3000(（「:：。、]|(?=[Ａ-Ｅ]))[(（]?(?:${OPTION_LABELS[i].join('|')})(?:[.)）．:：、]|\\s*[)）])`, 'g');
+
+export const stripInlineOptions = (question: string): string => {
+    const q = question || '';
+    const findAfter = (i: number, from: number): number => {
+        const re = labelRe(i);
+        re.lastIndex = from;
+        const m = re.exec(q);
+        return m ? m.index + m[1].length : -1;
+    };
+    let start = 0;
+    while (true) {
+        const a = findAfter(0, start);
+        if (a < 0) return q;
+        const b = findAfter(1, a + 1);
+        const c = b >= 0 ? findAfter(2, b + 1) : -1;
+        if (b > a && c > b) {
+            const cut = q.slice(0, a).replace(/[\s　]+$/, '');
+            return cut.length >= 10 ? cut : q; // 본문이 거의 없으면 그대로 둠
+        }
+        start = a + 1;
+    }
+};
+
+// 보기 앞에 붙은 "A. " 같은 표시 제거 (화면에서 A~E를 따로 붙이므로)
+export const stripOptionLabel = (opt: string): string =>
+    (opt || '').replace(/^\s*[(（]?[A-EＡ-Ｅ](?:[.)）．:：、]|\s*[)）])\s*/, '');

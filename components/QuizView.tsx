@@ -7,7 +7,7 @@ import DOMPurify from 'dompurify';
 import { generateDetailedQuizExplanation, formatMedicalMarkdown } from '../services/claudeService';
 import { getNoteFromDB } from '../services/storage';
 import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/sourceKind';
-import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo } from '../services/studyUtils';
+import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo, stripInlineOptions, stripOptionLabel } from '../services/studyUtils';
 import { isRestingUntilDue } from '../services/quizCoverage';
 import { pdfStats, resetPdfRound, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, readPdfQuizFormat, savePdfQuizFormat } from '../services/pdfQuiz';
 import { getPdfDoc, getPdfSectionText, updatePdfMeta, openPdfOriginal } from '../services/pdfLibrary';
@@ -500,7 +500,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                       {w.type === 'OX' ? 'OX' : '케이스'}
                                                   </span>
                                                   <span className={`flex-1 min-w-0 text-sm text-slate-700 ${isOpen ? '' : 'line-clamp-2'}`}>
-                                                      {w.question.replace(/[#*`>]/g, '')}
+                                                      {(w.type === 'OX' ? w.question : stripInlineOptions(w.question)).replace(/[#*`>]/g, '')}
                                                   </span>
                                                   {isOpen ? <ChevronUp className="w-4 h-4 text-slate-400 shrink-0" /> : <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />}
                                               </button>
@@ -527,7 +527,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                               {w.options.map((o, i) => (
                                                                   <li key={i} className={`flex gap-2 ${i === w.correctAnswerIndex ? 'text-sage-700 font-bold' : i === w.chosenIndex ? 'text-red-600 line-through' : 'text-slate-500'}`}>
                                                                       <span className="shrink-0">{String.fromCharCode(65 + i)}.</span>
-                                                                      <span dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(formatMedicalMarkdown(o)) }} />
+                                                                      <span dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(formatMedicalMarkdown(stripOptionLabel(o))) }} />
                                                                   </li>
                                                               ))}
                                                           </ol>
@@ -759,7 +759,8 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                         {isOX ? '참 / 거짓' : '케이스'}
                     </span>
                     {/* Render Question with Medical Formatting */}
-                    <h3 className={`${isOX ? 'text-xl md:text-2xl text-center py-6' : 'text-lg md:text-xl text-center'} font-bold text-slate-900 leading-relaxed`} dangerouslySetInnerHTML={renderMarkdown(currentQ.question)}>
+                    {/* 케이스 문제는 긴 임상 상황이라 왼쪽 정렬·보통 굵기로, 본문에 섞여 온 보기는 잘라냄 (§5-80) */}
+                    <h3 className={`${isOX ? 'text-xl md:text-2xl text-center py-6 font-bold' : 'text-base md:text-lg text-left font-medium'} text-slate-900 leading-relaxed`} dangerouslySetInnerHTML={renderMarkdown(isOX ? currentQ.question : stripInlineOptions(currentQ.question))}>
                     </h3>
                     
                     {/* OX Specific UI */}
@@ -812,7 +813,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                         <div className={`w-6 h-6 rounded-full border flex-shrink-0 flex items-center justify-center text-[11px] font-bold ${isRevealed && isCorrect ? 'border-sage-600 bg-sage-600 text-white' : isRevealed && isSelected && !isCorrect ? 'border-red-500 bg-red-500 text-white' : isSelected ? 'border-accent-600 bg-accent-600 text-white' : 'border-slate-300 text-slate-400'}`}>
                                             {String.fromCharCode(65 + idx)}
                                         </div>
-                                        <span className="text-base" dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(formatMedicalMarkdown(option))}}></span>
+                                        <span className="text-base" dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(formatMedicalMarkdown(stripOptionLabel(option)))}}></span>
                                     </button>
                                 );
                             })}

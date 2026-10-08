@@ -1448,6 +1448,17 @@ service firebase.storage {
   섞어서 모드는 퀴즈 모드 `MIXED`로 공통 처리(미리 2문제 준비).
 - 바뀐 파일: `App.tsx`, `types.ts`, `components/QuizView.tsx`, `components/PdfLibraryView.tsx`, `services/pdfQuiz.ts`, `services/claudeService.ts` (새 파일 없음)
 
+## 5-80. 케이스 문제 본문에 보기가 함께 보이던 문제 (요청)
+
+- 원인: AI가 케이스 문제의 "question"(본문)에 보기 A~E까지 써 넣는 경우가 있었고, 화면은 본문과 보기 목록을 둘 다 그대로 보여 줌.
+- 고친 것
+  - 프롬프트·스키마: 본문에는 임상 상황과 질문만, 보기는 options에만(앞에 "A." 붙이지 않기) — 메모 케이스 문제·PDF 케이스 문제 둘 다.
+  - 그래도 섞여 오면 잘라냄(`stripInlineOptions`, services/studyUtils.ts): 본문에 A → B → C 표시가 순서대로 있을 때만 A 앞에서 자름
+    ("type A dissection" 같은 글자는 그대로). `A.` `A)` `(A)` `Ａ．` 형식, 앞에 띄어쓰기가 없어도 인식. 보기 앞 "A. "도 제거(`stripOptionLabel`).
+  - 새로 만드는 문제는 저장 전에, 이미 저장된 문제(PDF 문제·오답 노트)는 화면에 보일 때 정리.
+  - 케이스 문제 본문은 왼쪽 정렬·보통 굵기로(긴 임상 상황이 가운데 정렬 굵은 글씨라 읽기 힘들었음). OX 문장은 그대로.
+- 바뀐 파일: `services/studyUtils.ts`, `services/claudeService.ts`, `components/QuizView.tsx` (새 파일 없음)
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.
