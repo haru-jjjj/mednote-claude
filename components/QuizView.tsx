@@ -33,6 +33,11 @@ interface QuizViewProps {
 
 const WRONG_LIST_PAGE = 10;
 
+// 일본어 글이면 lang="ja"를 달아 일본어 글꼴로 보이게 (§5-74). 가나가 있으면 일본어로 봄
+const hasKana = (s: string) => /[\u3040-\u30ff]/.test(s || '');
+const langAttrOf = (language: QuizLanguage | undefined, sample: string): 'ja' | 'en' | 'ko' =>
+    hasKana(sample) || language === 'Japanese' ? 'ja' : language === 'English' ? 'en' : 'ko';
+
 const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, onStop, onEndSession, onRetry, onBack, reviewDueCount, onStartWrongReview, onDeleteWrongAnswer, onOpenNote, isFetchingAll }) => {
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
   const [isRevealed, setIsRevealed] = useState(false);
@@ -206,7 +211,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                             : 'text-slate-500 hover:bg-slate-100'}`}
                                    >
                                        <Languages className="w-3.5 h-3.5 shrink-0" />
-                                       {lang === 'Korean' ? '한국어' : lang === 'English' ? 'English' : '日本語'}
+                                       {lang === 'Korean' ? '한국어' : lang === 'English' ? 'English' : <span lang="ja">日本語</span>}
                                    </button>
                                ))}
                           </div>
@@ -380,7 +385,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                       const isOpen = expandedWrongId === w.id;
                                       const optLabel = (i: number) => w.type === 'OX' ? (i === 0 ? 'O' : 'X') : (i >= 0 ? String.fromCharCode(65 + i) : '—');
                                       return (
-                                          <div key={w.id} className="border border-slate-200 rounded-xl overflow-hidden">
+                                          <div key={w.id} className="border border-slate-200 rounded-xl overflow-hidden" lang={langAttrOf(w.language, `${w.question} ${w.explanation || ''}`)}>
                                               <button
                                                   type="button"
                                                   onClick={() => setExpandedWrongId(isOpen ? null : w.id)}
@@ -550,7 +555,10 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   const isOX = currentQ.type === 'OX';
 
   return (
-    <div className="h-full flex flex-col bg-slate-50 overflow-hidden relative">
+    <div
+        className="h-full flex flex-col bg-slate-50 overflow-hidden relative"
+        lang={langAttrOf(quizState.language, [currentQ.question, ...(currentQ.options || []), currentQ.explanation || ''].join(' '))}
+    >
         {/* Header */}
         <div className="h-12 px-4 bg-white border-b border-slate-200 flex justify-between items-center shrink-0 z-10 shadow-sm">
             <div className="flex items-center gap-3">

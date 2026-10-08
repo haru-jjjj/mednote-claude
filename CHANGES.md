@@ -1330,6 +1330,17 @@
 - 그대로인 것: 오답 노트 다시 풀기는 저장된 문제 그대로라 처음 만들 때의 언어로 나옴.
 - 바뀐 파일: `services/claudeService.ts`(`quizLanguageRule`, `textMatchesLanguage`, `callQuizWithLanguage`), `components/QuizView.tsx`.
 
+## 5-74. 일본어 퀴즈를 일본에서 흔히 쓰는 글꼴로 (요청)
+
+- 원인: 앱 기본 글꼴이 Noto Sans KR이 맨 앞이라, 일본어 퀴즈의 한자·가나도 한국 글꼴로 그려져 한자 모양(한국식 자형)·가나가
+  일본에서 보통 보는 모습과 달랐음. 페이지 언어도 `lang="en"`이었음.
+- 고친 것
+  - `index.html`: `:lang(ja)` 영역은 일본어 고딕체 순서로 — iPhone·Mac **히라기노 각고딕**(Hiragino Sans / Kaku Gothic ProN),
+    그 밖 **Noto Sans JP**(이미 불러오던 웹 글꼴), 윈도 Yu Gothic·Meiryo. 영문·숫자는 Inter 그대로, 같은 영역의 한글 버튼 이름은
+    맨 끝 Noto Sans KR로(앱 다른 곳과 같은 모양). 페이지 언어 `lang="ko"`.
+  - 퀴즈 화면: 문제·보기·해설에 가나가 있거나 언어가 일본어면 `lang="ja"`(오답 노트 항목도 문제마다), 언어 선택의 "日本語"도.
+- 바뀐 파일: `index.html`, `components/QuizView.tsx`.
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.

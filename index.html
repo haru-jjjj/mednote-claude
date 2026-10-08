@@ -1,6 +1,6 @@
 
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
   <head>
     <meta charset="UTF-8" />
     <!-- viewport-fit=cover: 아이패드/아이폰에서 상태표시줄·홈 인디케이터 영역(safe area) 크기를
@@ -39,6 +39,13 @@
       body {
         font-family: 'Noto Sans KR', 'Noto Sans JP', 'Inter', sans-serif;
         background: #ffffff;
+      }
+      /* 일본어 글(lang="ja" 영역, 예: 일본어 퀴즈)은 일본에서 흔히 쓰는 고딕체로 (§5-74).
+         기본 글꼴이 Noto Sans KR이라 한자·가나가 한국식 모양으로 보였음.
+         iPhone·Mac = 히라기노, 그 밖 = Noto Sans JP(웹 글꼴) → 윈도 기본 Yu Gothic·Meiryo 순. 영문·숫자는 Inter 그대로,
+         같은 영역의 한글(버튼 이름 등)은 일본어 글꼴에 없어 맨 끝의 Noto Sans KR로 = 앱의 다른 곳과 같은 모양 */
+      :lang(ja) {
+        font-family: 'Inter', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', 'Yu Gothic', 'YuGothic', 'Meiryo', 'Noto Sans KR', sans-serif;
       }
       /* 아이패드/아이폰: 상태표시줄·노치·홈 인디케이터 영역(safe area)만큼 앱 전체를 안쪽으로
          밀어서, 상단 메뉴가 상태표시줄 밑에 깔려 반투명하게 겹쳐 보이지 않도록 합니다.
