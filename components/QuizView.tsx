@@ -38,7 +38,11 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
   const [isRevealed, setIsRevealed] = useState(false);
   
   // Language Selection State
-  const [selectedLanguage, setSelectedLanguage] = useState<QuizLanguage>('Korean');
+  // 마지막으로 고른 언어 기억 (§5-73: 화면을 다시 열면 한국어로 돌아가 버리던 문제)
+  const [selectedLanguage, setSelectedLanguageState] = useState<QuizLanguage>(() => {
+      try { const v = localStorage.getItem('medinote_quiz_language'); return v === 'English' || v === 'Japanese' ? v : 'Korean'; } catch { return 'Korean'; }
+  });
+  const setSelectedLanguage = (l: QuizLanguage) => { setSelectedLanguageState(l); try { localStorage.setItem('medinote_quiz_language', l); } catch { /* 이번 화면에선 동작 */ } };
   // 기간별 복습: 고른 기간(마지막 선택 기억)과 기간별 메모 수
   const [period, setPeriodState] = useState<ReviewPeriod>(readPeriod);
   const setPeriod = (p: ReviewPeriod) => { setPeriodState(p); try { localStorage.setItem(PERIOD_KEY, p); } catch { /* 저장 안 돼도 이번 화면에선 동작 */ } };

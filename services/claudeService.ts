@@ -54,14 +54,15 @@ READER PROFILE (applies to everything you write):
   specifics, practical pitfalls, and areas of controversy or where guidelines disagree.
 - Use standard English medical terms and abbreviations as used in clinical practice without
   spelling out common ones (e.g., LVEF, PVI, CTI, TAVR, CRT-D, GDMT); Korean is fine for the
-  connecting prose.
+  connecting prose — unless an OUTPUT LANGUAGE other than Korean is specified, in which case that
+  language overrides this.
 - For topics outside cardiology, keep the same attending-level density but do not invent
   subspecialty depth the note doesn't support.
 - If something in the source is uncertain, outdated, or guideline-discordant, say so briefly
   instead of smoothing it over.
 - Style: plain, calm text. Do NOT use emoji or decorative symbols (no ⚠️ ✅ ❌ 🔥 📌 ✨ etc.).
   When something needs a flag, write a short bold word instead, e.g. "**주의**", "**확인 필요**",
-  "**변경됨**". Arrows (→), ≥/≤ and plain bullets are fine.
+  "**변경됨**" (or the equivalent word in the output language). Arrows (→), ≥/≤ and plain bullets are fine.
 `;
 
 // ----------------------------------------------------------------------------
@@ -1434,11 +1435,49 @@ const coverageOf = (f: QuizFocus, topic: any): QuizQuestion['coverage'] => ({
     topic: typeof topic === 'string' ? topic.trim().slice(0, 80) : undefined
 });
 
+// ----------------------------------------------------------------------------
+// 퀴즈 출력 언어 (§5-73): 메모가 한국어라 영어·일본어를 골라도 한국어로 쓰는 일이 잦았음
+// → 언어 지시를 프롬프트 맨 앞·맨 끝·도구 스키마 설명에 모두 넣고, 결과 글자를 검사해 다르면 1회 다시 요청
+// ----------------------------------------------------------------------------
+const LANGUAGE_LABEL: Record<QuizLanguage, string> = { Korean: 'Korean (한국어)', English: 'English', Japanese: 'Japanese (日本語)' };
+
+const quizLanguageRule = (lang: QuizLanguage): string => lang === 'Korean'
+    ? 'OUTPUT LANGUAGE: Korean (한국어). Write the question, every option and the explanation in Korean; standard English medical terms and abbreviations are fine.'
+    : `OUTPUT LANGUAGE: ${LANGUAGE_LABEL[lang]} ONLY. The reader's note below is written in Korean — read it, but write the question, every option and the explanation entirely in ${lang}: translate the content, and do not write any Korean sentences or Korean words (Hangul). Standard English medical abbreviations are fine.${lang === 'Japanese' ? ' Use natural Japanese medical writing (漢字・かな), with standard terms as used in Japanese clinical practice.' : ''}`;
+
+// 글자 종류로 언어가 맞는지 대략 판단 (의학 약어는 영문이라 영문자는 세지 않음)
+export const textMatchesLanguage = (text: string, lang: QuizLanguage): boolean => {
+    const t = text || '';
+    const hangul = (t.match(/[\uac00-\ud7a3\u3131-\u318e]/g) || []).length;
+    const kana = (t.match(/[\u3040-\u30ff]/g) || []).length;
+    const latin = (t.match(/[A-Za-z]/g) || []).length;
+    if (lang === 'Korean') return hangul >= 10 || hangul >= (latin + kana) * 0.1;
+    if (lang === 'English') return hangul <= Math.max(3, latin * 0.02) && kana <= 3;
+    return kana >= 10 && hangul <= Math.max(3, kana * 0.05); // Japanese
+};
+
+// 퀴즈 하나 만들기 + 언어 검사: 다르면 "앞 시도가 다른 언어였다"는 안내를 붙여 1회 다시
+const callQuizWithLanguage = async (
+    language: QuizLanguage,
+    makeContent: (extra: string) => any[],
+    params: Omit<Parameters<typeof callForJson>[0], 'messages'>,
+    textOf: (input: any) => string
+): Promise<any> => {
+    const first = await callForJson({ ...params, messages: [{ role: 'user', content: makeContent('') }] });
+    if (!first || textMatchesLanguage(textOf(first), language)) return first;
+    console.warn(`퀴즈가 ${language}가 아닌 언어로 와서 다시 요청합니다.`);
+    const retry = await callForJson({
+        ...params,
+        messages: [{ role: 'user', content: makeContent(`\nIMPORTANT: Your previous attempt was not written in ${LANGUAGE_LABEL[language]}. Write everything (question, options, explanation) in ${LANGUAGE_LABEL[language]} only.`) }]
+    }).catch(() => null);
+    return retry && retry.question ? retry : first;
+};
+
 export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLanguage = 'Korean'): Promise<QuizQuestion | null> => {
     try {
-        const content: any[] = focusImageBlocks(focus);
-
+        const langRule = quizLanguageRule(language);
         const prompt = `
+            ${langRule}
             You are an attending physician writing subspecialty board-level questions.
             ${READER_PROFILE}
             Create ONE high-quality multiple choice question from the FOCUS PART of the reader's own note below.
@@ -1456,7 +1495,6 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
             - The keyed answer must be unambiguously correct under current major guidelines; avoid items where
               experts genuinely disagree. If the note itself is outdated on this point, key the CURRENT answer and
               say in the explanation that the note differs.
-            - **Output Language: ${language}** (The question, options, and explanation MUST be written in ${language}).
             ${buildFocusContext(focus)}
 
             Task:
@@ -1464,23 +1502,24 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
             2. Provide exactly 5 options (A-E).
             3. CRITICAL: Provide an explanation that states why the answer is correct (with the guideline
                threshold or trial behind it) and, briefly, why each distractor is wrong.
-        `;
-        content.push({ type: 'text', text: prompt });
 
-        const input = await callForJson({
+            FINAL CHECK — ${langRule} (Only "topic" is internal metadata and stays in Korean.)
+        `;
+        const langNote = `Written in ${LANGUAGE_LABEL[language]}.`;
+
+        const input = await callQuizWithLanguage(language, extra => [...focusImageBlocks(focus), { type: 'text', text: prompt + extra }], {
             feature: 'quiz',
             model: MODEL_FAST,
-            messages: [{ role: 'user', content }],
             toolName: 'submit_quiz_question',
             toolDescription: 'Submit the generated subspecialty board-style multiple-choice clinical quiz question.',
             schema: {
                 type: 'object',
                 properties: {
-                    question: { type: 'string' },
-                    options: { type: 'array', items: { type: 'string' }, minItems: 5, maxItems: 5 },
+                    question: { type: 'string', description: `Clinical vignette and question. ${langNote}` },
+                    options: { type: 'array', items: { type: 'string', description: langNote }, minItems: 5, maxItems: 5 },
                     correctAnswerIndex: { type: 'integer', minimum: 0, maximum: 4 },
-                    explanation: { type: 'string' },
-                    topic: { type: 'string', description: 'The exact point from the focus part this question tests (≤ 12 words, Korean).' },
+                    explanation: { type: 'string', description: langNote },
+                    topic: { type: 'string', description: 'Internal metadata: the exact point from the focus part this question tests (≤ 12 words, Korean).' },
                     sources: {
                         type: 'array',
                         items: {
@@ -1493,7 +1532,7 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
                 required: ['question', 'options', 'correctAnswerIndex', 'explanation', 'topic']
             },
             maxTokens: 1500
-        });
+        }, x => [x?.question, ...(Array.isArray(x?.options) ? x.options : []), x?.explanation].join(' '));
 
         if (!input || !input.question || !input.options) {
             console.error("Invalid quiz structure from AI", input);
@@ -1521,10 +1560,11 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
 
 export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 'Korean'): Promise<QuizQuestion | null> => {
     try {
-        const content: any[] = focusImageBlocks(focus);
         const targetAnswerIsTrue = Math.random() < 0.5;
+        const langRule = quizLanguageRule(language);
 
         const prompt = `
+            ${langRule}
             ${READER_PROFILE}
             Create a single "True or False" statement for a quick review quiz from the FOCUS PART of the reader's own
             note below, pitched at the reader's level above.
@@ -1534,7 +1574,6 @@ export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 
             - Analyze the attached photo itself (charts, ECG, histology, diagrams, tables) — do not rely only on the extracted text.` : ''}
 
             - **You MUST generate a statement that is ${targetAnswerIsTrue ? "TRUE" : "FALSE"}**. This is a strict requirement for balance.
-            - **Output Language: ${language}** (The statement and explanation MUST be written in ${language}).
             ${buildFocusContext(focus)}
 
             Instructions:
@@ -1557,27 +1596,28 @@ export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 
             - If False, provide an informative correction (2-3 sentences) explaining the correct medical reasoning.
             - If True, provide an informative confirmation (2-3 sentences) explaining why it is correct.
             - Do NOT be too brief. Give some context.
-        `;
-        content.push({ type: 'text', text: prompt });
 
-        const input = await callForJson({
+            FINAL CHECK — ${langRule} (Only "topic" is internal metadata and stays in Korean.)
+        `;
+        const langNote = `Written in ${LANGUAGE_LABEL[language]}.`;
+
+        const input = await callQuizWithLanguage(language, extra => [...focusImageBlocks(focus), { type: 'text', text: prompt + extra }], {
             feature: 'quiz',
             model: MODEL_FAST,
-            messages: [{ role: 'user', content }],
             toolName: 'submit_ox_question',
             toolDescription: 'Submit the generated True/False quick-review statement.',
             schema: {
                 type: 'object',
                 properties: {
-                    question: { type: 'string' },
+                    question: { type: 'string', description: `The true/false statement. ${langNote}` },
                     isTrue: { type: 'boolean' },
-                    explanation: { type: 'string' },
-                    topic: { type: 'string', description: 'The exact point from the focus part this statement tests (≤ 12 words, Korean).' }
+                    explanation: { type: 'string', description: langNote },
+                    topic: { type: 'string', description: 'Internal metadata: the exact point from the focus part this statement tests (≤ 12 words, Korean).' }
                 },
                 required: ['question', 'isTrue', 'explanation', 'topic']
             },
             maxTokens: 800
-        });
+        }, x => [x?.question, x?.explanation].join(' '));
 
         if (!input || !input.question) {
             console.error("Invalid OX data", input);
@@ -1616,7 +1656,7 @@ export const generateDetailedQuizExplanation = async (question: string, isTrue: 
             **STRICT GUIDELINES**:
             1. **TONE**: Professional, objective, and dry. **NO TEACHING TONE**. Do NOT use phrases like "It is important to remember", "Student should note", or "Let's look at". Write as if writing for a medical journal.
             2. **SOURCES**: Use the web search tool ONLY to retrieve URL references. Do not waste time summarizing external articles in the text.
-            3. **Language**: ${language}.
+            3. **${quizLanguageRule(language).replace('the question, every option and the explanation', 'the whole explanation')}**
 
             Format:
             - **Clinical Rationale**: [Direct explanation of the mechanism/guideline]
