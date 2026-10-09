@@ -6,7 +6,7 @@ import { suggestPdfInfo, transcribePdfPages, formatMedicalMarkdown } from '../se
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { saveNewPdf, updatePdfMeta, deletePdf, deletePdfOriginal, openPdfOriginal, uploadPdfOriginal, storeLocalPdfFile, hasLocalPdfFile, describeStorageError, formatPdfForReading, subscribePdfFormat, getPdfFormatState, sectionsToFormat, getPdfSectionMd, getPdfSectionText, readPdfFigures, getPdfFigureState, MAX_FIGURE_PAGES, NEED_FILE } from '../services/pdfLibrary';
-import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder } from '../services/pdfQuiz';
+import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, QUIZ_FORMATS, QUIZ_FORMAT_HINT, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder } from '../services/pdfQuiz';
 
 // ============================================================================
 // PDF 자료실 (§5-75)
@@ -344,7 +344,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                     {/* 문제 형식 (§5-79) */}
                     <div className="flex flex-wrap items-center gap-2 text-[12px] text-slate-500 -mt-2">
                         <span>문제 형식</span>
-                        {(['QUICK_OX', 'DETAILED', 'MIXED'] as PdfQuizFormat[]).map(f => (
+                        {QUIZ_FORMATS.map(f => (
                             <button
                                 key={f}
                                 type="button"
@@ -354,7 +354,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                 {PDF_FORMAT_LABEL[f]}
                             </button>
                         ))}
-                        <span className="text-[11px] text-slate-400">{format === 'DETAILED' ? '요점마다 임상 상황 5지선다' : format === 'MIXED' ? '요점마다 케이스·OX 반반' : '요점마다 참/거짓'}</span>
+                        <span className="text-[11px] text-slate-400">{QUIZ_FORMAT_HINT[format]}</span>
                     </div>
 
                     {/* 출제 순서 (§5-81) */}
@@ -691,7 +691,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
 
                     <div className="text-[11px] text-slate-400 leading-relaxed space-y-1 px-1">
                         <p>PDF 전체로 복습: 여러 PDF를 섞어 내되, PDF마다 안 푼 요점이 없어질 때까지 냅니다(출제 순서: 무작위 = 구간 순서를 섞음, 앞에서부터 = p.1부터). 특정 PDF만 집중하려면 그 PDF의 "이 PDF만 풀기"를, 다 본 PDF는 "PDF 복습에 넣기"를 꺼 두세요.</p>
-                        <p>문제 형식: OX는 구간의 요점을 한 번에 만들어 빠르고, 케이스는 요점 하나마다 임상 상황 5지선다를 따로 만들어 문제마다 몇 초 더 걸립니다(요점당 약 $0.001). 어느 형식으로 풀어도 같은 요점 진도에 기록됩니다.</p>
+                        <p>문제 형식(퀴즈 첫 화면과 공통): OX는 구간의 요점을 한 번에 만들어 빠르고, 케이스(임상 상황 5지선다)와 5지선다(내용 이해)는 요점 하나마다 따로 만들고 정답을 한 번 더 확인해 문제마다 몇 초 더 걸립니다(요점당 약 $0.001). 섞어서는 OX 40% · 케이스 30% · 5지선다 30%. 어느 형식으로 풀어도 같은 요점 진도에 기록됩니다.</p>
                         <p>문제 만드는 방식: 처음 푸는 구간마다 AI(Haiku)가 그 구간의 요점(수치·권고·기준·기전·결과 등)을 모두 뽑아 요점마다 OX 한 문제를 씁니다. 안 푼 요점이 없어질 때까지 내고(무작위여도 빠지는 요점 없음), 맞힌 요점은 이번 바퀴에서 다시 나오지 않습니다. 정답 근거는 그 PDF 구간이고, 문제 화면에서 원문 구간을 바로 볼 수 있습니다.</p>
                         <p>원본 PDF는 Firebase Storage에 보관되어 어느 기기에서나 열 수 있습니다(문제 해설의 근거에서도 그 쪽으로 열림). 비용은 보관 5GB·내려받기 월 100GB까지 무료(미국 지역 저장소), 넘으면 GB당 월 약 $0.02.</p>
                         <p>그림·표: 그림·표가 있어 보이는 쪽(큰 그림·도형이 많은 쪽·"Figure/Table/표/그림" 캡션이 있는 쪽, 최대 40쪽)을 AI가 쪽 이미지로 보고, 표는 값 그대로 표로, 그림·흐름도·ECG는 설명으로 옮겨 "p.N 그림·표" 구간으로 넣습니다. 표 숫자는 그 쪽 PDF 글과 대조해 다르면 "주의" 표시 후 문제에서 뺍니다. 그래프에서 읽은 값(≈)은 정확한 숫자로 묻지 않습니다. 쪽당 약 $0.0015.</p>

@@ -1324,7 +1324,21 @@ const callQuizWithLanguage = async (
     return retry && isValid(retry) ? retry : first;
 };
 
-export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLanguage = 'Korean'): Promise<QuizQuestion | null> => {
+// 내용 이해 5지선다 (§5-85): 임상 케이스 없이 내용을 정확히 알고 있는지 묻는 문제의 설계 지침 (메모·PDF 공통)
+const CONCEPT_DESIGN = `QUESTION DESIGN — CONTENT-UNDERSTANDING MULTIPLE CHOICE (no clinical vignette):
+            - Ask directly about the content, so the reader must really understand the point and what surrounds it, e.g.
+              "Which statement about … is correct?" / "Which of the following is NOT …?" / which criterion, threshold,
+              class of recommendation or first-line choice applies / how two drugs, trials, conditions or strategies differ /
+              what the mechanism or rationale is / which item belongs to (or is missing from) a list.
+            - Prefer stems that make the reader hold several details at once: e.g. five statements where exactly one is fully
+              correct and each wrong one changes a single detail (a number, the population, the class, the direction, the
+              exception). If you ask for the incorrect one, say so clearly in the stem ("NOT", "옳지 않은").
+            - All five options must be the same kind of thing (all drugs, all thresholds, all statements …) and plausible;
+              no "all of the above" / "none of the above".
+            - Exactly one option is correct; the answer key must be unambiguous.`;
+
+// style 'concept' = 임상 케이스 없이 내용 이해를 묻는 5지선다 (§5-85)
+export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLanguage = 'Korean', style: 'case' | 'concept' = 'case'): Promise<QuizQuestion | null> => {
     try {
         const langRule = quizLanguageRule(language);
         const prompt = `
@@ -1337,10 +1351,10 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
             - For cardiology content: cardiovascular disease subspecialty board / fellowship in-training exam level
               (EP and interventional items at the depth expected of a fellow in those areas).
             - For non-cardiology content: internal medicine board level, written for an attending.
-            - Test application and judgment, not recall: a clinical vignette with the data an expert would use
+            ${style === 'concept' ? CONCEPT_DESIGN : `- Test application and judgment, not recall: a clinical vignette with the data an expert would use
               (ECG/EGM findings, echo or hemodynamic values, device parameters, labs) and a decision to make.
               If the point is a plain fact (a definition, a list, a procedural step), still frame it in a short
-              clinical context where possible.
+              clinical context where possible.`}
             - Distractors must be plausible choices that a less experienced physician would pick
               (e.g. an outdated threshold, the right drug in the wrong setting, a correct step in the wrong order).
             - The keyed answer must be unambiguously correct under current major guidelines; avoid items where
@@ -1349,7 +1363,7 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
             ${buildFocusContext(focus)}
 
             Task:
-            1. Create a challenging clinical scenario testing one point of the FOCUS PART.
+            1. ${style === 'concept' ? 'Write one content-understanding question (no vignette) testing one point of the FOCUS PART.' : 'Create a challenging clinical scenario testing one point of the FOCUS PART.'}
             2. Provide exactly 5 options (A-E).
             3. Put ONLY the vignette and question stem in "question"; the five choices go ONLY in "options" (no "A." prefixes).
             4. CRITICAL: Provide an explanation that states why the answer is correct (with the guideline
@@ -1367,7 +1381,7 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
             schema: {
                 type: 'object',
                 properties: {
-                    question: { type: 'string', description: `Clinical vignette and the question stem ONLY — do NOT list the answer choices here (they go in "options"). ${langNote}` },
+                    question: { type: 'string', description: `${style === 'concept' ? 'The question stem' : 'Clinical vignette and the question stem'} ONLY — do NOT list the answer choices here (they go in "options"). ${langNote}` },
                     options: { type: 'array', items: { type: 'string', description: `One answer choice, without a leading letter like "A.". ${langNote}` }, minItems: 5, maxItems: 5 },
                     correctAnswerIndex: { type: 'integer', minimum: 0, maximum: 4 },
                     explanation: { type: 'string', description: langNote },
@@ -1399,6 +1413,7 @@ export const generateMedicalQuiz = async (focus: QuizFocus, language: QuizLangua
             sources: input.sources || [],
             id: uuidv4(),
             type: 'MULTIPLE_CHOICE',
+            ...(style === 'concept' ? { style: 'concept' as const } : {}),
             relatedNoteIds: [focus.note.id],
             coverage: coverageOf(focus, input.topic)
         };
@@ -1430,6 +1445,9 @@ export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 
 
             Instructions:
             - Create ONE statement about one point of the FOCUS PART.
+            - Pitch it one notch deeper than a bare fact (§5-85): attach the condition, population, threshold, exception or
+              rationale that the note gives — e.g. "In X with Y, Z is preferred over W because …" rather than "Z is used for X".
+              Still one idea, clearly true or false. Skip trivial points (well-known definitions, names, dates).
             - The statement must be medically ${targetAnswerIsTrue ? "accurate (True)" : "inaccurate/false (False)"}.
 
             ${!targetAnswerIsTrue ? `
@@ -1593,6 +1611,9 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
               a shifted threshold or number, the wrong drug/class/trial, swapped indications, wrong direction of effect,
               wrong class of recommendation. The changed detail must clearly contradict the section.
             - One idea per statement; specific enough that it is clearly true or false according to the section.
+            - Pitch each statement one notch deeper than recognition (§5-85): include the condition, population, threshold,
+              exception, comparison or rationale that the section attaches to the point (e.g. "In patients with X, Y is
+              recommended over Z" rather than "Y is recommended"). Do not test trivia (titles, author names, section numbers).
             - "explanation" (1–3 sentences): state what the section actually says (with the exact number or wording),
               then say whether the statement matches it — so a wrong answer teaches the correct fact.
             - "point": the point tested, ≤ 14 words, in Korean (internal metadata).
@@ -1738,13 +1759,14 @@ export interface PdfCaseInput {
 }
 export interface PdfCaseItem { question: string; options: string[]; correctAnswerIndex: number; explanation: string }
 
-export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: QuizLanguage = 'Korean'): Promise<PdfCaseItem | null> => {
+// style 'concept' = 임상 케이스 없이 내용 이해 5지선다 (§5-85)
+export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: QuizLanguage = 'Korean', style: 'case' | 'concept' = 'case'): Promise<PdfCaseItem | null> => {
     const langRule = quizLanguageRule(language).replace("The reader's note below is written in Korean — read it, but", 'Read the document text below (any language), but');
     const prompt = `
             ${langRule}
             You are an attending physician writing subspecialty board-level questions.
             ${READER_PROFILE}
-            Write ONE clinical application multiple-choice question from a PDF the reader uploaded.
+            Write ONE ${style === 'concept' ? 'content-understanding' : 'clinical application'} multiple-choice question from a PDF the reader uploaded.
 
             DOCUMENT: ${input.docTitle || 'Untitled'}${input.docSource ? ` — ${input.docSource}` : ''}
             THIS SECTION: ${input.sectionLabel} (section ${input.sectionIndex + 1} of ${input.sectionCount})
@@ -1753,13 +1775,13 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
             ${input.isFigure ? FIGURE_SECTION_NOTE : ''}
             THE POINT TO TEST: ${input.point}
 
-            QUESTION DESIGN:
+            ${style === 'concept' ? CONCEPT_DESIGN : `QUESTION DESIGN:
             - A realistic clinical vignette (age/sex, presentation, the data an expert would use — ECG/EGM, echo,
               hemodynamics, labs, prior therapy) that requires APPLYING the point to make a decision, not recalling it.
-              Where natural, integrate related details from the same section so the case is comprehensive.
+              Where natural, integrate related details from the same section so the case is comprehensive.`}
             - The keyed answer must follow from what THIS SECTION says (the answer key is the document).
               Do not key an answer the section does not support.
-            - "question" holds ONLY the vignette and the question stem — never list the choices in it.
+            - "question" holds ONLY ${style === 'concept' ? 'the question stem' : 'the vignette and the question stem'} — never list the choices in it.
             - Exactly 5 options in "options" (no "A." prefixes). Distractors are plausible near-misses a less experienced physician would pick
               (a threshold just off, the right drug in the wrong setting, a correct step in the wrong order,
               a lower class of recommendation).
@@ -1775,11 +1797,11 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
         feature: 'pdf',
         model: MODEL_FAST,
         toolName: 'submit_pdf_case_question',
-        toolDescription: 'Submit the clinical application multiple-choice question.',
+        toolDescription: style === 'concept' ? 'Submit the content-understanding multiple-choice question.' : 'Submit the clinical application multiple-choice question.',
         schema: {
             type: 'object',
             properties: {
-                question: { type: 'string', description: `Clinical vignette and the question stem ONLY — do NOT list the answer choices here (they go in "options"). ${langNote}` },
+                question: { type: 'string', description: `${style === 'concept' ? 'The question stem' : 'Clinical vignette and the question stem'} ONLY — do NOT list the answer choices here (they go in "options"). ${langNote}` },
                 options: { type: 'array', items: { type: 'string', description: `One answer choice, without a leading letter like "A.". ${langNote}` }, minItems: 5, maxItems: 5 },
                 correctAnswerIndex: { type: 'integer', minimum: 0, maximum: 4 },
                 explanation: { type: 'string', description: langNote }
@@ -1802,6 +1824,9 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
     }
     return item;
 };
+
+// PDF 내용 이해 5지선다 (§5-85) — 케이스 문제와 같은 흐름(정답 검증 포함), 임상 상황만 없음
+export const generatePdfConceptQuestion = (input: PdfCaseInput, language: QuizLanguage = 'Korean') => generatePdfCaseQuestion(input, language, 'concept');
 
 // PDF 구간 글 → 읽기 좋은 마크다운 (§5-83). 내용은 그대로, 배치만(끊긴 줄 잇기·문단·제목·목록·확실한 표).
 // 결과가 원래 글과 같은 내용인지는 호출부에서 mdLooksFaithful로 확인 (실패하면 저장하지 않고 원래 글을 보여 줌)

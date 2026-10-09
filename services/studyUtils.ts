@@ -88,6 +88,7 @@ export const wrongAnswerFromQuestion = (
     sources: q.sources || [],
     relatedNoteIds: q.relatedNoteIds || [],
     language,
+    ...(q.style ? { style: q.style } : {}),
     wrongAt: now,
     wrongCount: 1
 });
@@ -132,7 +133,8 @@ export const questionFromWrongAnswer = (w: WrongAnswerWithNote): QuizQuestion =>
     explanation: w.explanation,
     sources: w.sources || [],
     relatedNoteIds: w.relatedNoteIds && w.relatedNoteIds.length > 0 ? w.relatedNoteIds : [w.noteId],
-    replayOfNoteId: w.noteId
+    replayOfNoteId: w.noteId,
+    ...(w.style ? { style: w.style } : {})
 });
 
 // ---------------------------------------------------------------------------

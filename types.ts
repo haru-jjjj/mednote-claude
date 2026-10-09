@@ -96,6 +96,7 @@ export interface WrongAnswer {
   sources?: Source[];
   relatedNoteIds?: string[];
   language?: QuizLanguage;
+  style?: 'concept'; // 내용 이해 5지선다 (§5-85)
   wrongAt: number; // 마지막으로 틀린 시각
   wrongCount: number; // 틀린 횟수 (다시 풀기에서 또 틀리면 증가)
 }
@@ -175,6 +176,7 @@ export interface QuizQuestion {
     coverage?: { noteId: string; partKey: string; partLabel: string; partIndex: number; partCount: number; topic?: string };
     // PDF 자료에서 낸 문제 (§5-75): 어느 PDF의 어느 구간·요점인지 (푼 뒤 진행 기록에 사용)
     pdfRef?: PdfQuestionRef;
+    style?: 'concept'; // 5지선다 중 임상 케이스가 아닌 내용 이해 문제 (§5-85)
 }
 
 export interface PdfQuestionRef {
@@ -219,7 +221,7 @@ export interface PdfQuestion {
     pi: number; // 요점 번호 (pts 인덱스)
     q: string; // 참/거짓 문장 (케이스면 임상 상황+질문)
     t: boolean; // 참이면 true (OX만)
-    type?: 'MC'; // 케이스(임상 응용 5지선다) 문제면 'MC', 없으면 OX (§5-79)
+    type?: 'MC' | 'CQ'; // 'MC' 케이스(임상 응용 5지선다, §5-79) / 'CQ' 내용 이해 5지선다(§5-85) / 없으면 OX
     opts?: string[]; // 케이스: 보기 5개
     ans?: number; // 케이스: 정답 번호(0부터)
     ex: string; // 해설
@@ -258,7 +260,8 @@ export interface PdfDoc {
 
 export interface QuizState {
     isActive: boolean;
-    mode: 'DETAILED' | 'QUICK_OX' | 'MIXED' | null; // MIXED: 문제마다 케이스/OX 반반 (§5-79)
+    // DETAILED: 임상 케이스 5지선다 / QUICK_OX / CONCEPT: 내용 이해 5지선다(§5-85) / MIXED: 문제마다 OX·케이스·5지선다 섞음(§5-79, §5-85)
+    mode: 'DETAILED' | 'QUICK_OX' | 'CONCEPT' | 'MIXED' | null;
     // RANDOM: 무작위(복습 예정·안 푼 메모 우선) / REVIEW: 오늘 복습할 메모만 / WRONG: 오답 다시 풀기
     // PERIOD: 기간별 복습(선택한 기간에 쓰거나 고친 메모만, 메모를 한 바퀴 돌면 다시 처음부터)
     // PDF: PDF 자료실의 PDF 하나로 OX (요점마다 한 문제, 빠짐없이) (§5-75)

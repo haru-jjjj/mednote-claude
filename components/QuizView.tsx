@@ -9,7 +9,7 @@ import { getNoteFromDB } from '../services/storage';
 import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/sourceKind';
 import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo, stripInlineOptions, stripOptionLabel } from '../services/studyUtils';
 import { isRestingUntilDue } from '../services/quizCoverage';
-import { pdfStats, resetPdfRound, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder } from '../services/pdfQuiz';
+import { pdfStats, resetPdfRound, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, QUIZ_FORMATS, QUIZ_FORMAT_HINT, QUIZ_FORMAT_WITH, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder } from '../services/pdfQuiz';
 import { getPdfDoc, getPdfSectionText, getPdfSectionMd, updatePdfMeta, openPdfOriginal } from '../services/pdfLibrary';
 
 const PERIOD_KEY = 'medinote_quiz_period';
@@ -20,7 +20,7 @@ const readPeriod = (): ReviewPeriod => {
 interface QuizViewProps {
   notes: Note[];
   quizState: QuizState;
-  onStart: (mode: 'DETAILED' | 'QUICK_OX' | 'MIXED', language: QuizLanguage, source?: 'RANDOM' | 'REVIEW' | 'PERIOD', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => void;
+  onStart: (mode: 'DETAILED' | 'QUICK_OX' | 'CONCEPT' | 'MIXED', language: QuizLanguage, source?: 'RANDOM' | 'REVIEW' | 'PERIOD', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => void;
   onNext: (wasCorrect: boolean, chosenIndex: number | null) => void;
   onStop: () => void;
   onEndSession: () => void;
@@ -231,7 +231,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                               <BrainCircuit className="w-8 h-8 text-accent-600" />
                           </div>
                           <h2 className="text-2xl font-bold text-slate-900 mb-3">AI 퀴즈 복습</h2>
-                          <p className="text-slate-500 mb-6 text-base">시간에 맞춰 문제 방식을 고르세요.</p>
+                          <p className="text-slate-500 mb-6 text-base">언어와 문제 형식을 고르고, 아래에서 복습할 범위를 시작하세요.</p>
                           
                           {/* Language Selection */}
                           <div className="inline-flex flex-wrap justify-center items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm gap-1">
@@ -249,6 +249,23 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                        {lang === 'Korean' ? '한국어' : lang === 'English' ? 'English' : <span lang="ja">日本語</span>}
                                    </button>
                                ))}
+                          </div>
+
+                          {/* 문제 형식 (§5-85): 아래 모든 복습(오늘·기간·PDF·무작위)에 공통 */}
+                          <div className="mt-3 flex flex-col items-center gap-1.5">
+                              <div className="inline-flex flex-wrap justify-center items-center bg-white border border-slate-200 rounded-xl p-1 shadow-sm gap-1">
+                                  {QUIZ_FORMATS.map(f => (
+                                      <button
+                                          type="button"
+                                          key={f}
+                                          onClick={() => setPdfFormat(f)}
+                                          className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg text-sm font-bold transition-all ${pdfFormat === f ? 'bg-accent-700 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100'}`}
+                                      >
+                                          {PDF_FORMAT_LABEL[f]}
+                                      </button>
+                                  ))}
+                              </div>
+                              <p className="text-xs text-slate-400">{QUIZ_FORMAT_HINT[pdfFormat]}</p>
                           </div>
                       </div>
                       
@@ -272,17 +289,10 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                       <div className="flex flex-wrap gap-2 mt-3">
                                           <button
                                               type="button"
-                                              onClick={() => onStart('DETAILED', selectedLanguage, 'REVIEW')}
+                                              onClick={() => onStart(pdfFormat, selectedLanguage, 'REVIEW')}
                                               className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 transition-colors flex items-center gap-1.5"
                                           >
-                                              <BookOpen className="w-4 h-4" /> 케이스 문제로 복습
-                                          </button>
-                                          <button
-                                              type="button"
-                                              onClick={() => onStart('QUICK_OX', selectedLanguage, 'REVIEW')}
-                                              className="px-4 py-2 rounded-xl bg-white border border-accent-300 text-accent-700 text-sm font-bold hover:bg-accent-100 transition-colors flex items-center gap-1.5"
-                                          >
-                                              <Zap className="w-4 h-4" /> OX로 빠르게
+                                              <Play className="w-4 h-4" /> {QUIZ_FORMAT_WITH[pdfFormat]} 복습 시작
                                           </button>
                                       </div>
                                   )}
@@ -324,28 +334,11 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                   <div className="flex flex-wrap gap-2 mt-3">
                                       <button
                                           type="button"
-                                          onClick={() => onStart('DETAILED', selectedLanguage, 'PERIOD', period, { periodAll: periodCounts[period] === 0 })}
+                                          onClick={() => onStart(pdfFormat, selectedLanguage, 'PERIOD', period, { periodAll: periodCounts[period] === 0 })}
                                           disabled={periodStats[period].all === 0}
                                           className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
                                       >
-                                          <BookOpen className="w-4 h-4" /> {periodCounts[period] === 0 && periodStats[period].all > 0 ? '맞힌 메모도 케이스로' : '케이스 문제로'}
-                                      </button>
-                                      <button
-                                          type="button"
-                                          onClick={() => onStart('QUICK_OX', selectedLanguage, 'PERIOD', period, { periodAll: periodCounts[period] === 0 })}
-                                          disabled={periodStats[period].all === 0}
-                                          className="px-4 py-2 rounded-xl bg-white border border-accent-300 text-accent-700 text-sm font-bold hover:bg-accent-100 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-                                      >
-                                          <Zap className="w-4 h-4" /> {periodCounts[period] === 0 && periodStats[period].all > 0 ? '맞힌 메모도 OX로' : 'OX로 빠르게'}
-                                      </button>
-                                      <button
-                                          type="button"
-                                          onClick={() => onStart('MIXED', selectedLanguage, 'PERIOD', period, { periodAll: periodCounts[period] === 0 })}
-                                          disabled={periodStats[period].all === 0}
-                                          className="px-4 py-2 rounded-xl bg-white border border-accent-300 text-accent-700 text-sm font-bold hover:bg-accent-100 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-                                          title="문제마다 케이스 문제와 OX가 반반씩 섞여 나옵니다"
-                                      >
-                                          <Shuffle className="w-4 h-4" /> {periodCounts[period] === 0 && periodStats[period].all > 0 ? '맞힌 메모도 섞어서' : '케이스+OX 섞어서'}
+                                          <Play className="w-4 h-4" /> {periodCounts[period] === 0 && periodStats[period].all > 0 ? `맞힌 메모도 ${QUIZ_FORMAT_WITH[pdfFormat]} 다시 풀기` : `${QUIZ_FORMAT_WITH[pdfFormat]} 시작`}
                                       </button>
                                   </div>
                               </div>
@@ -371,7 +364,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                           </div>
                                           <p className="text-sm text-slate-500 leading-relaxed mt-1">
                                               {pdfDocs.length === 0
-                                                  ? 'PDF를 올리면 구간마다 요점을 정리해 요점 하나당 한 문제(OX 또는 임상 케이스)로, 처음부터 끝까지 빠짐없이 냅니다.'
+                                                  ? 'PDF를 올리면 구간마다 요점을 정리해 요점 하나당 한 문제(위에서 고른 형식)로, 처음부터 끝까지 빠짐없이 냅니다.'
                                                   : `올린 PDF ${ps.docs}개를 섞어서 냅니다. 안 푼 요점만 내서 한 바퀴 돌면 모든 요점을 빠짐없이 만나고, 맞힌 요점은 이번 바퀴에 다시 안 나와요.`}
                                           </p>
                                           {pdfDocs.length > 0 && (
@@ -386,19 +379,6 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                       구간 {ps.sectionsDone}/{ps.sections} · 맞힘 {ps.ok} · 틀림 {ps.wrong}{outCount > 0 ? ` · 복습에서 뺀 PDF ${outCount}개` : ''}
                                                   </p>
                                                   <div className="flex flex-wrap items-center gap-1.5 mt-3">
-                                                      <span className="text-[11px] text-slate-400 mr-1">문제 형식</span>
-                                                      {(['QUICK_OX', 'DETAILED', 'MIXED'] as PdfQuizFormat[]).map(f => (
-                                                          <button
-                                                              key={f}
-                                                              type="button"
-                                                              onClick={() => setPdfFormat(f)}
-                                                              className={`px-2.5 py-1 rounded-lg border text-xs font-bold ${pdfFormat === f ? 'bg-accent-50 border-accent-300 text-accent-700' : 'bg-white border-slate-200 text-slate-500'}`}
-                                                          >
-                                                              {PDF_FORMAT_LABEL[f]}
-                                                          </button>
-                                                      ))}
-                                                  </div>
-                                                  <div className="flex flex-wrap items-center gap-1.5 mt-2">
                                                       <span className="text-[11px] text-slate-400 mr-1">출제 순서</span>
                                                       {(['random', 'seq'] as PdfOrder[]).map(o => (
                                                           <button
@@ -434,49 +414,29 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                           );
                       })()}
 
-                      <p className="text-xs font-bold text-slate-400 mb-3 px-1">
-                          무작위 퀴즈 — 복습일이 된 메모와 아직 안 푼 메모가 더 자주 나옵니다
-                      </p>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
-                          {/* Detailed Mode Card */}
-                          <button 
-                              type="button"
-                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onStart('DETAILED', selectedLanguage); }}
-                              disabled={notes.length === 0}
-                              className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-accent-300 hover:-translate-y-1 transition-all text-left group disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                              <div className="w-10 h-10 rounded-xl bg-accent-50 text-accent-600 flex items-center justify-center mb-4 group-hover:bg-accent-600 group-hover:text-white transition-colors">
-                                  <BookOpen className="w-5 h-5" />
+                      {/* 무작위 퀴즈: 위에서 고른 형식으로 */}
+                      <div className="rounded-2xl border border-slate-200 bg-white p-5 md:p-6">
+                          <div className="flex items-start gap-3">
+                              <div className="w-10 h-10 shrink-0 rounded-xl flex items-center justify-center bg-slate-100 text-slate-500">
+                                  <Shuffle className="w-5 h-5" />
                               </div>
-                              <h3 className="text-lg md:text-xl font-bold text-slate-900 mb-2">케이스 문제</h3>
-                              <p className="text-slate-500 text-sm leading-relaxed mb-4">
-                                  임상 상황을 주고 판단을 묻는 5지선다. 해설과 근거 자료가 함께 나옵니다.
-                              </p>
-                              <div className="flex items-center text-accent-600 font-bold text-sm md:text-base">
-                                  시작 <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
+                              <div className="min-w-0 flex-1">
+                                  <h3 className="text-lg font-bold text-slate-900">무작위 퀴즈</h3>
+                                  <p className="text-sm text-slate-500 leading-relaxed mt-1">전체 메모에서 냅니다. 복습일이 된 메모와 아직 안 푼 메모가 더 자주 나옵니다. 해설과 근거 자료가 함께 나옵니다.</p>
+                                  <div className="flex flex-wrap gap-2 mt-3">
+                                      <button
+                                          type="button"
+                                          onClick={() => onStart(pdfFormat, selectedLanguage)}
+                                          disabled={notes.length === 0}
+                                          className="px-4 py-2 rounded-xl bg-accent-700 text-white text-sm font-bold hover:bg-accent-800 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                          <Play className="w-4 h-4" /> {QUIZ_FORMAT_WITH[pdfFormat]} 시작
+                                      </button>
+                                  </div>
                               </div>
-                          </button>
-     
-                          {/* Quick OX Mode Card */}
-                          <button 
-                              type="button"
-                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); onStart('QUICK_OX', selectedLanguage); }}
-                              disabled={notes.length === 0}
-                              className="bg-white p-6 md:p-8 rounded-2xl border border-slate-200 shadow-sm hover:shadow-xl hover:border-accent-300 hover:-translate-y-1 transition-all text-left group disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                              <div className="w-10 h-10 rounded-xl bg-accent-50 text-accent-600 flex items-center justify-center mb-4 group-hover:bg-accent-600 group-hover:text-white transition-colors">
-                                  <Zap className="w-5 h-5" />
-                              </div>
-                              <h3 className="text-lg md:text-xl font-bold text-slate-900 mb-2">OX 빠른 복습</h3>
-                              <p className="text-slate-500 text-sm leading-relaxed mb-4">
-                                  짧은 참/거짓 문제를 연달아 풉니다. 틈날 때 가볍게 훑기 좋습니다.
-                              </p>
-                              <div className="flex items-center text-accent-600 font-bold text-sm md:text-base">
-                                  시작 <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
-                              </div>
-                          </button>
+                          </div>
                       </div>
-                      
+
                       {notes.length === 0 && (
                           <div className="mt-8 p-4 bg-red-50 text-red-600 text-center rounded-xl text-sm font-medium">
                               You need to add some notes before starting the quiz.
@@ -518,7 +478,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                                   className="w-full text-left p-3 hover:bg-slate-50 transition-colors flex items-start gap-2"
                                               >
                                                   <span className={`shrink-0 mt-0.5 text-[10px] font-bold px-1.5 py-0.5 rounded ${w.type === 'OX' ? 'bg-accent-100 text-accent-700' : 'bg-accent-100 text-accent-700'}`}>
-                                                      {w.type === 'OX' ? 'OX' : '케이스'}
+                                                      {w.type === 'OX' ? 'OX' : w.style === 'concept' ? '5지선다' : '케이스'}
                                                   </span>
                                                   <span className={`flex-1 min-w-0 text-sm text-slate-700 ${isOpen ? '' : 'line-clamp-2'}`}>
                                                       {(w.type === 'OX' ? w.question : stripInlineOptions(w.question)).replace(/[#*`>]/g, '')}
@@ -710,7 +670,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                   </div>
               </div>
               <h2 className="text-xl font-bold text-slate-800 mb-2">
-                  {quizState.error ? '문제가 발생했습니다' : (quizState.mode === 'QUICK_OX' ? 'OX 문제 만드는 중...' : quizState.mode === 'MIXED' ? '문제 만드는 중...' : '케이스 문제 만드는 중...')}
+                  {quizState.error ? '문제가 발생했습니다' : (quizState.mode === 'QUICK_OX' ? 'OX 문제 만드는 중...' : quizState.mode === 'MIXED' ? '문제 만드는 중...' : quizState.mode === 'CONCEPT' ? '5지선다 문제 만드는 중...' : '케이스 문제 만드는 중...')}
               </h2>
               <p className="text-slate-400 text-sm mb-8">
                   {quizState.error ? quizState.error : quizState.source === 'PDF' ? 'PDF 구간의 요점을 정리해 문제를 만들고 있습니다.\n구간마다 처음 한 번만 시간이 걸려요 (10~30초).' : 'AI가 메모를 분석하여 문제를 만들고 있습니다.\n잠시만 기다려주세요.'}
@@ -758,7 +718,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                 </div>
                 <div>
                     <h2 className="font-bold text-slate-800 text-base md:text-lg">
-                        {quizState.source === 'PDF' ? <span className="block max-w-[52vw] md:max-w-md truncate">{quizState.pdfId ? 'PDF' : 'PDF 복습'} · {currentQ.pdfRef?.docTitle || currentPdf?.title || ''}</span> : quizState.source === 'REVIEW' ? '오늘의 복습' : quizState.source === 'WRONG' ? '오답 다시 풀기' : quizState.source === 'PERIOD' ? `기간 복습 · ${periodInfo(quizState.period).long}` : (isOX ? 'OX 빠른 복습' : '케이스 문제')}
+                        {quizState.source === 'PDF' ? <span className="block max-w-[52vw] md:max-w-md truncate">{quizState.pdfId ? 'PDF' : 'PDF 복습'} · {currentQ.pdfRef?.docTitle || currentPdf?.title || ''}</span> : quizState.source === 'REVIEW' ? '오늘의 복습' : quizState.source === 'WRONG' ? '오답 다시 풀기' : quizState.source === 'PERIOD' ? `기간 복습 · ${periodInfo(quizState.period).long}` : (isOX ? 'OX 빠른 복습' : currentQ.style === 'concept' ? '5지선다' : '케이스 문제')}
                     </h2>
                     <div className="text-[11px] text-slate-400 flex items-center gap-1">
                         <Trophy className="w-3 h-3" /> Score: {quizState.stats.correct}/{quizState.stats.total}
@@ -777,7 +737,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                 <div className="bg-white rounded-3xl shadow-sm border border-slate-200 p-6 md:p-10 mb-6 animate-in slide-in-from-right duration-300">
                     <span className={`inline-block px-3 py-1 rounded-full text-[11px] font-bold uppercase tracking-wider mb-4 
                         ${isOX ? 'bg-accent-100 text-accent-700' : 'bg-accent-100 text-accent-700'}`}>
-                        {isOX ? '참 / 거짓' : '케이스'}
+                        {isOX ? '참 / 거짓' : currentQ.style === 'concept' ? '5지선다' : '케이스'}
                     </span>
                     {/* Render Question with Medical Formatting */}
                     {/* 케이스 문제는 긴 임상 상황이라 왼쪽 정렬·보통 굵기로, 본문에 섞여 온 보기는 잘라냄 (§5-80) */}

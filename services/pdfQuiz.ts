@@ -11,12 +11,14 @@ import type { PdfDoc, PdfPoint, PdfQuestion, PdfSectionProgress, PdfSectionMeta,
 export type PdfPick =
     | { kind: 'question'; section: PdfSectionMeta; sectionIndex: number; sectionCount: number; question: PdfQuestion }
     // null = 요점 목록부터(OX와 함께 만듦). format MC = 그 요점 하나의 케이스(5지선다) 문제를 만듦 (§5-79)
-    | { kind: 'generate'; section: PdfSectionMeta; sectionIndex: number; sectionCount: number; pointIndexes: number[] | null; format: 'OX' | 'MC' }
+    | { kind: 'generate'; section: PdfSectionMeta; sectionIndex: number; sectionCount: number; pointIndexes: number[] | null; format: 'OX' | 'MC' | 'CQ' }
     | { kind: 'done' };
 
 // 문제 형식 (§5-79): OX / 케이스(임상 응용 5지선다) / 섞어서(문제마다 반반)
-export type PdfFormat = 'OX' | 'MC' | 'MIX';
-export const qFormat = (q: PdfQuestion): 'OX' | 'MC' => (q.type === 'MC' ? 'MC' : 'OX');
+// CQ = 내용 이해 5지선다 (§5-85). 섞어서 = OX 40% · 케이스 30% · 내용 5지선다 30%
+export type PdfFormat = 'OX' | 'MC' | 'CQ' | 'MIX';
+export const qFormat = (q: PdfQuestion): 'OX' | 'MC' | 'CQ' => (q.type === 'MC' ? 'MC' : q.type === 'CQ' ? 'CQ' : 'OX');
+export const pickMixFormat = (r: number): 'OX' | 'MC' | 'CQ' => (r < 0.4 ? 'OX' : r < 0.7 ? 'MC' : 'CQ');
 
 export const activeSections = (doc: PdfDoc): PdfSectionMeta[] =>
     doc.sections.filter(s => !s.excluded && !doc.progress?.[s.key]?.empty);
@@ -65,14 +67,14 @@ export const pickPdfQuestion = (
                 const q = qs.find(x => x.id === p.wq) || qs.find(x => x.pi === i)!;
                 return { kind: 'question', ...base, question: q };
             }
-            return { kind: 'generate', ...base, pointIndexes: [pending[0].i], format: format === 'MC' ? 'MC' : 'OX' };
+            return { kind: 'generate', ...base, pointIndexes: [pending[0].i], format: format === 'MC' || format === 'CQ' ? format : 'OX' };
         }
         // 형식은 고른 것(섞어서면 요점마다 반반)
         const { i } = pickIn(pending);
-        const fmt: 'OX' | 'MC' = format === 'MIX' ? (rand() < 0.5 ? 'MC' : 'OX') : format;
+        const fmt: 'OX' | 'MC' | 'CQ' = format === 'MIX' ? pickMixFormat(rand()) : format;
         const q = qs.find(x => x.pi === i && x.lang === language && qFormat(x) === fmt);
         if (q) return { kind: 'question', ...base, question: q };
-        if (fmt === 'MC') return { kind: 'generate', ...base, pointIndexes: [i], format: 'MC' };
+        if (fmt !== 'OX') return { kind: 'generate', ...base, pointIndexes: [i], format: fmt };
         // OX는 한 번에: 이 언어의 OX가 없는 안 푼 요점 전부
         const missing = pending.filter(x => !qs.some(q2 => q2.pi === x.i && q2.lang === language && qFormat(q2) === 'OX')).map(x => x.i);
         return { kind: 'generate', ...base, pointIndexes: missing.length ? missing : [i], format: 'OX' };
@@ -156,7 +158,8 @@ export const applyGeneratedCase = (
     item: GeneratedCase | null,
     language: QuizLanguage,
     makeId: () => string,
-    now: number
+    now: number,
+    kind: 'MC' | 'CQ' = 'MC' // MC 케이스 / CQ 내용 이해 5지선다 (§5-85)
 ): PdfSectionProgress => {
     if (!item || !item.question || !Array.isArray(item.options) || item.options.length < 2) {
         // 못 만들었거나 정답 검증 불일치 → 실패 횟수 (2번이면 이번 바퀴 건너뜀)
@@ -164,9 +167,9 @@ export const applyGeneratedCase = (
         if (pts[pointIndex]) pts[pointIndex] = bumpFail(pts[pointIndex]);
         return { ...(prev || {}), pts, u: now };
     }
-    const qs = (prev?.qs || []).filter(q => !(q.pi === pointIndex && qFormat(q) === 'MC' && q.lang === language));
+    const qs = (prev?.qs || []).filter(q => !(q.pi === pointIndex && qFormat(q) === kind && q.lang === language));
     const ans = Math.min(Math.max(0, Math.round(item.correctAnswerIndex || 0)), item.options.length - 1);
-    qs.push({ id: makeId(), pi: pointIndex, type: 'MC', q: item.question.trim(), t: false, opts: item.options.map(o => String(o)), ans, ex: (item.explanation || '').trim(), lang: language });
+    qs.push({ id: makeId(), pi: pointIndex, type: kind, q: item.question.trim(), t: false, opts: item.options.map(o => String(o)), ans, ex: (item.explanation || '').trim(), lang: language });
     return { ...(prev || {}), qs, u: now };
 };
 
@@ -244,10 +247,11 @@ export const toQuizQuestion = (doc: PdfDoc, pick: Extract<PdfPick, { kind: 'ques
     const point = doc.progress?.[pick.section.key]?.pts?.[q.pi]?.p || '';
     return {
         id: q.id,
-        type: qFormat(q) === 'MC' ? 'MULTIPLE_CHOICE' : 'OX',
+        type: qFormat(q) === 'OX' ? 'OX' : 'MULTIPLE_CHOICE',
+        ...(qFormat(q) === 'CQ' ? { style: 'concept' as const } : {}),
         question: q.q,
-        options: qFormat(q) === 'MC' ? (q.opts || []) : ['O', 'X'],
-        correctAnswerIndex: qFormat(q) === 'MC' ? (q.ans || 0) : (q.t ? 0 : 1),
+        options: qFormat(q) !== 'OX' ? (q.opts || []) : ['O', 'X'],
+        correctAnswerIndex: qFormat(q) !== 'OX' ? (q.ans || 0) : (q.t ? 0 : 1),
         explanation: q.ex,
         sources: [],
         relatedNoteIds: [],
@@ -296,7 +300,7 @@ export const sanitizePdfDoc = (x: any): PdfDoc | null => {
         if (!/^s\d+$/.test(k) || !p || typeof p !== 'object') return;
         progress[k] = {
             pts: Array.isArray(p.pts) ? p.pts.map((t: any) => ({ p: str(t?.p, 120), st: t?.st === 'ok' || t?.st === 'wrong' ? t.st : 'new', at: typeof t?.at === 'number' ? t.at : undefined, wc: typeof t?.wc === 'number' ? t.wc : undefined, wq: typeof t?.wq === 'string' ? t.wq : undefined, fa: typeof t?.fa === 'number' ? t.fa : undefined, x: t?.x === true ? true : undefined })) : undefined,
-            qs: Array.isArray(p.qs) ? p.qs.filter((q: any) => q && typeof q.id === 'string' && typeof q.q === 'string' && typeof q.pi === 'number').map((q: any) => ({ id: q.id, pi: q.pi, q: str(q.q, 2000), t: q.t === true, ex: str(q.ex, 4000), lang: LANGS.includes(q.lang) ? q.lang : 'Korean', ...(q.type === 'MC' && Array.isArray(q.opts) ? { type: 'MC' as const, opts: q.opts.map((o: any) => str(o, 1000)), ans: typeof q.ans === 'number' ? q.ans : 0 } : {}) })) : undefined,
+            qs: Array.isArray(p.qs) ? p.qs.filter((q: any) => q && typeof q.id === 'string' && typeof q.q === 'string' && typeof q.pi === 'number').map((q: any) => ({ id: q.id, pi: q.pi, q: str(q.q, 2000), t: q.t === true, ex: str(q.ex, 4000), lang: LANGS.includes(q.lang) ? q.lang : 'Korean', ...((q.type === 'MC' || q.type === 'CQ') && Array.isArray(q.opts) ? { type: q.type as 'MC' | 'CQ', opts: q.opts.map((o: any) => str(o, 1000)), ans: typeof q.ans === 'number' ? q.ans : 0 } : {}) })) : undefined,
             empty: p.empty === true ? true : undefined,
             u: typeof p.u === 'number' ? p.u : undefined,
         };
@@ -404,11 +408,25 @@ export const poolStats = (docs: PdfDoc[]) => {
 };
 
 // PDF 복습 문제 형식 기억 (퀴즈 첫 화면·자료실 공통, §5-79)
-export type PdfQuizFormat = 'QUICK_OX' | 'DETAILED' | 'MIXED';
-export const PDF_FORMAT_LABEL: Record<PdfQuizFormat, string> = { QUICK_OX: 'OX', DETAILED: '케이스', MIXED: '섞어서' };
-const PDF_FORMAT_KEY = 'medinote_pdf_format';
+// §5-85: 메모 퀴즈·PDF 복습 공통 "문제 형식" (퀴즈 첫 화면 위 선택 하나)
+export type PdfQuizFormat = 'QUICK_OX' | 'DETAILED' | 'CONCEPT' | 'MIXED';
+export const QUIZ_FORMATS: PdfQuizFormat[] = ['QUICK_OX', 'DETAILED', 'CONCEPT', 'MIXED'];
+export const PDF_FORMAT_LABEL: Record<PdfQuizFormat, string> = { QUICK_OX: 'OX', DETAILED: '케이스', CONCEPT: '5지선다', MIXED: '섞어서' };
+export const QUIZ_FORMAT_HINT: Record<PdfQuizFormat, string> = {
+    QUICK_OX: '참/거짓 문장 — 조건·예외·기준까지 알아야 풀리게',
+    DETAILED: '임상 상황을 주고 판단을 묻는 5지선다',
+    CONCEPT: '임상 케이스 없이 내용 이해를 묻는 5지선다 (옳은/틀린 것 고르기, 기준·비교 등)',
+    MIXED: '문제마다 OX·케이스·5지선다를 섞어서',
+};
+// 버튼 문구용 ("OX로 시작", "섞어서 시작")
+export const QUIZ_FORMAT_WITH: Record<PdfQuizFormat, string> = { QUICK_OX: 'OX로', DETAILED: '케이스 문제로', CONCEPT: '5지선다로', MIXED: '섞어서' };
+const PDF_FORMAT_KEY = 'medinote_quiz_format';
+const OLD_PDF_FORMAT_KEY = 'medinote_pdf_format';
 export const readPdfQuizFormat = (): PdfQuizFormat => {
-    try { const v = localStorage.getItem(PDF_FORMAT_KEY); return v === 'DETAILED' || v === 'MIXED' ? v : 'QUICK_OX'; } catch { return 'QUICK_OX'; }
+    try {
+        const v = localStorage.getItem(PDF_FORMAT_KEY) ?? localStorage.getItem(OLD_PDF_FORMAT_KEY);
+        return v === 'DETAILED' || v === 'CONCEPT' || v === 'MIXED' ? v : 'QUICK_OX';
+    } catch { return 'QUICK_OX'; }
 };
 export const savePdfQuizFormat = (f: PdfQuizFormat) => { try { localStorage.setItem(PDF_FORMAT_KEY, f); } catch { /* 이번 화면에선 동작 */ } };
 

@@ -20,9 +20,9 @@ import PinSettingsModal from './components/PinSettingsModal';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, PdfDoc, NoteCategory, toggleCategory, categoryLabels } from './types';
 import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote, isQuizEligible, notesInPeriod, ReviewPeriod } from './services/studyUtils';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
-import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines, generatePdfOXBatch, generatePdfCaseQuestion } from './services/claudeService';
+import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines, generatePdfOXBatch, generatePdfCaseQuestion, generatePdfConceptQuestion } from './services/claudeService';
 import { subscribePdfDocs, loadLocalPdfDocs, syncPdfDocs, getPdfDoc, getAllPdfDocs, getPdfSectionText, updatePdfSection } from './services/pdfLibrary';
-import { pickPdfQuestion, applyGenerated, applyGeneratedCase, recordPdfAnswer, discardPdfQuestion, toQuizQuestion, newPdfId, pickFromPool, inPdfPool, PoolPick, PdfFormat, PdfOrder } from './services/pdfQuiz';
+import { pickPdfQuestion, applyGenerated, applyGeneratedCase, recordPdfAnswer, discardPdfQuestion, toQuizQuestion, newPdfId, pickFromPool, inPdfPool, PoolPick, PdfFormat, PdfOrder, pickMixFormat } from './services/pdfQuiz';
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 import { sanitizeHistory, historyKey, archiveCurrentSummary, trimHistory } from './services/summaryHistory';
@@ -591,7 +591,7 @@ const App: React.FC = () => {
     // 오답 다시 풀기는 저장된 문제만 쓰고, 복습 대상이 바닥나면 더 만들지 않음
     if (quizState.source === 'WRONG' || quizState.noMoreQuestions) return;
 
-    const BUFFER_SIZE = quizState.mode === 'DETAILED' ? 1 : 2; // OX·섞어서는 2개 미리
+    const BUFFER_SIZE = quizState.mode === 'DETAILED' || quizState.mode === 'CONCEPT' ? 1 : 2; // OX·섞어서는 2개 미리
     if (quizState.questionQueue.length >= BUFFER_SIZE || quizState.isGenerating || quizState.error) return;
 
     const session = quizSessionRef.current;
@@ -619,7 +619,7 @@ const App: React.FC = () => {
             if (quizState.source === 'PDF') {
                 const singleId = quizState.pdfId || null;
                 // 문제 형식 (§5-79): 케이스 문제 = MC, 섞어서 = 요점마다 반반
-                const pdfFormat: PdfFormat = quizState.mode === 'DETAILED' ? 'MC' : quizState.mode === 'MIXED' ? 'MIX' : 'OX';
+                const pdfFormat: PdfFormat = quizState.mode === 'DETAILED' ? 'MC' : quizState.mode === 'CONCEPT' ? 'CQ' : quizState.mode === 'MIXED' ? 'MIX' : 'OX';
                 const pdfOrder: PdfOrder = quizState.pdfOrder || 'seq'; // §5-81
                 const mode = quizState.pdfMode || 'all';
                 const reservedMap = pdfReservedRef.current;
@@ -662,10 +662,11 @@ const App: React.FC = () => {
                         stickKey = pick.section.key;
                         const text = await getPdfSectionText(doc, pick.section.key);
                         const pts = doc.progress[pick.section.key]?.pts || [];
-                        if (pick.format === 'MC' && pick.pointIndexes && pick.pointIndexes.length) {
-                            // 케이스(임상 응용) 문제: 요점 하나씩 (§5-79)
+                        if ((pick.format === 'MC' || pick.format === 'CQ') && pick.pointIndexes && pick.pointIndexes.length) {
+                            // 케이스(임상 응용, §5-79) 또는 내용 이해 5지선다(§5-85): 요점 하나씩
                             const pi = pick.pointIndexes[0];
-                            const item = await generatePdfCaseQuestion({
+                            const kind = pick.format;
+                            const item = await (kind === 'CQ' ? generatePdfConceptQuestion : generatePdfCaseQuestion)({
                                 docTitle: doc.title,
                                 docSource: doc.source,
                                 sectionLabel: pick.section.label,
@@ -675,7 +676,7 @@ const App: React.FC = () => {
                                 point: pts[pi]?.p || '',
                                 isFigure: !!pick.section.fig // 그림·표 구간 (§5-84)
                             }, quizState.language);
-                            await updatePdfSection(pdfId, pick.section.key, prev => applyGeneratedCase(prev, pi, item, quizState.language, () => newPdfId('q_'), Date.now()));
+                            await updatePdfSection(pdfId, pick.section.key, prev => applyGeneratedCase(prev, pi, item, quizState.language, () => newPdfId('q_'), Date.now(), kind));
                             if (quizSessionRef.current !== session) return;
                             // 못 만들었거나 정답 검증에 떨어지면(§5-82) 그 요점 실패 횟수만 올리고 다시 고름 (2번이면 그 요점은 건너뜀)
                             continue;
@@ -803,10 +804,11 @@ const App: React.FC = () => {
             };
 
             let question: QuizQuestion | null = null;
-            // 섞어서(§5-79): 문제마다 케이스/OX 반반
-            const useCase = quizState.mode === 'DETAILED' || (quizState.mode === 'MIXED' && Math.random() < 0.5);
-            if (useCase) {
-                question = await generateMedicalQuiz(focus, quizState.language);
+            // 형식: 케이스 / 내용 5지선다(§5-85) / OX, 섞어서는 문제마다 OX 40% · 케이스 30% · 5지선다 30%
+            const mixed = quizState.mode === 'MIXED' ? pickMixFormat(Math.random()) : null;
+            const kind = quizState.mode === 'DETAILED' || mixed === 'MC' ? 'case' : quizState.mode === 'CONCEPT' || mixed === 'CQ' ? 'concept' : 'ox';
+            if (kind !== 'ox') {
+                question = await generateMedicalQuiz(focus, quizState.language, kind);
             } else {
                 question = await generateOXQuiz(focus, quizState.language);
             }
@@ -859,7 +861,7 @@ const App: React.FC = () => {
   }, [quizState.isActive, quizState.mode, quizState.source, quizState.period, quizState.periodAll, quizState.pdfId, quizState.pdfMode, quizState.pdfOrder, quizState.noMoreQuestions, quizState.questionQueue.length, quizState.isGenerating, quizState.currentQuestion, quizState.language, quizState.error, recentRandomIds]);
 
 
-  const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX' | 'MIXED', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' | 'PERIOD' = 'RANDOM', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => {
+  const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX' | 'CONCEPT' | 'MIXED', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' | 'PERIOD' = 'RANDOM', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => {
       quizSessionRef.current += 1;
       reviewUsedIdsRef.current = new Set();
       periodUsedIdsRef.current = new Set();
@@ -883,7 +885,7 @@ const App: React.FC = () => {
   // PDF 자료로 OX (§5-75): mode all = 안 푼 요점부터 빠짐없이 / wrong = 틀린 요점의 문제를 그대로 다시
   // pdfId가 null이면 전체 풀(PDF 복습에 넣어 둔 모든 PDF) (§5-76)
   // format: OX / 케이스(DETAILED) / 섞어서(MIXED) (§5-79)
-  const handleStartPdfQuiz = React.useCallback((pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format: 'QUICK_OX' | 'DETAILED' | 'MIXED' = 'QUICK_OX', order: PdfOrder = 'seq') => {
+  const handleStartPdfQuiz = React.useCallback((pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format: 'QUICK_OX' | 'DETAILED' | 'CONCEPT' | 'MIXED' = 'QUICK_OX', order: PdfOrder = 'seq') => {
       quizSessionRef.current += 1;
       pdfReservedRef.current = new Map();
       setQuizState({

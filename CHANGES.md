@@ -1529,6 +1529,20 @@ service firebase.storage {
 - 바뀐 파일: `services/pdfExtract.ts`, `services/pdfLibrary.ts`, `services/claudeService.ts`, `services/pdfQuiz.ts`, `types.ts`, `App.tsx`,
   `components/PdfLibraryView.tsx`, `components/QuizView.tsx` (새 파일 없음)
 
+## 5-85. OX 깊이 약간 상향 + 내용 이해 5지선다 + "문제 형식" 선택 하나로 (요청)
+
+- **OX 깊이(살짝만)**: 메모 OX·PDF OX 모두 "단순 사실보다 한 단계 깊게" — 그 내용에 붙은 조건·대상군·수치 기준·예외·비교·근거를
+  함께 넣은 문장(예: "X인 환자에서 W보다 Z가 권고된다" ↔ "Z가 쓰인다"). 한 문장 한 개념·참/거짓 명확은 그대로, 정의·이름·날짜 같은 사소한 것은 피함.
+- **5지선다(내용 이해)** 새 형식(`CONCEPT`): 임상 케이스 없이 내용을 정확히 아는지 묻는 5지선다.
+  - 예: "…에 대해 옳은(옳지 않은) 것은?", 어떤 기준·수치·권고 등급·1차 선택이 해당하는지, 두 약물·연구·질환·전략의 차이, 기전·근거, 목록에 속하는(빠진) 것.
+  - 다섯 보기는 같은 종류·그럴듯하게, "모두 정답/정답 없음" 금지, 정답 하나. 오답 보기는 숫자·대상군·등급·방향·예외 중 하나만 바꾼 형태를 선호.
+  - 메모 퀴즈: `generateMedicalQuiz(focus, lang, 'concept')`. PDF: `generatePdfConceptQuestion`(케이스와 같은 흐름 — 구간 글만 보고 따로 풀어 정답 확인, §5-82).
+  - 문제 화면 표시 "5지선다", 오답 노트에도 "5지선다"로 구분. PDF 문제 저장 `type: 'CQ'`.
+- **섞어서** = 문제마다 OX 40% · 케이스 30% · 5지선다 30%(전에는 케이스/OX 반반).
+- **퀴즈 첫 화면 정리**: 언어 아래 "문제 형식: OX / 케이스 / 5지선다 / 섞어서" 하나로 모음(마지막 선택 기억, PDF 자료실과 공통 — localStorage `medinote_quiz_format`).
+  오늘의 복습·기간별 복습·PDF 복습·무작위 퀴즈는 각각 시작 버튼 하나("OX로 시작", "5지선다로 시작" 등). 무작위 퀴즈의 큰 카드 두 개는 카드 하나로.
+- 바뀐 파일: `services/claudeService.ts`, `services/pdfQuiz.ts`, `services/studyUtils.ts`, `types.ts`, `App.tsx`, `components/QuizView.tsx`, `components/PdfLibraryView.tsx` (새 파일 없음)
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.
