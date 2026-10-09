@@ -233,6 +233,7 @@ export interface PdfSectionProgress {
     pts?: PdfPoint[]; // 요점 목록 (처음 출제할 때 AI가 만듦)
     qs?: PdfQuestion[]; // 만들어 두고 아직 안 풀었거나 틀린 문제 (맞히면 지움)
     empty?: boolean; // 문제로 낼 내용이 없는 구간(참고문헌·표지 등)으로 AI가 판단
+    mc?: number; // 요점들을 "의학 지식인지" 검사한 판 (§5-86b) — 없으면 이 구간의 저장된 문제를 내기 전에 한 번 검사
     u?: number; // 이 구간 기록을 마지막으로 바꾼 시각 (기기 간 병합용)
 }
 

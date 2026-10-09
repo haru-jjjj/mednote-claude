@@ -111,6 +111,17 @@ const bumpFail = (pt: PdfPoint): PdfPoint => {
     const fa = (pt.fa || 0) + 1;
     return { ...pt, fa, x: fa >= MAX_POINT_FAILS ? true : undefined };
 };
+// §5-86b: 예전에 만든 요점·문제 중 문서 자체에 관한 것(목적·면책 문구·근거 수준 등)을 한 번 걸러냄
+export const META_SCREEN_VERSION = 1;
+export const needsMetaScreen = (prog: PdfSectionProgress | undefined): boolean =>
+    !!prog?.pts?.some(p => !p.m) && (prog?.mc || 0) < META_SCREEN_VERSION;
+// metaIdx: 검사에서 문서 자체에 관한 것으로 나온 요점 번호 → 영구 제외 + 그 요점의 문제 지움
+export const applyMetaScreen = (prev: PdfSectionProgress | undefined, metaIdx: number[], now: number): PdfSectionProgress => {
+    const bad = new Set(metaIdx);
+    const pts = (prev?.pts || []).map((p, i) => (bad.has(i) ? markMeta(p) : p));
+    const qs = (prev?.qs || []).filter(q => !bad.has(q.pi));
+    return { ...(prev || {}), pts, qs, mc: META_SCREEN_VERSION, u: now };
+};
 export const isSkippedPoint = (pt: PdfPoint) => pt.x === true || pt.m === true; // m: 의학 지식이 아닌 요점 — 바퀴를 새로 돌아도 계속 제외 (§5-86)
 const markMeta = (pt: PdfPoint): PdfPoint => ({ ...pt, m: true, wq: undefined });
 
@@ -140,7 +151,7 @@ export const applyGenerated = (
             .map((it, i) => ({ it, i }))
             .filter(({ it }) => it.ok !== false)
             .map(({ it, i }) => ({ id: makeId(), pi: i, q: it.statement.trim(), t: it.isTrue, ex: (it.explanation || '').trim(), lang: language }));
-        return { ...(prev || {}), pts, qs, empty: undefined, u: now };
+        return { ...(prev || {}), pts, qs, empty: undefined, mc: META_SCREEN_VERSION, u: now }; // 새 목록은 이미 의학 지식만 (§5-86)
     }
     const pts = [...(prev?.pts || [])];
     let qs = [...(prev?.qs || [])];
@@ -313,6 +324,7 @@ export const sanitizePdfDoc = (x: any): PdfDoc | null => {
             pts: Array.isArray(p.pts) ? p.pts.map((t: any) => ({ p: str(t?.p, 120), st: t?.st === 'ok' || t?.st === 'wrong' ? t.st : 'new', at: typeof t?.at === 'number' ? t.at : undefined, wc: typeof t?.wc === 'number' ? t.wc : undefined, wq: typeof t?.wq === 'string' ? t.wq : undefined, fa: typeof t?.fa === 'number' ? t.fa : undefined, x: t?.x === true ? true : undefined, m: t?.m === true ? true : undefined })) : undefined,
             qs: Array.isArray(p.qs) ? p.qs.filter((q: any) => q && typeof q.id === 'string' && typeof q.q === 'string' && typeof q.pi === 'number').map((q: any) => ({ id: q.id, pi: q.pi, q: str(q.q, 2000), t: q.t === true, ex: str(q.ex, 4000), lang: LANGS.includes(q.lang) ? q.lang : 'Korean', ...((q.type === 'MC' || q.type === 'CQ') && Array.isArray(q.opts) ? { type: q.type as 'MC' | 'CQ', opts: q.opts.map((o: any) => str(o, 1000)), ans: typeof q.ans === 'number' ? q.ans : 0 } : {}) })) : undefined,
             empty: p.empty === true ? true : undefined,
+            mc: typeof p.mc === 'number' ? p.mc : undefined,
             u: typeof p.u === 'number' ? p.u : undefined,
         };
     });

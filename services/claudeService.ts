@@ -1531,9 +1531,43 @@ const PDF_MEDICAL_FOCUS = `WHAT TO TEST — MEDICAL KNOWLEDGE ONLY:
               societies, sponsors or funding; how it was made (literature search, voting, review); how evidence is graded
               (what a class or level label means as a definition); the LEVEL OF EVIDENCE (A / B-R / B-NR / C …) attached to a
               recommendation; the paper's own study type, evidence level, strengths or limitations as a publication; how the
-              document is organized; dates, versions or "new in this edition" (test the recommendation's content instead).
+              document is organized; dates, versions or "new in this edition" (test the recommendation's content instead);
+              disclaimers and statements on how the document may or may not be used (e.g. "not the sole basis for clinical
+              decisions", "not for legal or disciplinary use", copyright, permissions).
             - An introduction, background or methods part can still hold medical facts (prevalence, definitions, a trial's
               population and endpoints) — test those and skip the rest.`;
+
+// §5-86b: 예전에 만든 요점 목록(+그 요점의 문제) 중 의학 지식이 아닌 것 고르기. 구간마다 한 번, 짧은 호출
+export const screenPdfPointsMeta = async (docTitle: string, items: { point: string; question?: string }[]): Promise<number[]> => {
+    if (items.length === 0) return [];
+    const prompt = [
+        `These are review points (with a sample question) made from a medical document: "${docTitle || 'Untitled'}".`,
+        'Mark the ones that are about the DOCUMENT ITSELF rather than medical knowledge: its purpose, scope or target readers;',
+        'authors, committees, sponsors; how it was made (search, voting, review); evidence-grading definitions; the level of',
+        'evidence attached to a recommendation; the paper\'s study type, evidence level or limitations as a publication;',
+        'disclaimers or how the document may or may not be used (not the sole basis for decisions, not for legal or',
+        'disciplinary use, copyright); document organization, dates or editions.',
+        'Do NOT mark medical content (epidemiology, mechanisms, diagnosis, thresholds, treatment, what a recommendation tells',
+        'the clinician to do, trial results, safety measures for patients, prognosis). When unsure, do not mark.',
+        '',
+        ...items.map((it, i) => `${i + 1}. ${it.point}${it.question ? ` — e.g. "${it.question.slice(0, 200)}"` : ''}`),
+    ].join('\n');
+    const out = await callForJson({
+        feature: 'pdf',
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        toolName: 'submit_document_meta_points',
+        toolDescription: 'Submit the numbers (1-based) of the points that are about the document itself. Empty list if none.',
+        schema: {
+            type: 'object',
+            properties: { numbers: { type: 'array', items: { type: 'integer', minimum: 1, maximum: items.length } } },
+            required: ['numbers']
+        },
+        maxTokens: 300
+    });
+    const nums: any[] = Array.isArray(out?.numbers) ? out.numbers : [];
+    return Array.from(new Set(nums.map(n => Number(n) - 1).filter(i => Number.isInteger(i) && i >= 0 && i < items.length)));
+};
 
 // 그림·표 구간에서 문제를 낼 때 덧붙이는 규칙 (§5-84)
 const FIGURE_SECTION_NOTE = `NOTE: THIS SECTION IS AN AI TRANSCRIPTION OF THE PAGE'S TABLES AND FIGURES (not the original body text).

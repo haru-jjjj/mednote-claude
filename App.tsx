@@ -20,9 +20,9 @@ import PinSettingsModal from './components/PinSettingsModal';
 import { Note, ViewMode, QuizState, QuizQuestion, QuizLanguage, PdfDoc, NoteCategory, toggleCategory, categoryLabels } from './types';
 import { localMidnightAfter, scheduleNextReview, isReviewDue, countDueNotes, quizPickWeight, wrongAnswerFromQuestion, upsertWrongAnswer, removeWrongAnswer, questionFromWrongAnswer, WrongAnswerWithNote, isQuizEligible, notesInPeriod, ReviewPeriod } from './services/studyUtils';
 import { getAllNotesFromDB, saveNoteToDB, deleteNoteFromDB, saveAllNotesToDB, getNoteFromDB, getRecentNotesFromDB } from './services/storage';
-import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines, generatePdfOXBatch, generatePdfCaseQuestion, generatePdfConceptQuestion } from './services/claudeService';
+import { generateMedicalQuiz, generateOXQuiz, extractTextFromImages, checkNoteAgainstGuidelines, generatePdfOXBatch, generatePdfCaseQuestion, generatePdfConceptQuestion, screenPdfPointsMeta } from './services/claudeService';
 import { subscribePdfDocs, loadLocalPdfDocs, syncPdfDocs, getPdfDoc, getAllPdfDocs, getPdfSectionText, updatePdfSection } from './services/pdfLibrary';
-import { pickPdfQuestion, applyGenerated, applyGeneratedCase, recordPdfAnswer, discardPdfQuestion, toQuizQuestion, newPdfId, pickFromPool, inPdfPool, PoolPick, PdfFormat, PdfOrder, pickMixFormat } from './services/pdfQuiz';
+import { pickPdfQuestion, applyGenerated, applyGeneratedCase, recordPdfAnswer, discardPdfQuestion, toQuizQuestion, newPdfId, pickFromPool, inPdfPool, PoolPick, PdfFormat, PdfOrder, pickMixFormat, needsMetaScreen, applyMetaScreen } from './services/pdfQuiz';
 import { syncNotesFromFirestore, saveNoteToFirestore, updateNoteFieldsInFirestore, hasPendingCloudWrite, hasFailedCloudWrite, isDeletedNoteId, isUnsyncedNote, listUnsyncedNotes, forgetUnsynced, setRemoteDeletedHandler, waitForCloudSave, deleteNoteFromFirestore, fetchOlderNotes, fetchRandomNoteFromFirestore, fetchRandomNotesBatch, fetchAllNotesFromFirestore } from './services/firebaseService';
 import { embedTexts, buildNoteEmbeddingText } from './services/voyageService';
 import { sanitizeHistory, historyKey, archiveCurrentSummary, trimHistory } from './services/summaryHistory';
@@ -653,6 +653,24 @@ const App: React.FC = () => {
                         const pdfId = doc.id;
                         const reservedPdf = reservedMap.get(pdfId) || new Set<string>();
                         reservedMap.set(pdfId, reservedPdf);
+                        // §5-86b: 예전에 만든 요점·문제는 내기 전에 구간마다 한 번 "의학 지식인지" 검사 (문서 목적·면책 문구·근거 수준 등은 영구 제외)
+                        const secProg = doc.progress?.[pick.section.key];
+                        if (needsMetaScreen(secProg)) {
+                            const spts = secProg!.pts!;
+                            const idx = spts.map((p, i) => i).filter(i => !spts[i].m);
+                            let metaIdx: number[] | null = null;
+                            try {
+                                const found = await screenPdfPointsMeta(doc.title, idx.map(i => ({ point: spts[i].p, question: (secProg!.qs || []).find(q => q.pi === i)?.q })));
+                                metaIdx = found.map(k => idx[k]);
+                            } catch (e) {
+                                console.warn('요점 검사 실패 — 이번엔 검사 없이 진행', e);
+                            }
+                            if (metaIdx) {
+                                await updatePdfSection(pdfId, pick.section.key, prev => applyMetaScreen(prev, metaIdx!, Date.now()));
+                                if (quizSessionRef.current !== session) return;
+                                if (metaIdx.length) { attempt--; continue; } // 걸러진 게 있으면 다시 고름 (이번 시도는 세지 않음)
+                            }
+                        }
                         if (pick.kind === 'question') {
                             reservedPdf.add(`${pick.section.key}#${pick.question.pi}`);
                             pdfQuestion = toQuizQuestion(doc, pick);
