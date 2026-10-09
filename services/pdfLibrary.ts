@@ -16,8 +16,8 @@ import {
     pdfFilePath, uploadPdfFileToStorage, getPdfFileUrl, deletePdfFileFromStorage,
     savePdfMdToFirestore, fetchPdfMdFromFirestore, deletePdfMdFromFirestore,
 } from './firebaseService';
-import { formatPdfSectionMarkdown } from './claudeService';
-import { mdLooksFaithful } from './pdfExtract';
+import { formatPdfSectionMarkdown, describePdfPageFigures } from './claudeService';
+import { mdLooksFaithful, openPdf, loadPdfJs, renderPageJpeg, pageItemsToText, pageVisualInfo, visualReasons, markUncheckedTables, insertFigureSections, FigurePage } from './pdfExtract';
 
 const DB_NAME = 'MediNotePdfDB';
 const DOCS = 'docs';
@@ -150,7 +150,7 @@ export const syncPdfDocs = (): Promise<PdfDoc[]> => {
 };
 
 const metaFields = (d: PdfDoc) => ({
-    title: d.title, source: d.source, sections: d.sections, round: d.round ?? null, inPool: d.inPool === false ? false : null, file: d.file ?? null, mdKeys: d.mdKeys ?? null, updatedAt: d.updatedAt,
+    title: d.title, source: d.source, sections: d.sections, round: d.round ?? null, inPool: d.inPool === false ? false : null, file: d.file ?? null, mdKeys: d.mdKeys ?? null, textParts: d.textParts, figAt: d.figAt ?? null, figCount: d.figCount ?? null, updatedAt: d.updatedAt,
 });
 
 const uploadNew = async (d: PdfDoc, texts: Record<string, string>): Promise<PdfDoc> => {
@@ -353,7 +353,7 @@ export const getPdfFormatState = (id: string): PdfFormatState | undefined => fmt
 
 // 정리할 구간 (출제에서 뺀 구간·낼 내용 없는 구간은 건너뜀)
 export const sectionsToFormat = (d: PdfDoc) =>
-    d.sections.filter(s2 => !s2.excluded && !d.progress?.[s2.key]?.empty && !(d.mdKeys || []).includes(s2.key));
+    d.sections.filter(s2 => !s2.excluded && !s2.fig && !d.progress?.[s2.key]?.empty && !(d.mdKeys || []).includes(s2.key)); // 그림·표 구간은 이미 마크다운
 
 // 구간마다 AI로 정리 (2개씩 동시에). 원래 글과 같은 내용(글자 양·숫자)으로 확인된 것만 저장
 export const formatPdfForReading = async (id: string): Promise<PdfFormatState | undefined> => {
@@ -392,6 +392,99 @@ export const formatPdfForReading = async (id: string): Promise<PdfFormatState | 
     try {
         await Promise.all([worker(), worker()]);
     } finally {
+        state.running = false;
+        fmtEmit();
+    }
+    return state;
+};
+
+// ---------------------------------------------------------------------------
+// 그림·표 읽기 (§5-84): 그림·표가 있는 쪽을 그림으로 만들어 AI가 표(값 그대로)·그림(설명)으로 옮기고,
+// "p.N 그림·표" 구간으로 추가 (기존 구간·진도는 그대로). 원본 PDF 파일이 필요(이 기기 사본 또는 고른 파일)
+// ---------------------------------------------------------------------------
+export const MAX_FIGURE_PAGES = 40;
+export interface PdfFigureState { done: number; total: number; found: number; running: boolean; error?: string }
+const figStates = new Map<string, PdfFigureState>();
+export const getPdfFigureState = (id: string): PdfFigureState | undefined => figStates.get(id);
+export const NEED_FILE = 'NEED_FILE';
+
+export const readPdfFigures = async (id: string, opts: { file?: Blob; pages?: number[] } = {}): Promise<PdfFigureState | undefined> => {
+    if (figStates.get(id)?.running) return figStates.get(id);
+    const d0 = await getPdfDoc(id);
+    if (!d0) return undefined;
+    const blob = opts.file || (await idbGet<{ id: string; blob: Blob }>(FILES, id).catch(() => undefined))?.blob;
+    if (!blob) throw new Error(NEED_FILE);
+    const state: PdfFigureState = { done: 0, total: 0, found: 0, running: true };
+    figStates.set(id, state);
+    fmtEmit();
+    let pdf: any = null;
+    try {
+        const lib = await loadPdfJs();
+        pdf = await openPdf(await blob.arrayBuffer());
+        const limit = d0.refsFromPage ? d0.refsFromPage - 1 : pdf.numPages; // 참고문헌 쪽부터는 안 봄
+        const pageTexts = new Map<number, string>();
+        const textOf = async (n: number) => {
+            if (!pageTexts.has(n)) {
+                const pg = await pdf.getPage(n);
+                pageTexts.set(n, pageItemsToText((await pg.getTextContent()).items || []));
+            }
+            return pageTexts.get(n) || '';
+        };
+        let pages = opts.pages;
+        if (!pages) {
+            pages = [];
+            for (let n = 1; n <= Math.min(limit, pdf.numPages); n++) {
+                const pg = await pdf.getPage(n);
+                const text = await textOf(n);
+                const v = await pageVisualInfo(pg, lib).catch(() => ({ imageFrac: 0, paths: 0 }));
+                if (visualReasons(v, text).length) pages.push(n);
+            }
+        }
+        pages = pages.filter(n => n >= 1 && n <= limit).slice(0, MAX_FIGURE_PAGES);
+        state.total = pages.length;
+        fmtEmit();
+        const found: FigurePage[] = [];
+        let next = 0;
+        const worker = async () => {
+            while (next < pages!.length) {
+                const n = pages![next++];
+                try {
+                    const img = await renderPageJpeg(pdf, n, 1600);
+                    const text = await textOf(n);
+                    const md = await describePdfPageFigures(img, text, n);
+                    if (md) { found.push({ page: n, md: markUncheckedTables(md, text) }); state.found++; }
+                } catch (e) {
+                    console.warn('그림·표 읽기 실패', n, e);
+                }
+                state.done++;
+                fmtEmit();
+            }
+        };
+        await Promise.all([worker(), worker()]);
+
+        // 구간 추가·글 저장 (이 기기 + 클라우드), 정보 갱신
+        const latest = (await getPdfDoc(id)) || d0;
+        if (latest.sections.length) await getPdfSectionText(latest, latest.sections[0].key).catch(() => '');
+        const local = await idbGet<{ id: string; texts: Record<string, string> }>(TEXTS, id).catch(() => undefined);
+        const built = insertFigureSections(latest.sections, local?.texts || {}, found);
+        await idbPut(TEXTS, { id, texts: built.texts });
+        const parts = splitTextsForCloud(built.sections, built.texts);
+        for (let k = 0; k < parts.length; k++) await savePdfTextToFirestore(id, k, parts[k]).catch(e => console.warn('글 올리기 실패', e));
+        await updatePdfMeta(id, x => {
+            // 그사이 바뀐 구간 설정(출제에서 빼기 등)은 살림
+            const ex = new Map(x.sections.map(s2 => [s2.key, s2.excluded]));
+            return {
+                sections: built.sections.map(s2 => (ex.has(s2.key) ? { ...s2, excluded: ex.get(s2.key) } : s2)),
+                textParts: parts.length,
+                figAt: Date.now(),
+                figCount: (x.figCount || 0) + built.added.length,
+            };
+        });
+    } catch (e: any) {
+        state.error = e?.message || String(e);
+        throw e;
+    } finally {
+        pdf?.destroy?.();
         state.running = false;
         fmtEmit();
     }

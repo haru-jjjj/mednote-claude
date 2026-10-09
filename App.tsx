@@ -672,7 +672,8 @@ const App: React.FC = () => {
                                 sectionIndex: pick.sectionIndex,
                                 sectionCount: pick.sectionCount,
                                 text,
-                                point: pts[pi]?.p || ''
+                                point: pts[pi]?.p || '',
+                                isFigure: !!pick.section.fig // 그림·표 구간 (§5-84)
                             }, quizState.language);
                             await updatePdfSection(pdfId, pick.section.key, prev => applyGeneratedCase(prev, pi, item, quizState.language, () => newPdfId('q_'), Date.now()));
                             if (quizSessionRef.current !== session) return;
@@ -686,7 +687,8 @@ const App: React.FC = () => {
                             sectionIndex: pick.sectionIndex,
                             sectionCount: pick.sectionCount,
                             text,
-                            points: pick.pointIndexes ? pick.pointIndexes.map(i => pts[i]?.p || '') : null
+                            points: pick.pointIndexes ? pick.pointIndexes.map(i => pts[i]?.p || '') : null,
+                            isFigure: !!pick.section.fig // 그림·표 구간 (§5-84)
                         }, quizState.language);
                         // 비용을 이미 썼으니 세션이 끝났어도 만든 문제는 저장 (다음에 그대로 씀)
                         await updatePdfSection(pdfId, pick.section.key, prev => applyGenerated(prev, pick.pointIndexes, items, quizState.language, () => newPdfId('q_'), Date.now()));

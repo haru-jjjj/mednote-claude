@@ -46,6 +46,7 @@ export interface ExtractedPdf {
     pageCount: number;
     info: { title?: string; author?: string; subject?: string };
     doc: any; // PDF.js 문서 (사진 PDF 읽기에 다시 씀) — 다 쓰면 destroy()
+    visuals: PageVisual[]; // 그림·표가 있어 보이는 쪽 (§5-84)
 }
 
 export const openPdf = async (file: File | ArrayBuffer): Promise<any> => {
@@ -77,10 +78,19 @@ export const extractPdfText = async (file: File, onProgress?: (done: number, tot
         throw new Error(`쪽 수가 너무 많습니다 (${pageCount}쪽). ${MAX_PDF_PAGES}쪽 이하로 나눠 올려주세요.`);
     }
     const pages: string[] = [];
+    const visuals: PageVisual[] = [];
+    const lib = await loadPdfJs();
     for (let i = 1; i <= pageCount; i++) {
         const page = await doc.getPage(i);
         const tc = await page.getTextContent();
-        pages.push(pageItemsToText(tc.items || []));
+        const text = pageItemsToText(tc.items || []);
+        pages.push(text);
+        // 그림·표 감지 (§5-84) — 실패해도 글 뽑기는 계속
+        try {
+            const v = await pageVisualInfo(page, lib);
+            const reasons = visualReasons(v, text);
+            if (reasons.length) visuals.push({ page: i, reasons });
+        } catch (e) { console.warn('그림 감지 실패', i, e); }
         page.cleanup?.();
         onProgress?.(i, pageCount);
     }
@@ -90,7 +100,7 @@ export const extractPdfText = async (file: File, onProgress?: (done: number, tot
         const i = meta?.info || {};
         info = { title: typeof i.Title === 'string' ? i.Title.trim() : undefined, author: typeof i.Author === 'string' ? i.Author.trim() : undefined, subject: typeof i.Subject === 'string' ? i.Subject.trim() : undefined };
     } catch { /* 정보 없으면 그냥 넘어감 */ }
-    return { pages, pageCount, info, doc };
+    return { pages, pageCount, info, doc, visuals };
 };
 
 // 사진(스캔) PDF인지: 쪽당 글자가 거의 없으면
@@ -294,4 +304,112 @@ export const mdLooksFaithful = (raw: string, md: string): { ok: boolean; ratio: 
         && missing <= Math.max(1, Math.ceil(rawNums.length * 0.02))
         && extra <= Math.floor(rawNums.length * 0.02); // 새로 생긴 숫자는 사실상 0 — 숫자 하나만 바뀌어도 걸러짐
     return { ok, ratio, missing, extra };
+};
+
+// ============================================================================
+// 그림·표 (§5-84)
+// - 쪽마다 PDF.js 그리기 명령을 훑어 큰 그림(사진·스캔된 그림)의 면적, 선·도형 수(벡터 그래프·표 테두리)를 세고,
+//   글에 "Figure 2 / Table 1 / 図1 / 表1 / 그림 1 / 표 1"로 시작하는 줄(캡션)이 있는지 봄
+// - 고른 쪽은 그림으로 만들어 AI가 표는 값 그대로 표로, 그림은 설명으로 옮김 → "그림·표 구간"으로 추가
+// ============================================================================
+export interface PageVisual { page: number; reasons: string[] }
+export interface PageVisualInfo { imageFrac: number; paths: number }
+
+const IMAGE_OPS = ['paintImageXObject', 'paintInlineImageXObject', 'paintImageMaskXObject', 'paintImageXObjectRepeat', 'paintInlineImageXObjectGroup', 'paintImageMaskXObjectGroup'];
+
+export const pageVisualInfo = async (page: any, lib: any): Promise<PageVisualInfo> => {
+    const OPS = lib.OPS;
+    const mul = (m1: number[], m2: number[]) => (lib.Util?.transform ? lib.Util.transform(m1, m2) : [
+        m1[0] * m2[0] + m1[2] * m2[1], m1[1] * m2[0] + m1[3] * m2[1],
+        m1[0] * m2[2] + m1[2] * m2[3], m1[1] * m2[2] + m1[3] * m2[3],
+        m1[0] * m2[4] + m1[2] * m2[5] + m1[4], m1[1] * m2[4] + m1[3] * m2[5] + m1[5],
+    ]);
+    const vp = page.getViewport({ scale: 1 });
+    const pageArea = Math.max(1, vp.width * vp.height);
+    const imageOps = new Set(IMAGE_OPS.map(n => OPS[n]).filter((x: any) => typeof x === 'number'));
+    const ol = await page.getOperatorList();
+    let ctm = [1, 0, 0, 1, 0, 0];
+    const stack: number[][] = [];
+    let imageArea = 0;
+    let paths = 0;
+    for (let i = 0; i < ol.fnArray.length; i++) {
+        const fn = ol.fnArray[i];
+        const args = ol.argsArray[i];
+        if (fn === OPS.save) stack.push(ctm);
+        else if (fn === OPS.restore) ctm = stack.pop() || ctm;
+        else if (fn === OPS.transform && Array.isArray(args) && args.length >= 6) ctm = mul(ctm, args as number[]);
+        else if (fn === OPS.paintFormXObjectBegin) { stack.push(ctm); if (Array.isArray(args?.[0]) && args[0].length >= 6) ctm = mul(ctm, args[0]); }
+        else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() || ctm;
+        else if (fn === OPS.constructPath) paths++;
+        else if (imageOps.has(fn)) {
+            const w = Math.hypot(ctm[0], ctm[1]);
+            const h = Math.hypot(ctm[2], ctm[3]);
+            imageArea += w * h;
+        }
+    }
+    return { imageFrac: Math.min(1, imageArea / pageArea), paths };
+};
+
+const FIG_CAPTION = /^\s*(?:Figure|Fig\.?|Algorithm|Flowchart|Central Illustration|図|그림)\s*[\dA-Z]/im;
+const TABLE_CAPTION = /^\s*(?:Table|表|표)\s*[\dA-Z]/im;
+
+// 감지 이유 (없으면 그림·표 없는 쪽). 로고 같은 작은 그림은 쪽 면적 3% 미만이라 빠짐
+export const visualReasons = (v: PageVisualInfo, text: string): string[] => {
+    const r: string[] = [];
+    if (v.imageFrac >= 0.03) r.push('image');
+    if (v.paths >= 120) r.push('drawing');
+    if (FIG_CAPTION.test(text || '')) r.push('figure-caption');
+    if (TABLE_CAPTION.test(text || '')) r.push('table-caption');
+    return r;
+};
+
+// AI가 옮긴 표의 숫자가 그 쪽 PDF 글에 실제로 있는지 확인 — 10% 넘게(2개 이상) 없으면 그 표에 "주의" 표시
+// (글자가 거의 없는 스캔 쪽은 대조할 글이 없어 건너뜀). "주의" 표시된 표는 문제로 내지 않음
+export const markUncheckedTables = (md: string, pageText: string): string => {
+    if (letterCount(pageText || '') < 200) return md;
+    const have = new Set(numbersOf(pageText));
+    const blocks = md.split(/\n(?=###\s)/);
+    return blocks.map(b => {
+        if (!/^###\s*\[표\]/.test(b.trim())) return b;
+        const lines = b.split('\n');
+        const nums = numbersOf(lines.slice(1).join('\n'));
+        if (nums.length === 0) return b;
+        const missing = nums.filter(n => !have.has(n)).length;
+        if (missing >= 2 && missing / nums.length > 0.1) {
+            return [lines[0], `> 주의: 이 표의 숫자 ${missing}개가 PDF 글에서 확인되지 않아 원본 확인 필요 (문제로 내지 않음)`, ...lines.slice(1)].join('\n');
+        }
+        return b;
+    }).join('\n');
+};
+
+// 그림·표 구간을 그 쪽이 들어 있는 구간 바로 뒤에 끼워 넣음 (같은 쪽을 다시 읽었으면 그 구간 글만 바꿈)
+export interface FigurePage { page: number; md: string }
+export const insertFigureSections = (
+    sections: PdfSectionMeta[],
+    texts: Record<string, string>,
+    figs: FigurePage[]
+): { sections: PdfSectionMeta[]; texts: Record<string, string>; added: string[] } => {
+    const out = sections.map(s2 => ({ ...s2 }));
+    const outTexts = { ...texts };
+    const added: string[] = [];
+    let nextNo = out.reduce((m, s2) => Math.max(m, Number(s2.key.slice(1)) || 0), -1) + 1;
+    [...figs].sort((a, b) => a.page - b.page).forEach(f => {
+        const caption = ((f.md.match(/^###\s*(.+)$/m) || [])[1] || '').replace(/\[(표|그림)\]\s*/g, '').trim().slice(0, 60);
+        const existing = out.find(s2 => s2.fig && s2.pageFrom === f.page);
+        if (existing) {
+            outTexts[existing.key] = f.md;
+            existing.chars = f.md.length;
+            existing.head = caption || existing.head;
+            return;
+        }
+        const key = `s${nextNo++}`;
+        const meta: PdfSectionMeta = { key, label: `p.${f.page} 그림·표`, pageFrom: f.page, pageTo: f.page, chars: f.md.length, head: caption || '그림·표', fig: true };
+        // 그 쪽이 들어 있는(또는 그 앞의) 마지막 글 구간과, 그 뒤에 이미 붙은 앞쪽 그림·표 구간 다음
+        let idx = -1;
+        out.forEach((s2, i) => { if (s2.pageFrom <= f.page) idx = i; });
+        out.splice(idx + 1, 0, meta);
+        outTexts[key] = f.md;
+        added.push(key);
+    });
+    return { sections: out, texts: outTexts, added };
 };

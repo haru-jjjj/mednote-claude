@@ -290,7 +290,7 @@ export const sanitizePdfDoc = (x: any): PdfDoc | null => {
     if (!x || typeof x.id !== 'string' || !Array.isArray(x.sections)) return null;
     const sections: PdfSectionMeta[] = x.sections
         .filter((s: any) => s && typeof s.key === 'string' && /^s\d+$/.test(s.key))
-        .map((s: any) => ({ key: s.key, label: str(s.label, 40), pageFrom: num(s.pageFrom), pageTo: num(s.pageTo), chars: num(s.chars), head: str(s.head, 80), excluded: s.excluded === true ? true : undefined }));
+        .map((s: any) => ({ key: s.key, label: str(s.label, 40), pageFrom: num(s.pageFrom), pageTo: num(s.pageTo), chars: num(s.chars), head: str(s.head, 80), excluded: s.excluded === true ? true : undefined, fig: s.fig === true ? true : undefined }));
     const progress: Record<string, PdfSectionProgress> = {};
     Object.entries(x.progress && typeof x.progress === 'object' ? x.progress : {}).forEach(([k, p]: [string, any]) => {
         if (!/^s\d+$/.test(k) || !p || typeof p !== 'object') return;
@@ -317,6 +317,8 @@ export const sanitizePdfDoc = (x: any): PdfDoc | null => {
         ocr: x.ocr === true ? true : undefined,
         refsFromPage: typeof x.refsFromPage === 'number' ? x.refsFromPage : undefined,
         inPool: x.inPool === false ? false : undefined,
+        figAt: typeof x.figAt === 'number' ? x.figAt : undefined,
+        figCount: typeof x.figCount === 'number' ? x.figCount : undefined,
         mdKeys: Array.isArray(x.mdKeys) ? x.mdKeys.filter((k: any) => typeof k === 'string' && /^s\d+$/.test(k)) : undefined,
         file: x.file && typeof x.file.path === 'string' ? { path: x.file.path, size: num(x.file.size), at: num(x.file.at) } : undefined,
         deleted: x.deleted === true ? true : undefined,

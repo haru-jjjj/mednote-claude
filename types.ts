@@ -201,6 +201,7 @@ export interface PdfSectionMeta {
     chars: number;
     head: string; // 구간 첫 줄 (목록 표시용)
     excluded?: boolean; // 출제에서 뺌 (참고문헌·표지 등)
+    fig?: boolean; // 그림·표 구간: AI가 쪽 이미지를 보고 옮긴 표·그림 설명 (§5-84)
 }
 
 export interface PdfPoint {
@@ -249,6 +250,8 @@ export interface PdfDoc {
     refsFromPage?: number; // 참고문헌이 시작돼 출제에서 뺀 쪽
     file?: { path: string; size: number; at: number }; // 원본 PDF (Firebase Storage, §5-77). 없으면 원본 없음(글만)
     mdKeys?: string[]; // 읽기용 마크다운 정리본이 있는 구간 (§5-83)
+    figAt?: number; // 그림·표를 읽어 넣은 시각 (§5-84)
+    figCount?: number; // 그림·표를 넣은 쪽 수
     inPool?: boolean; // false면 "PDF 복습"(전체 풀)에서 뺌 (§5-76). 없으면 포함
     deleted?: boolean;
 }

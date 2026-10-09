@@ -1501,6 +1501,47 @@ export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 
 // ----------------------------------------------------------------------------
 // 구간 하나 → 시험에 낼 만한 요점 목록 + 요점마다 OX 한 문제 (한 번 호출로 구간 전체).
 // 요점 목록이 이미 있으면(언어를 바꿨거나 "처음부터 다시") 그 요점들에 대해 새 문장만 씀.
+// 그림·표 구간에서 문제를 낼 때 덧붙이는 규칙 (§5-84)
+const FIGURE_SECTION_NOTE = `NOTE: THIS SECTION IS AN AI TRANSCRIPTION OF THE PAGE'S TABLES AND FIGURES (not the original body text).
+            - Test what a table states (exact values, classes, criteria) and what a figure clearly shows (direction of effect,
+              which group did better, algorithm steps and decision criteria).
+            - Values marked "≈" were read off a graph and are approximate: never test the exact number — test the direction,
+              the comparison or a clearly separated range instead.
+            - Skip any block marked "> 주의" (its numbers could not be confirmed).`;
+
+// PDF 한 쪽의 표·그림을 AI가 직접 보고 옮김 (§5-84). 그 쪽 글(PDF 글자층)을 함께 줘서 표의 숫자·글자를 정확히.
+// 없으면 null
+export const describePdfPageFigures = async (pageImage: string, pageText: string, pageNo: number): Promise<string | null> => {
+    const prompt = [
+        `This is page ${pageNo} of a medical PDF (image above). Below is the text extracted from the same page (it may be jumbled).`,
+        'Transcribe the page\'s TABLES and describe its FIGURES so that a reader who cannot see the page loses nothing important.',
+        '',
+        'For each TABLE: a line "### [표] " + its caption as printed, then a Markdown table with every row and column and every value',
+        'EXACTLY as printed (copy characters from the extracted text when possible). Keep footnotes/abbreviation keys as plain lines below.',
+        'For each FIGURE (graph, chart, Kaplan-Meier curve, forest plot, flowchart/algorithm, ECG, imaging, diagram): a line',
+        '"### [그림] " + its caption as printed, then: what kind of figure it is; what it compares (axes, groups, arms, follow-up);',
+        'the main findings with numbers exactly as printed in labels (HR, CI, p, %, events); for any value you read off the graph',
+        'yourself, prefix it with "≈". For a flowchart/algorithm write every step, branch and decision criterion exactly, as a nested list.',
+        '',
+        'Rules: skip logos, journal banners, author photos, decorative elements and ordinary body text (already captured).',
+        'Never invent values. Write in the same language as the document. Use exactly the markers "### [표]" and "### [그림]".',
+        'Output only the Markdown. If the page has no table and no figure, output exactly: NONE',
+        '',
+        'EXTRACTED TEXT OF THIS PAGE:',
+        '"""' + (pageText || '').slice(0, 8000) + '"""',
+    ].join('\n');
+    const data = await callClaude({
+        feature: 'pdf',
+        model: MODEL_FAST,
+        messages: [{ role: 'user', content: [imageBlock(pageImage), { type: 'text', text: prompt }] }],
+        max_tokens: 5000
+    });
+    const out = extractText(data).replace(/^```(?:markdown|md)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    if (!out || /^NONE\b/i.test(out) || !/###\s*\[(표|그림)\]/.test(out)) return null;
+    // 앞에 붙은 설명문은 버리고 첫 표·그림 제목부터
+    return out.slice(out.search(/###\s*\[(표|그림)\]/)).trim();
+};
+
 export interface PdfOXInput {
     docTitle: string;
     docSource: string;
@@ -1509,6 +1550,7 @@ export interface PdfOXInput {
     sectionCount: number;
     text: string;
     points: string[] | null; // null = 요점 목록부터
+    isFigure?: boolean; // 그림·표 구간 (§5-84)
 }
 export interface PdfOXItem { point: string; statement: string; isTrue: boolean; explanation: string; ok?: boolean } // ok=false: 검증에서 정답이 안 맞아 문제로 쓰지 않음 (§5-82)
 
@@ -1537,6 +1579,7 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
             DOCUMENT: ${input.docTitle || 'Untitled'}${input.docSource ? ` — ${input.docSource}` : ''}
             THIS SECTION: ${input.sectionLabel} (section ${input.sectionIndex + 1} of ${input.sectionCount})
             """${input.text}"""
+            ${input.isFigure ? FIGURE_SECTION_NOTE : ''}
             ${pointsTask}
 
             RULES FOR STATEMENTS:
@@ -1691,6 +1734,7 @@ export interface PdfCaseInput {
     sectionCount: number;
     text: string;
     point: string;
+    isFigure?: boolean; // 그림·표 구간 (§5-84)
 }
 export interface PdfCaseItem { question: string; options: string[]; correctAnswerIndex: number; explanation: string }
 
@@ -1706,6 +1750,7 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
             THIS SECTION: ${input.sectionLabel} (section ${input.sectionIndex + 1} of ${input.sectionCount})
             """${input.text}"""
 
+            ${input.isFigure ? FIGURE_SECTION_NOTE : ''}
             THE POINT TO TEST: ${input.point}
 
             QUESTION DESIGN:
@@ -1824,7 +1869,9 @@ export const transcribePdfPages = async (pageImages: string[], firstPageNo: numb
         content.push({ type: 'text', text: `[PAGE ${firstPageNo + i}]` });
         content.push(imageBlock(img));
     });
-    content.push({ type: 'text', text: `Transcribe ALL text on each page above exactly as printed (keep the original language, numbers and units; keep table rows as lines with " | " between cells). Do not summarize or add anything. Output each page starting with its marker line "[PAGE n]".` });
+    content.push({ type: 'text', text: `Transcribe ALL text on each page above exactly as printed (keep the original language, numbers and units; keep table rows as lines with " | " between cells). Do not summarize or add anything to the text.
+For each figure, graph, chart, flowchart/algorithm, ECG or image on a page (not logos or decorations), add after the page text a block starting with "[그림] " + its caption as printed, then 2–6 lines describing what it shows: axes/groups, the main finding, any values printed in it; values you read off a graph are approximate — prefix them with "≈"; for a flowchart write its steps and decision criteria exactly as a list.
+Output each page starting with its marker line "[PAGE n]".` });
     const data = await callClaude({
         feature: 'pdf',
         model: MODEL_FAST,

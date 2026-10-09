@@ -99,7 +99,9 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
           const d = await getPdfDoc(ref.docId);
           if (!d) throw new Error('PDF를 찾지 못했습니다 (지워졌을 수 있어요).');
           const text = await getPdfSectionText(d, ref.sectionKey);
-          const md = await getPdfSectionMd(d, ref.sectionKey).catch(() => null);
+          // 그림·표 구간은 글 자체가 마크다운 (§5-84)
+          const isFig = !!d.sections.find(x => x.key === ref.sectionKey)?.fig;
+          const md = isFig ? text : await getPdfSectionMd(d, ref.sectionKey).catch(() => null);
           setPdfSourceText({ label: `${ref.docTitle} · ${ref.sectionLabel}`, text, md });
       } catch (e: any) {
           setPdfSourceText({ label: `${ref.docTitle} · ${ref.sectionLabel}`, text: '', error: e?.message || '원문을 불러오지 못했습니다.' });
@@ -1074,10 +1076,12 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                         <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
                             <span>
                                 {pdfSourceText.md && !pdfSourceText.showRaw
-                                    ? '읽기 좋게 정리한 글입니다 (내용·숫자는 원래 글과 같은지 확인한 것만). 문제의 정답 근거는 원래 뽑은 글입니다.'
+                                    ? (pdfSourceText.md === pdfSourceText.text
+                                        ? 'AI가 이 쪽의 이미지를 보고 옮긴 표·그림 설명입니다. ≈는 그래프에서 읽은 대략값, "주의" 표시는 PDF 글과 숫자가 달라 확인이 필요한 표입니다. 원본 PDF로 확인하세요.'
+                                        : '읽기 좋게 정리한 글입니다 (내용·숫자는 원래 글과 같은지 확인한 것만). 문제의 정답 근거는 원래 뽑은 글입니다.')
                                     : 'PDF에서 뽑은 글 그대로입니다 (머리말·쪽 번호 등은 뺌). 표는 줄이 섞여 보일 수 있어요.'}
                             </span>
-                            {pdfSourceText.md && (
+                            {pdfSourceText.md && pdfSourceText.md !== pdfSourceText.text && (
                                 <button type="button" onClick={() => setPdfSourceText(x => (x ? { ...x, showRaw: !x.showRaw } : x))} className="font-bold text-accent-700 hover:text-accent-800">
                                     {pdfSourceText.showRaw ? '정리한 글로 보기' : '원래 뽑은 글로 보기'}
                                 </button>

@@ -1504,6 +1504,31 @@ service firebase.storage {
 - 바뀐 파일: `services/pdfExtract.ts`, `services/pdfLibrary.ts`, `services/claudeService.ts`, `services/firebaseService.ts`, `services/pdfQuiz.ts`, `types.ts`,
   `components/PdfLibraryView.tsx`, `components/QuizView.tsx` (새 파일 없음)
 
+## 5-84. PDF의 그림·표를 AI가 보고 옮겨 문제 범위에 넣기 + 스캔 PDF 그림 설명 (요청)
+
+- 전에는 PDF 글자층만 뽑아서 그림은 빠지고 표는 칸이 깨진 채 들어갔음.
+- **그림·표 있는 쪽 찾기**(`pageVisualInfo`·`visualReasons`, services/pdfExtract.ts): 쪽마다 PDF.js 그리기 명령을 훑어
+  - 큰 그림(쪽 면적 3% 이상 — 저널 로고 같은 작은 그림은 제외), 선·도형 120개 이상(벡터 그래프·표 테두리),
+  - 줄 첫머리 캡션 "Figure/Fig./Algorithm/Central Illustration/図/그림 N", "Table/表/표 N"
+  중 하나면 그림·표 쪽. 참고문헌 쪽부터는 안 봄, PDF 하나에 최대 40쪽.
+- **AI가 쪽 이미지를 보고 옮김**(`describePdfPageFigures`, Haiku 5.5 이미지 입력, 쪽당 약 $0.0015): 그 쪽 글자층도 함께 보내 정확한 글자·숫자를 베끼게 함.
+  - 표: `### [표] 캡션` + 모든 행·열·값을 인쇄된 그대로 마크다운 표로, 각주 포함.
+  - 그림(그래프·KM 곡선·forest plot·흐름도/알고리즘·ECG·영상·도식): `### [그림] 캡션` + 종류, 비교 대상(축·군·추적 기간), 그림에 인쇄된 수치(HR·CI·p·%) 그대로,
+    그래프에서 직접 읽은 값은 "≈", 흐름도는 단계·분기·판단 기준을 그대로 목록으로. 로고·배너·장식·본문은 건너뜀, 값 지어내기 금지.
+  - **표 숫자 대조**(`markUncheckedTables`): 옮긴 표의 숫자가 그 쪽 PDF 글에 없는 게 10% 넘게(2개 이상)면 "> 주의 … 원본 확인 필요" 표시, 그 표는 문제로 안 냄.
+- **"p.N 그림·표" 구간으로 추가**(`insertFigureSections`): 그 쪽이 들어 있는 글 구간 바로 뒤에 새 구간으로 → 기존 구간·진도는 그대로, 새 구간은 처음부터 출제.
+  같은 쪽을 다시 읽으면 그 구간 글만 바꿈.
+- **출제 규칙**(그림·표 구간일 때 OX·케이스 프롬프트에 추가): 표는 값·등급·기준을 정확히, 그림은 분명히 보이는 것(효과 방향, 어느 군이 나았는지, 알고리즘 단계)을.
+  "≈" 값은 정확한 숫자로 묻지 않고 방향·비교·확실히 떨어진 범위로. "주의" 표시 표는 건너뜀. 정답 검증(§5-82)도 같은 글로.
+- **언제**: 새로 올릴 때 저장 화면에 "그림·표가 있어 보이는 쪽 n개도 AI가 보고 옮겨 넣기"(예상 비용 표시, 기본 켜짐) → 저장 후 뒤에서 실행(문제는 바로 풀 수 있음).
+  이미 올린 PDF는 카드의 "그림·표 읽기" — 원본 PDF가 이 기기에 있으면 바로, 없으면 같은 파일을 골라 달라고 함(원본이 없던 PDF면 원본 보관도 함께).
+- **보기**: "본문 읽기"와 "이 구간 원문 보기"에서 그림·표 구간은 표·설명이 마크다운으로, "AI가 쪽 이미지를 보고 옮김 · ≈는 그래프에서 읽은 대략값" 표시.
+  그림 자체는 "원본 PDF p.N"으로 확인.
+- **스캔 PDF(글자층 없음)**: 원래 "AI로 글자 읽기"로 사용 가능(60쪽까지, 쪽당 약 $0.001). 이번에 그 과정에서 그림·그래프·흐름도·ECG도 `[그림] 캡션` + 설명(그래프 값은 ≈)을 함께 적게 함.
+- 저장: 그림·표 구간 글은 기존 구간 글과 같은 곳(IndexedDB texts, Firestore `pdft-` 문서 — 다시 나눠 올림, `textParts` 갱신), PDF 정보 `figAt`·`figCount`, 구간 `fig: true`.
+- 바뀐 파일: `services/pdfExtract.ts`, `services/pdfLibrary.ts`, `services/claudeService.ts`, `services/pdfQuiz.ts`, `types.ts`, `App.tsx`,
+  `components/PdfLibraryView.tsx`, `components/QuizView.tsx` (새 파일 없음)
+
 ## 6. 그대로 유지하기로 하신 부분 (참고용 재안내)
 
 - Firestore는 여전히 사용자 구분 없는 **공용 컬렉션**입니다. 여러 사람이 같은 배포본을 쓰면 메모가 섞여 보일 수 있습니다.
