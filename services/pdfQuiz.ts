@@ -103,7 +103,7 @@ export const pickPdfQuestion = (
     return pool[Math.floor(rand() * pool.length) % pool.length];
 };
 
-export interface GeneratedItem { point: string; statement: string; isTrue: boolean; explanation: string; ok?: boolean }
+export interface GeneratedItem { point: string; statement: string; isTrue: boolean; explanation: string; ok?: boolean; meta?: boolean }
 
 // 정답 검증에 실패했거나 사용자가 "문제 오류"로 뺀 요점: 실패 횟수를 세고, 2번이면 이번 바퀴에서 건너뜀 (§5-82)
 export const MAX_POINT_FAILS = 2;
@@ -111,7 +111,8 @@ const bumpFail = (pt: PdfPoint): PdfPoint => {
     const fa = (pt.fa || 0) + 1;
     return { ...pt, fa, x: fa >= MAX_POINT_FAILS ? true : undefined };
 };
-export const isSkippedPoint = (pt: PdfPoint) => pt.x === true;
+export const isSkippedPoint = (pt: PdfPoint) => pt.x === true || pt.m === true; // m: 의학 지식이 아닌 요점 — 바퀴를 새로 돌아도 계속 제외 (§5-86)
+const markMeta = (pt: PdfPoint): PdfPoint => ({ ...pt, m: true, wq: undefined });
 
 // AI 결과를 구간 기록에 넣기
 // - pointIndexes가 null(처음): 요점 목록을 새로 만들고 문제를 붙임. 결과가 0개면 "낼 내용 없음" 구간
@@ -124,8 +125,11 @@ export const applyGenerated = (
     makeId: () => string,
     now: number
 ): PdfSectionProgress => {
-    const valid = items.filter(it => it && typeof it.statement === 'string' && it.statement.trim() && typeof it.isTrue === 'boolean');
+    const valid = items.filter(it => it && (it.meta === true || (typeof it.statement === 'string' && it.statement.trim() && typeof it.isTrue === 'boolean')));
     if (pointIndexes === null) {
+        // §5-86: 요점 목록을 새로 만들 때 문서 자체에 관한 요점은 아예 넣지 않음 (전부 그런 구간이면 빈 구간)
+        const medical = valid.filter(it => !it.meta);
+        valid.splice(0, valid.length, ...medical);
         if (valid.length === 0) return { ...(prev || {}), empty: true, pts: [], qs: [], u: now };
         // 검증에서 정답이 안 맞은 문제(ok === false)는 버리고 요점만 남김 → 다음에 그 요점 문제를 다시 만듦
         const pts: PdfPoint[] = valid.map(it => {
@@ -143,6 +147,7 @@ export const applyGenerated = (
     pointIndexes.forEach((pi, k) => {
         const it = valid[k];
         if (!pts[pi]) return;
+        if (it?.meta) { pts[pi] = markMeta(pts[pi]); qs = qs.filter(q => q.pi !== pi); return; } // §5-86
         if (!it || it.ok === false) { pts[pi] = bumpFail(pts[pi]); return; } // 못 만들었거나 검증 불일치
         qs = qs.filter(q => !(q.pi === pi && qFormat(q) === 'OX' && (q.lang === language || pts[pi].st === 'new')));
         qs.push({ id: makeId(), pi, q: it.statement.trim(), t: it.isTrue, ex: (it.explanation || '').trim(), lang: language });
@@ -151,7 +156,7 @@ export const applyGenerated = (
 };
 
 // 케이스(5지선다) 문제 하나를 요점에 붙이기 (§5-79). 같은 요점·언어의 예전 케이스 문제는 바꿈
-export interface GeneratedCase { question: string; options: string[]; correctAnswerIndex: number; explanation: string }
+export interface GeneratedCase { question: string; options: string[]; correctAnswerIndex: number; explanation: string; meta?: boolean }
 export const applyGeneratedCase = (
     prev: PdfSectionProgress | undefined,
     pointIndex: number,
@@ -161,6 +166,12 @@ export const applyGeneratedCase = (
     now: number,
     kind: 'MC' | 'CQ' = 'MC' // MC 케이스 / CQ 내용 이해 5지선다 (§5-85)
 ): PdfSectionProgress => {
+    if (item?.meta) {
+        // §5-86: 의학 지식이 아닌 요점 → 영구 제외, 그 요점의 문제도 지움
+        const pts = [...(prev?.pts || [])];
+        if (pts[pointIndex]) pts[pointIndex] = markMeta(pts[pointIndex]);
+        return { ...(prev || {}), pts, qs: (prev?.qs || []).filter(q => q.pi !== pointIndex), u: now };
+    }
     if (!item || !item.question || !Array.isArray(item.options) || item.options.length < 2) {
         // 못 만들었거나 정답 검증 불일치 → 실패 횟수 (2번이면 이번 바퀴 건너뜀)
         const pts = [...(prev?.pts || [])];
@@ -229,8 +240,8 @@ export const pdfStats = (doc: PdfDoc): PdfStats => {
         const live = p.pts.filter(x => !isSkippedPoint(x));
         const n = live.filter(x => x.st === 'new').length;
         points += live.length;
-        ok += p.pts.filter(x => x.st === 'ok').length;
-        wrong += p.pts.filter(x => x.st === 'wrong').length;
+        ok += live.filter(x => x.st === 'ok').length;
+        wrong += live.filter(x => x.st === 'wrong').length;
         pending += n;
         if (n === 0) sectionsDone++;
     });
@@ -299,7 +310,7 @@ export const sanitizePdfDoc = (x: any): PdfDoc | null => {
     Object.entries(x.progress && typeof x.progress === 'object' ? x.progress : {}).forEach(([k, p]: [string, any]) => {
         if (!/^s\d+$/.test(k) || !p || typeof p !== 'object') return;
         progress[k] = {
-            pts: Array.isArray(p.pts) ? p.pts.map((t: any) => ({ p: str(t?.p, 120), st: t?.st === 'ok' || t?.st === 'wrong' ? t.st : 'new', at: typeof t?.at === 'number' ? t.at : undefined, wc: typeof t?.wc === 'number' ? t.wc : undefined, wq: typeof t?.wq === 'string' ? t.wq : undefined, fa: typeof t?.fa === 'number' ? t.fa : undefined, x: t?.x === true ? true : undefined })) : undefined,
+            pts: Array.isArray(p.pts) ? p.pts.map((t: any) => ({ p: str(t?.p, 120), st: t?.st === 'ok' || t?.st === 'wrong' ? t.st : 'new', at: typeof t?.at === 'number' ? t.at : undefined, wc: typeof t?.wc === 'number' ? t.wc : undefined, wq: typeof t?.wq === 'string' ? t.wq : undefined, fa: typeof t?.fa === 'number' ? t.fa : undefined, x: t?.x === true ? true : undefined, m: t?.m === true ? true : undefined })) : undefined,
             qs: Array.isArray(p.qs) ? p.qs.filter((q: any) => q && typeof q.id === 'string' && typeof q.q === 'string' && typeof q.pi === 'number').map((q: any) => ({ id: q.id, pi: q.pi, q: str(q.q, 2000), t: q.t === true, ex: str(q.ex, 4000), lang: LANGS.includes(q.lang) ? q.lang : 'Korean', ...((q.type === 'MC' || q.type === 'CQ') && Array.isArray(q.opts) ? { type: q.type as 'MC' | 'CQ', opts: q.opts.map((o: any) => str(o, 1000)), ans: typeof q.ans === 'number' ? q.ans : 0 } : {}) })) : undefined,
             empty: p.empty === true ? true : undefined,
             u: typeof p.u === 'number' ? p.u : undefined,

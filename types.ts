@@ -214,6 +214,7 @@ export interface PdfPoint {
     wq?: string; // 마지막으로 틀린 문제 id (틀린 것 다시 풀기에서 그 문제 그대로, §5-79)
     fa?: number; // 이 요점 문제가 정답 검증에 떨어졌거나 "문제 오류"로 빠진 횟수 (§5-82)
     x?: boolean; // fa가 2번이면 이번 바퀴에서 건너뜀
+    m?: boolean; // 의학 지식이 아닌 문서 자체에 관한 요점(목적·근거 수준 등) — 계속 제외 (§5-86)
 }
 
 export interface PdfQuestion {

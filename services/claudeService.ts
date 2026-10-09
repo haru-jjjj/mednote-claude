@@ -1519,6 +1519,22 @@ export const generateOXQuiz = async (focus: QuizFocus, language: QuizLanguage = 
 // ----------------------------------------------------------------------------
 // 구간 하나 → 시험에 낼 만한 요점 목록 + 요점마다 OX 한 문제 (한 번 호출로 구간 전체).
 // 요점 목록이 이미 있으면(언어를 바꿨거나 "처음부터 다시") 그 요점들에 대해 새 문장만 씀.
+// PDF 문제는 의학 지식만 (§5-86): 문서 자체에 관한 것(목적·저자·작성 방법·근거 등급 정의·근거 수준·논문의 연구 형태/한계 등)은 내지 않음
+const PDF_MEDICAL_FOCUS = `WHAT TO TEST — MEDICAL KNOWLEDGE ONLY:
+            - Test only what a physician uses in practice or meets on a board exam: epidemiology and risk factors,
+              pathophysiology and mechanisms, diagnosis (criteria, tests, thresholds, ECG/imaging findings), risk
+              stratification, treatment (drugs, doses, indications, contraindications, procedures, devices, timing, targets),
+              what each recommendation tells the clinician to do and how strongly (recommended / reasonable / may be
+              considered / not recommended or harmful), trial and study results as clinical findings (population,
+              intervention vs. comparator, effect on outcomes, key numbers), prognosis, complications and follow-up.
+            - NEVER test facts about the document itself: its purpose, scope or target readers; authors, committees,
+              societies, sponsors or funding; how it was made (literature search, voting, review); how evidence is graded
+              (what a class or level label means as a definition); the LEVEL OF EVIDENCE (A / B-R / B-NR / C …) attached to a
+              recommendation; the paper's own study type, evidence level, strengths or limitations as a publication; how the
+              document is organized; dates, versions or "new in this edition" (test the recommendation's content instead).
+            - An introduction, background or methods part can still hold medical facts (prevalence, definitions, a trial's
+              population and endpoints) — test those and skip the rest.`;
+
 // 그림·표 구간에서 문제를 낼 때 덧붙이는 규칙 (§5-84)
 const FIGURE_SECTION_NOTE = `NOTE: THIS SECTION IS AN AI TRANSCRIPTION OF THE PAGE'S TABLES AND FIGURES (not the original body text).
             - Test what a table states (exact values, classes, criteria) and what a figure clearly shows (direction of effect,
@@ -1570,7 +1586,7 @@ export interface PdfOXInput {
     points: string[] | null; // null = 요점 목록부터
     isFigure?: boolean; // 그림·표 구간 (§5-84)
 }
-export interface PdfOXItem { point: string; statement: string; isTrue: boolean; explanation: string; ok?: boolean } // ok=false: 검증에서 정답이 안 맞아 문제로 쓰지 않음 (§5-82)
+export interface PdfOXItem { point: string; statement: string; isTrue: boolean; explanation: string; ok?: boolean; meta?: boolean } // meta: 의학 지식이 아닌 문서 자체에 관한 요점 → 이후 출제에서 영구 제외 (§5-86) // ok=false: 검증에서 정답이 안 맞아 문제로 쓰지 않음 (§5-82)
 
 export const generatePdfOXBatch = async (input: PdfOXInput, language: QuizLanguage = 'Korean'): Promise<PdfOXItem[]> => {
     const langRule = quizLanguageRule(language).replace("The reader's note below is written in Korean — read it, but", 'Read the document text below (any language), but');
@@ -1578,14 +1594,18 @@ export const generatePdfOXBatch = async (input: PdfOXInput, language: QuizLangua
         ? `
             THE POINTS TO TEST (already chosen — keep this exact order, one item per point, copy each point text into "point"):
 ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
-            Write a NEW statement for each point (a different angle from an obvious restatement).`
+            Write a NEW statement for each point (a different angle from an obvious restatement).
+            If a listed point is about the document itself rather than medical knowledge (see WHAT TO TEST), set "meta": true
+            for that item and keep its statement to a few words — it will be dropped. Otherwise "meta": false.`
         : `
-            STEP 1 — List every distinct testable point in this section: each fact, number/threshold, recommendation
-            (with its class/level if stated), trial result, mechanism, definition, criterion, or procedural step that a
-            fellow should know. Cover the WHOLE section from beginning to end — the reader wants nothing left out.
-            Merge trivial fragments; skip author lists, affiliations, funding, disclosures, figure/table numbering,
-            and reference lists. Typically 3–10 points for a section this size (up to 14 if it is dense).
-            If the section has nothing testable (title page, contents, references, acknowledgments), return an empty list.
+            STEP 1 — List every distinct MEDICAL point in this section that a fellow should know (see WHAT TO TEST):
+            each fact, number/threshold, recommendation (what to do and how strongly), trial result, mechanism, definition,
+            criterion, or procedural step. Cover the WHOLE section from beginning to end — the reader wants no medical
+            content left out. Merge trivial fragments; skip everything about the document itself (see WHAT TO TEST),
+            figure/table numbering and reference lists. Typically 3–10 points for a section this size (up to 14 if dense).
+            Set "meta": false on every item you list.
+            If the section has no medical content (title page, contents, preamble or methods about how the document was
+            made, evidence-grading tables, disclosures, references, acknowledgments), return an empty list.
             STEP 2 — For each point, write one True/False statement testing it.`;
 
     const prompt = `
@@ -1598,6 +1618,7 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
             THIS SECTION: ${input.sectionLabel} (section ${input.sectionIndex + 1} of ${input.sectionCount})
             """${input.text}"""
             ${input.isFigure ? FIGURE_SECTION_NOTE : ''}
+            ${PDF_MEDICAL_FOCUS}
             ${pointsTask}
 
             RULES FOR STATEMENTS:
@@ -1609,11 +1630,12 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
               Never mark a statement false just to balance the set, and never add notes like "(mis-keyed)".
             - Aim for some false statements (about a third to a half), each a plausible near-miss, not a simple negation:
               a shifted threshold or number, the wrong drug/class/trial, swapped indications, wrong direction of effect,
-              wrong class of recommendation. The changed detail must clearly contradict the section.
+              recommended vs. not recommended. The changed detail must clearly contradict the section.
             - One idea per statement; specific enough that it is clearly true or false according to the section.
             - Pitch each statement one notch deeper than recognition (§5-85): include the condition, population, threshold,
               exception, comparison or rationale that the section attaches to the point (e.g. "In patients with X, Y is
-              recommended over Z" rather than "Y is recommended"). Do not test trivia (titles, author names, section numbers).
+              recommended over Z" rather than "Y is recommended"). Do not test trivia (titles, author names, section numbers)
+              or anything about the document itself.
             - "explanation" (1–3 sentences): state what the section actually says (with the exact number or wording),
               then say whether the statement matches it — so a wrong answer teaches the correct fact.
             - "point": the point tested, ≤ 14 words, in Korean (internal metadata).
@@ -1635,12 +1657,13 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
                         type: 'object',
                         properties: {
                             point: { type: 'string', description: 'Internal metadata: the point tested (≤ 14 words, Korean).' },
+                            meta: { type: 'boolean', description: 'true ONLY if the point is about the document itself (purpose, authors, methods, evidence grading, level of evidence, study type/limitations of the paper), not medical knowledge.' },
                             fact: { type: 'string', description: 'Internal: what the section says on this point, close to its own wording (any language).' },
                             statement: { type: 'string', description: `The true/false statement. ${langNote}` },
                             explanation: { type: 'string', description: `What the section actually says, then whether the statement matches it (1–3 sentences). ${langNote}` },
                             isTrue: { type: 'boolean', description: 'Decided LAST: true only if the statement agrees with "fact" / the section.' }
                         },
-                        required: ['point', 'fact', 'statement', 'explanation', 'isTrue']
+                        required: ['point', 'meta', 'fact', 'statement', 'explanation', 'isTrue']
                     },
                     maxItems: 16
                 }
@@ -1652,12 +1675,15 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
        x => Array.isArray(x?.items) && x.items.length > 0);
     const items: PdfOXItem[] = (Array.isArray(out?.items) ? out.items : [])
         .filter((it: any) => it && typeof it.statement === 'string' && typeof it.isTrue === 'boolean')
-        .map((it: any) => ({ point: it.point, statement: it.statement, isTrue: it.isTrue, explanation: it.explanation }));
-    if (items.length === 0) return items;
+        .map((it: any) => ({ point: it.point, statement: it.statement, isTrue: it.isTrue, explanation: it.explanation, ...(it.meta === true ? { meta: true } : {}) }));
+    // §5-86: 문서 자체에 관한 요점(meta)은 검증하지 않음 (어차피 버림)
+    const toCheck = items.map((it, i) => ({ it, i })).filter(x => !x.it.meta);
+    if (toCheck.length === 0) return items;
     // §5-82: 따로 한 번 더 채점 — 만든 쪽과 다르게(또는 애매하게) 판단되면 그 문제는 쓰지 않음(요점은 남겨 다음에 다시 만듦)
     try {
-        const verdicts = await verifyStatementsAgainstText(input.text, items.map(it => it.statement));
-        return items.map((it, i) => ({ ...it, ok: verdicts[i] === (it.isTrue ? 'true' : 'false') }));
+        const verdicts = await verifyStatementsAgainstText(input.text, toCheck.map(x => x.it.statement));
+        const okAt = new Map(toCheck.map((x, k) => [x.i, verdicts[k] === (x.it.isTrue ? 'true' : 'false')]));
+        return items.map((it, i) => (it.meta ? it : { ...it, ok: okAt.get(i) }));
     } catch (e) {
         console.warn('OX 정답 검증 실패 — 검증 없이 사용', e);
         return items;
@@ -1757,7 +1783,7 @@ export interface PdfCaseInput {
     point: string;
     isFigure?: boolean; // 그림·표 구간 (§5-84)
 }
-export interface PdfCaseItem { question: string; options: string[]; correctAnswerIndex: number; explanation: string }
+export interface PdfCaseItem { question: string; options: string[]; correctAnswerIndex: number; explanation: string; meta?: boolean } // meta (§5-86)
 
 // style 'concept' = 임상 케이스 없이 내용 이해 5지선다 (§5-85)
 export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: QuizLanguage = 'Korean', style: 'case' | 'concept' = 'case'): Promise<PdfCaseItem | null> => {
@@ -1773,7 +1799,10 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
             """${input.text}"""
 
             ${input.isFigure ? FIGURE_SECTION_NOTE : ''}
+            ${PDF_MEDICAL_FOCUS}
             THE POINT TO TEST: ${input.point}
+            If this point is about the document itself rather than medical knowledge, set "meta": true and fill the other
+            fields minimally (it will be dropped). Otherwise "meta": false and build the question around the medical content.
 
             ${style === 'concept' ? CONCEPT_DESIGN : `QUESTION DESIGN:
             - A realistic clinical vignette (age/sex, presentation, the data an expert would use — ECG/EGM, echo,
@@ -1801,17 +1830,20 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
         schema: {
             type: 'object',
             properties: {
+                meta: { type: 'boolean', description: 'true ONLY if THE POINT TO TEST is about the document itself (purpose, authors, methods, evidence grading, level of evidence, study type/limitations of the paper), not medical knowledge.' },
                 question: { type: 'string', description: `${style === 'concept' ? 'The question stem' : 'Clinical vignette and the question stem'} ONLY — do NOT list the answer choices here (they go in "options"). ${langNote}` },
                 options: { type: 'array', items: { type: 'string', description: `One answer choice, without a leading letter like "A.". ${langNote}` }, minItems: 5, maxItems: 5 },
                 correctAnswerIndex: { type: 'integer', minimum: 0, maximum: 4 },
                 explanation: { type: 'string', description: langNote }
             },
-            required: ['question', 'options', 'correctAnswerIndex', 'explanation']
+            required: ['meta', 'question', 'options', 'correctAnswerIndex', 'explanation']
         },
         maxTokens: 2000
     }, x => [x?.question, ...(Array.isArray(x?.options) ? x.options : []), x?.explanation].join(' '));
+    // §5-86: 의학 지식이 아닌 요점 → 문제 없이 표시만 (호출부에서 그 요점을 영구 제외)
+    if (out?.meta === true) return { question: '', options: [], correctAnswerIndex: 0, explanation: '', meta: true };
     if (!out || typeof out.question !== 'string' || !Array.isArray(out.options) || out.options.length < 2) return null;
-    const item = { question: stripInlineOptions(out.question), options: out.options.map((o: any) => stripOptionLabel(String(o))), correctAnswerIndex: Number(out.correctAnswerIndex) || 0, explanation: String(out.explanation || '') };
+    const item: PdfCaseItem = { question: stripInlineOptions(out.question), options: out.options.map((o: any) => stripOptionLabel(String(o))), correctAnswerIndex: Number(out.correctAnswerIndex) || 0, explanation: String(out.explanation || '') };
     // §5-82: 구간 글만 보고 따로 풀게 해서 정답이 다르면 쓰지 않음 (null → 다음에 다시 만듦)
     try {
         const check = await verifyCaseAnswer(input.text, item.question, item.options);
