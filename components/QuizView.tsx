@@ -739,6 +739,10 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                         ${isOX ? 'bg-accent-100 text-accent-700' : 'bg-accent-100 text-accent-700'}`}>
                         {isOX ? '참 / 거짓' : currentQ.style === 'concept' ? '5지선다' : '케이스'}
                     </span>
+                    {/* PDF 문제: 어느 자료의 문제인지 (§5-86d) */}
+                    {currentQ.pdfRef?.docTitle && (
+                        <p className="text-[12px] text-slate-400 leading-snug -mt-1 mb-2 line-clamp-2 break-words">{currentQ.pdfRef.docTitle}</p>
+                    )}
                     {/* Render Question with Medical Formatting */}
                     {/* 케이스 문제는 긴 임상 상황이라 왼쪽 정렬·보통 굵기로, 본문에 섞여 온 보기는 잘라냄 (§5-80) */}
                     <h3 className={`${isOX ? 'text-xl md:text-2xl text-center py-6 font-bold' : 'text-base md:text-lg text-left font-medium'} text-slate-900 leading-relaxed`} dangerouslySetInnerHTML={renderMarkdown(isOX ? currentQ.question : stripInlineOptions(currentQ.question))}>

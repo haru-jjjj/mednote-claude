@@ -1535,11 +1535,20 @@ const PDF_MEDICAL_FOCUS = `WHAT TO TEST — MEDICAL KNOWLEDGE ONLY:
               disclaimers and statements on how the document may or may not be used (e.g. "not the sole basis for clinical
               decisions", "not for legal or disciplinary use", copyright, permissions).
             - An introduction, background or methods part can still hold medical facts (prevalence, definitions, a trial's
-              population and endpoints) — test those and skip the rest.`;
+              population and endpoints) — test those and skip the rest.
+            SELF-CONTAINED (§5-86d): the reader sees ONLY your question, not the document. Every statement, stem and option
+            must say what it is about: name the condition or clinical setting, the population or study (in words, e.g.
+            "in patients with CTI-dependent typical atrial flutter whose ECG shows atypical flutter-wave morphology"),
+            what each compared group is, and what was measured (and in which lead / test / time point). Never leave a
+            reference the reader cannot resolve: "this study", "the authors", "the atypical group", "both groups",
+            "group A", "the cohort", "the patients", "the above", "as shown in the table" — spell out who or what.
+            NO BARE STATISTICS: do not make a p-value, confidence interval, test statistic or "was statistically
+            significant" the thing to remember. Test the clinical finding behind it — which group had the longer /
+            larger / more frequent value, by roughly how much, which criterion separates them, what it implies.`;
 
 // §5-86b: 예전에 만든 요점 목록(+그 요점의 문제) 중 의학 지식이 아닌 것 고르기. 구간마다 한 번, 짧은 호출
-export const screenPdfPointsMeta = async (docTitle: string, items: { point: string; question?: string }[]): Promise<number[]> => {
-    if (items.length === 0) return [];
+export const screenPdfPointsMeta = async (docTitle: string, items: { point: string; question?: string }[]): Promise<{ meta: number[]; unclear: number[] }> => {
+    if (items.length === 0) return { meta: [], unclear: [] };
     const prompt = [
         `These are review points (with a sample question) made from a medical document: "${docTitle || 'Untitled'}".`,
         'Mark the ones that are about the DOCUMENT ITSELF rather than medical knowledge: its purpose, scope or target readers;',
@@ -1550,23 +1559,31 @@ export const screenPdfPointsMeta = async (docTitle: string, items: { point: stri
         'Do NOT mark medical content (epidemiology, mechanisms, diagnosis, thresholds, treatment, what a recommendation tells',
         'the clinician to do, trial results, safety measures for patients, prognosis). When unsure, do not mark.',
         '',
-        ...items.map((it, i) => `${i + 1}. ${it.point}${it.question ? ` — e.g. "${it.question.slice(0, 200)}"` : ''}`),
+        'Separately, list in "unclear" the points whose sample question(s) a physician who has NOT read the document could',
+        'not understand: they refer to "this study", "the atypical group", "both groups", "the cohort", "the table" etc.',
+        'without saying what it is, or the thing to remember is only a p-value / confidence interval / "was significant".',
+        '',
+        ...items.map((it, i) => `${i + 1}. ${it.point}${it.question ? ` — question(s): ${it.question.slice(0, 400)}` : ''}`),
     ].join('\n');
     const out = await callForJson({
         feature: 'pdf',
         model: MODEL_FAST,
         messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
         toolName: 'submit_document_meta_points',
-        toolDescription: 'Submit the numbers (1-based) of the points that are about the document itself. Empty list if none.',
+        toolDescription: 'Submit the numbers (1-based) of the points about the document itself, and of the points whose questions are unclear on their own. Empty lists if none.',
         schema: {
             type: 'object',
-            properties: { numbers: { type: 'array', items: { type: 'integer', minimum: 1, maximum: items.length } } },
-            required: ['numbers']
+            properties: {
+                numbers: { type: 'array', description: 'Points about the document itself.', items: { type: 'integer', minimum: 1, maximum: items.length } },
+                unclear: { type: 'array', description: 'Points whose sample questions are not understandable without the document, or only test a p-value/CI.', items: { type: 'integer', minimum: 1, maximum: items.length } }
+            },
+            required: ['numbers', 'unclear']
         },
-        maxTokens: 300
+        maxTokens: 400
     });
-    const nums: any[] = Array.isArray(out?.numbers) ? out.numbers : [];
-    return Array.from(new Set(nums.map(n => Number(n) - 1).filter(i => Number.isInteger(i) && i >= 0 && i < items.length)));
+    const idx = (arr: any): number[] => Array.from(new Set((Array.isArray(arr) ? arr : []).map((n: any) => Number(n) - 1).filter((i: number) => Number.isInteger(i) && i >= 0 && i < items.length)));
+    const meta = idx(out?.numbers);
+    return { meta, unclear: idx(out?.unclear).filter(i => !meta.includes(i)) };
 };
 
 // 그림·표 구간에서 문제를 낼 때 덧붙이는 규칙 (§5-84)
@@ -1731,6 +1748,9 @@ export const verifyStatementsAgainstText = async (text: string, statements: stri
         '- "true": the section clearly states or directly implies it, including the numbers, drugs, classes and conditions.',
         '- "false": the section clearly contradicts it (any changed number, drug, class, indication or direction counts).',
         '- "unclear": the section does not settle it, or the statement is ambiguous.',
+        'Also judge "standalone": could a physician who has NOT read the section tell exactly what the statement is about',
+        '(which condition or setting, which population or study, which groups, which measurement)? false if it relies on',
+        'unexplained references such as "this study", "the atypical group", "both groups", "the cohort", "the table".',
         'Statements may be in a different language from the section; compare meaning.',
         '',
         'SECTION:',
@@ -1754,10 +1774,11 @@ export const verifyStatementsAgainstText = async (text: string, statements: stri
                         type: 'object',
                         properties: {
                             n: { type: 'integer', description: 'Statement number (1-based).' },
+                            standalone: { type: 'boolean', description: 'Understandable on its own without the section (see above).' },
                             reason: { type: 'string', description: 'Very short: the deciding words of the section.' },
                             verdict: { type: 'string', enum: ['true', 'false', 'unclear'] }
                         },
-                        required: ['n', 'reason', 'verdict']
+                        required: ['n', 'standalone', 'reason', 'verdict']
                     }
                 }
             },
@@ -1768,7 +1789,8 @@ export const verifyStatementsAgainstText = async (text: string, statements: stri
     const out: ('true' | 'false' | 'unclear')[] = statements.map(() => 'unclear');
     (Array.isArray(input?.verdicts) ? input.verdicts : []).forEach((v: any) => {
         const i = Number(v?.n) - 1;
-        if (i >= 0 && i < out.length && (v?.verdict === 'true' || v?.verdict === 'false' || v?.verdict === 'unclear')) out[i] = v.verdict;
+        // §5-86d: 문서를 안 읽은 사람이 무엇에 관한 문장인지 모르면 쓰지 않음(→ 'unclear' → 다시 만듦)
+        if (i >= 0 && i < out.length && (v?.verdict === 'true' || v?.verdict === 'false' || v?.verdict === 'unclear')) out[i] = v?.standalone === false ? 'unclear' : v.verdict;
     });
     return out;
 };
@@ -1778,6 +1800,8 @@ export const verifyCaseAnswer = async (text: string, question: string, options: 
     const prompt = [
         'Answer this multiple-choice question using ONLY the SECTION below as the authority (not outside knowledge).',
         'If the section does not let you pick exactly one best answer, answer -1.',
+        'Also answer -1 if the question or its options cannot be understood without the section — e.g. they refer to',
+        '"this study", "the atypical group", "both groups", "the cohort" or "the table" without saying what that is.',
         '',
         'SECTION:',
         '"""' + text + '"""',

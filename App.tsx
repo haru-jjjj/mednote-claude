@@ -660,16 +660,18 @@ const App: React.FC = () => {
                             const spts = secProg!.pts!;
                             const idx = spts.map((p, i) => i).filter(i => !spts[i].m);
                             let metaIdx: number[] | null = null;
+                            let unclearIdx: number[] = [];
                             try {
-                                const found = await screenPdfPointsMeta(doc.title, idx.map(i => ({ point: spts[i].p, question: (secProg!.qs || []).find(q => q.pi === i)?.q })));
-                                metaIdx = found.map(k => idx[k]);
+                                const found = await screenPdfPointsMeta(doc.title, idx.map(i => ({ point: spts[i].p, question: (secProg!.qs || []).filter(q => q.pi === i).slice(0, 3).map(q => `"${q.q.slice(0, 160)}"`).join(' / ') || undefined })));
+                                metaIdx = found.meta.map(k => idx[k]);
+                                unclearIdx = found.unclear.map(k => idx[k]); // §5-86d
                             } catch (e) {
                                 console.warn('요점 검사 실패 — 이번엔 검사 없이 진행', e);
                             }
                             if (metaIdx) {
-                                await updatePdfSection(pdfId, pick.section.key, prev => applyMetaScreen(prev, metaIdx!, Date.now()));
+                                await updatePdfSection(pdfId, pick.section.key, prev => applyMetaScreen(prev, metaIdx!, Date.now(), unclearIdx));
                                 if (quizSessionRef.current !== session) return;
-                                if (metaIdx.length) { attempt--; continue; } // 걸러진 게 있으면 다시 고름 (이번 시도는 세지 않음)
+                                if (metaIdx.length || unclearIdx.length) { attempt--; continue; } // 걸러진 게 있으면 다시 고름 (이번 시도는 세지 않음)
                             }
                         }
                         if (pick.kind === 'question') {

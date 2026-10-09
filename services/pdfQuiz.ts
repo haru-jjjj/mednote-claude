@@ -115,14 +115,16 @@ const bumpFail = (pt: PdfPoint): PdfPoint => {
     return { ...pt, fa, x: fa >= MAX_POINT_FAILS ? true : undefined };
 };
 // §5-86b: 예전에 만든 요점·문제 중 문서 자체에 관한 것(목적·면책 문구·근거 수준 등)을 한 번 걸러냄
-export const META_SCREEN_VERSION = 1;
+export const META_SCREEN_VERSION = 2; // 2 (§5-86d): 무엇에 관한 문제인지 모르는 문제(근거 없이 "두 군" 등·p값만)도 지우고 다시 만듦
 export const needsMetaScreen = (prog: PdfSectionProgress | undefined): boolean =>
     !!prog?.pts?.some(p => !p.m) && (prog?.mc || 0) < META_SCREEN_VERSION;
 // metaIdx: 검사에서 문서 자체에 관한 것으로 나온 요점 번호 → 영구 제외 + 그 요점의 문제 지움
-export const applyMetaScreen = (prev: PdfSectionProgress | undefined, metaIdx: number[], now: number): PdfSectionProgress => {
+// unclearIdx: 요점은 남기고 저장된 문제만 지움 (다음에 새 규칙으로 다시 만듦)
+export const applyMetaScreen = (prev: PdfSectionProgress | undefined, metaIdx: number[], now: number, unclearIdx: number[] = []): PdfSectionProgress => {
     const bad = new Set(metaIdx);
-    const pts = (prev?.pts || []).map((p, i) => (bad.has(i) ? markMeta(p) : p));
-    const qs = (prev?.qs || []).filter(q => !bad.has(q.pi));
+    const redo = new Set(unclearIdx);
+    const pts = (prev?.pts || []).map((p, i) => (bad.has(i) ? markMeta(p) : redo.has(i) ? { ...p, wq: undefined } : p));
+    const qs = (prev?.qs || []).filter(q => !bad.has(q.pi) && !redo.has(q.pi));
     return { ...(prev || {}), pts, qs, mc: META_SCREEN_VERSION, u: now };
 };
 export const isSkippedPoint = (pt: PdfPoint) => pt.x === true || pt.m === true; // m: 의학 지식이 아닌 요점 — 바퀴를 새로 돌아도 계속 제외 (§5-86)
