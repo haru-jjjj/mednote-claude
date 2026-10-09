@@ -584,6 +584,7 @@ const App: React.FC = () => {
   const reservedPartsRef = useRef<Map<string, Set<string>>>(new Map());
   // PDF 퀴즈: 이번 세션에서 이미 꺼낸 "구간키#요점번호" (§5-75)
   const pdfReservedRef = useRef<Map<string, Set<string>>>(new Map()); // PDF id → 꺼낸 "구간키#요점번호" (§5-76: 여러 PDF)
+  const pdfRecentRef = useRef<{ docId: string; key: string }[]>([]); // 최근에 낸 구간 3개 (무작위 순서에서 같은 구간 연달아 안 나오게, §5-86c)
 
   useEffect(() => {
     // Background Quiz Generation Logic
@@ -633,14 +634,14 @@ const App: React.FC = () => {
                         if (singleId) {
                             const d = await getPdfDoc(singleId);
                             if (!d) throw new Error('PDF를 찾지 못했습니다 (지워졌을 수 있어요).');
-                            const p1 = pickPdfQuestion(d, reservedMap.get(d.id) || new Set(), mode, quizState.language, pdfFormat, Math.random, pdfOrder, stickKey);
+                            const p1 = pickPdfQuestion(d, reservedMap.get(d.id) || new Set(), mode, quizState.language, pdfFormat, Math.random, pdfOrder, stickKey, pdfRecentRef.current.filter(r => r.docId === d.id).map(r => r.key));
                             chosen = p1.kind === 'done' ? null : { doc: d, pick: p1 };
                         } else {
                             const all = (await getAllPdfDocs()).filter(inPdfPool);
                             const stick = stickId ? all.filter(d => d.id === stickId) : [];
                             const prefer = stickId && stickKey ? { docId: stickId, key: stickKey } : null;
-                            chosen = (stick.length ? pickFromPool(stick, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder, prefer) : null)
-                                || pickFromPool(all, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder);
+                            chosen = (stick.length ? pickFromPool(stick, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder, prefer, pdfRecentRef.current) : null)
+                                || pickFromPool(all, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder, null, pdfRecentRef.current);
                             if (all.length === 0) throw new Error('PDF 복습에 넣어 둔 PDF가 없습니다. PDF 자료실에서 PDF를 올리거나 "PDF 복습에 넣기"를 켜 주세요.');
                         }
                         if (quizSessionRef.current !== session) return;
@@ -673,6 +674,7 @@ const App: React.FC = () => {
                         }
                         if (pick.kind === 'question') {
                             reservedPdf.add(`${pick.section.key}#${pick.question.pi}`);
+                            pdfRecentRef.current = [...pdfRecentRef.current.filter(r => !(r.docId === pdfId && r.key === pick.section.key)), { docId: pdfId, key: pick.section.key }].slice(-3);
                             pdfQuestion = toQuizQuestion(doc, pick);
                             break;
                         }
@@ -906,6 +908,7 @@ const App: React.FC = () => {
   const handleStartPdfQuiz = React.useCallback((pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format: 'QUICK_OX' | 'DETAILED' | 'CONCEPT' | 'MIXED' = 'QUICK_OX', order: PdfOrder = 'seq') => {
       quizSessionRef.current += 1;
       pdfReservedRef.current = new Map();
+      pdfRecentRef.current = [];
       setQuizState({
           isActive: true,
           mode: format,

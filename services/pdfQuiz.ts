@@ -37,7 +37,8 @@ export const pickPdfQuestion = (
     format: PdfFormat = 'OX',
     rand: () => number = Math.random,
     order: PdfOrder = 'seq',
-    preferKey?: string | null // 무작위일 때: 방금 문제를 만든 구간을 먼저 (이어서 다른 구간을 또 만들며 기다리지 않게)
+    preferKey?: string | null, // 무작위일 때: 방금 문제를 만든 구간을 먼저 (이어서 다른 구간을 또 만들며 기다리지 않게)
+    avoidKeys?: string[] | null // 무작위일 때: 최근에 낸 구간 (오래된 것 → 최근 순, §5-86c)
 ): PdfPick => {
     const list = doc.sections.filter(s => !s.excluded);
     const counted = activeSections(doc);
@@ -88,9 +89,9 @@ export const pickPdfQuestion = (
         return { kind: 'done' };
     }
 
-    // 무작위: 구간 순서를 섞음 — 이미 펼친(요점 목록을 만든) 구간에 안 푼 요점이 있으면 그 구간을 마저 풀고,
-    // 없으면 아직 안 펼친 구간 중 무작위. 구간 안의 요점 순서도 무작위.
-    // (문제마다 새 구간으로 뛰면 거의 매 문제 문제 만들기를 기다려야 하고, 만들어 두고 안 푼 문제가 쌓임)
+    // 무작위 (§5-86c): 문제마다 안 푼 요점이 남은 구간 전체(펼친 구간·안 펼친 구간 모두) 중에서 새로 고름.
+    // 최근에 낸 구간(avoidKeys)은 다른 구간이 있으면 피함 → 한 구간만 연달아 나오지 않음. 구간 안의 요점 순서도 무작위.
+    // (예전 §5-81은 펼친 구간을 마저 풀어 같은 구간이 10문제씩 이어졌음. 새 구간 문제 만들기는 미리 만들어 두기로 가림)
     if (preferKey) {
         const ps = list.find(s => s.key === preferKey);
         const r = ps ? sectionPick(ps) : null;
@@ -98,8 +99,10 @@ export const pickPdfQuestion = (
     }
     const cands = list.map(sectionPick).filter((x): x is Exclude<PdfPick, { kind: 'done' }> => !!x);
     if (cands.length === 0) return { kind: 'done' };
-    const open = cands.filter(c => !(c.kind === 'generate' && c.pointIndexes === null));
-    const pool = open.length ? open : cands;
+    const recent = (avoidKeys || []).filter(Boolean);
+    let pool = cands.filter(c => !recent.includes(c.section.key));
+    if (pool.length === 0 && recent.length) pool = cands.filter(c => c.section.key !== recent[recent.length - 1]); // 적어도 바로 전 구간은 피함
+    if (pool.length === 0) pool = cands;
     return pool[Math.floor(rand() * pool.length) % pool.length];
 };
 
@@ -393,11 +396,13 @@ export const pickFromPool = (
     rand: () => number = Math.random,
     format: PdfFormat = 'OX',
     order: PdfOrder = 'seq',
-    prefer?: { docId: string; key: string } | null
+    prefer?: { docId: string; key: string } | null,
+    recent?: { docId: string; key: string }[] | null // 최근에 낸 구간 (§5-86c)
 ): PoolPick | null => {
     const cands: { doc: PdfDoc; pick: PoolPick['pick']; w: number }[] = [];
     docs.forEach(doc => {
-        const pick = pickPdfQuestion(doc, reserved.get(doc.id) || new Set(), mode, language, format, rand, order, prefer && prefer.docId === doc.id ? prefer.key : null);
+        const avoid = (recent || []).filter(r => r.docId === doc.id).map(r => r.key);
+        const pick = pickPdfQuestion(doc, reserved.get(doc.id) || new Set(), mode, language, format, rand, order, prefer && prefer.docId === doc.id ? prefer.key : null, avoid);
         if (pick.kind === 'done') return;
         const st = pdfStats(doc);
         const remaining = mode === 'wrong' ? Math.max(1, st.wrong) : Math.max(1, st.sections - st.sectionsDone);
