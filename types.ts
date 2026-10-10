@@ -237,6 +237,15 @@ export interface PdfSectionProgress {
     u?: number; // 이 구간 기록을 마지막으로 바꾼 시각 (기기 간 병합용)
 }
 
+// PDF에서 저장한 그림 (§5-87): 사진은 그 부분만 잘라서(crop), 그래프·표·흐름도가 있는 쪽은 쪽 전체(page)
+export interface PdfImage {
+    id: string;
+    page: number;
+    kind: 'crop' | 'page';
+    w: number;
+    h: number;
+}
+
 export interface PdfDoc {
     id: string;
     title: string;
@@ -254,6 +263,9 @@ export interface PdfDoc {
     refsFromPage?: number; // 참고문헌이 시작돼 출제에서 뺀 쪽
     file?: { path: string; size: number; at: number }; // 원본 PDF (Firebase Storage, §5-77). 없으면 원본 없음(글만)
     mdKeys?: string[]; // 읽기용 마크다운 정리본이 있는 구간 (§5-83)
+    mdFail?: string[]; // 두 번 정리해도 원래 글과 달라 원래 글로 보여 주는 구간 — 다시 정리하라고 하지 않음 (§5-87)
+    imgs?: PdfImage[]; // 저장한 그림 이미지 (§5-87)
+    imgAt?: number; // 그림을 저장한 시각 (기기 간 병합: 최신 저장 묶음을 씀)
     figAt?: number; // 그림·표를 읽어 넣은 시각 (§5-84)
     figCount?: number; // 그림·표를 넣은 쪽 수
     inPool?: boolean; // false면 "PDF 복습"(전체 풀)에서 뺌 (§5-76). 없으면 포함

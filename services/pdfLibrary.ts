@@ -8,16 +8,17 @@
 // - 읽기용 마크다운 정리본(§5-83): 구간마다 IndexedDB(md) + Firestore pdfmd-<id>-<구간키>. 출제·채점은 계속 원래 뽑은 글로
 // ============================================================================
 
-import type { PdfDoc, PdfSectionProgress } from '../types';
+import type { PdfDoc, PdfImage, PdfSectionProgress } from '../types';
 import { mergePdfDocs, sanitizePdfDoc, splitTextsForCloud } from './pdfQuiz';
 import {
     savePdfMetaToFirestore, updatePdfFieldsInFirestore, fetchPdfMetasFromFirestore,
     savePdfTextToFirestore, fetchPdfTextFromFirestore, deletePdfFromFirestore,
     pdfFilePath, uploadPdfFileToStorage, getPdfFileUrl, deletePdfFileFromStorage,
     savePdfMdToFirestore, fetchPdfMdFromFirestore, deletePdfMdFromFirestore,
+    savePdfImageToFirestore, fetchPdfImageFromFirestore, deletePdfImagesFromFirestore,
 } from './firebaseService';
 import { formatPdfSectionMarkdown, describePdfPageFigures } from './claudeService';
-import { mdLooksFaithful, openPdf, loadPdfJs, renderPageJpeg, pageItemsToText, pageVisualInfo, visualReasons, markUncheckedTables, insertFigureSections, FigurePage } from './pdfExtract';
+import { mdLooksFaithful, openPdf, loadPdfJs, renderPageJpeg, pageItemsToText, pageVisualInfo, visualReasons, markUncheckedTables, insertFigureSections, FigurePage, planPageCaptures, renderPageCanvas, releaseCanvas, canvasRegionJpeg, boxToCanvasRect } from './pdfExtract';
 
 const DB_NAME = 'MediNotePdfDB';
 const DOCS = 'docs';
@@ -150,7 +151,7 @@ export const syncPdfDocs = (): Promise<PdfDoc[]> => {
 };
 
 const metaFields = (d: PdfDoc) => ({
-    title: d.title, source: d.source, sections: d.sections, round: d.round ?? null, inPool: d.inPool === false ? false : null, file: d.file ?? null, mdKeys: d.mdKeys ?? null, textParts: d.textParts, figAt: d.figAt ?? null, figCount: d.figCount ?? null, updatedAt: d.updatedAt,
+    title: d.title, source: d.source, sections: d.sections, round: d.round ?? null, inPool: d.inPool === false ? false : null, file: d.file ?? null, mdKeys: d.mdKeys ?? null, mdFail: d.mdFail ?? null, imgs: d.imgs ?? null, imgAt: d.imgAt ?? null, textParts: d.textParts, figAt: d.figAt ?? null, figCount: d.figCount ?? null, updatedAt: d.updatedAt,
 });
 
 const uploadNew = async (d: PdfDoc, texts: Record<string, string>): Promise<PdfDoc> => {
@@ -267,6 +268,105 @@ export const deletePdf = async (d: PdfDoc): Promise<void> => {
     await deletePdfFromFirestore(d.id, d.textParts);
     await deletePdfFileFromStorage(d.file?.path || pdfFilePath(d.id)).catch(e => console.warn('원본 PDF 지우기 실패', e));
     await deletePdfMdFromFirestore(d.id, d.mdKeys || []).catch(e => console.warn('정리본 지우기 실패', e));
+    // 저장한 그림 (§5-87)
+    for (const g of d.imgs || []) await idbDelete(MD, imgKey(d.id, g.id)).catch(() => undefined);
+    await deletePdfImagesFromFirestore(d.id, (d.imgs || []).map(g => g.id)).catch(e => console.warn('그림 지우기 실패', e));
+};
+
+// ---------------------------------------------------------------------------
+// 그림 저장 (§5-87): 사진은 그 부분만 잘라서, 그래프·표·흐름도가 있는 쪽은 쪽 전체를 JPEG로.
+// 기기 안에서 PDF를 그려 자르므로 AI 비용 없음. 이 기기(IndexedDB) + 클라우드(Firestore appSettings, 그림당 문서 하나)
+// ---------------------------------------------------------------------------
+const imgKey = (id: string, imgId: string) => `img:${id}:${imgId}`;
+export const MAX_IMAGE_PAGES = 40;
+export interface PdfImageState { done: number; total: number; saved: number; cloudFailed: number; running: boolean; error?: string }
+const imgStates = new Map<string, PdfImageState>();
+export const getPdfImageState = (id: string): PdfImageState | undefined => imgStates.get(id);
+const imgCache = new Map<string, string>(); // 이번에 연 그림 (data URL)
+
+export const capturePdfImages = async (id: string, opts: { file?: Blob } = {}): Promise<PdfImageState | undefined> => {
+    if (imgStates.get(id)?.running) return imgStates.get(id);
+    const d0 = await getPdfDoc(id);
+    if (!d0) return undefined;
+    const blob = opts.file || (await idbGet<{ id: string; blob: Blob }>(FILES, id).catch(() => undefined))?.blob;
+    if (!blob) throw new Error(NEED_FILE);
+    const state: PdfImageState = { done: 0, total: 0, saved: 0, cloudFailed: 0, running: true };
+    imgStates.set(id, state);
+    fmtEmit();
+    let pdf: any = null;
+    const tag = Date.now().toString(36);
+    const made: PdfImage[] = [];
+    try {
+        const lib = await loadPdfJs();
+        pdf = await openPdf(await blob.arrayBuffer());
+        const limit = Math.min(pdf.numPages, d0.refsFromPage ? d0.refsFromPage - 1 : pdf.numPages); // 참고문헌 쪽부터는 안 봄
+        const plans: { n: number; crops: number[][]; page: boolean }[] = [];
+        for (let n = 1; n <= limit && plans.length < MAX_IMAGE_PAGES; n++) {
+            const pg = await pdf.getPage(n);
+            const text = pageItemsToText((await pg.getTextContent()).items || []);
+            const v = await pageVisualInfo(pg, lib).catch(() => ({ imageFrac: 0, paths: 0, boxes: [] as number[][] }));
+            const view: number[] = Array.isArray(pg.view) && pg.view.length === 4 ? pg.view : [0, 0, pg.getViewport({ scale: 1 }).width, pg.getViewport({ scale: 1 }).height];
+            const plan = planPageCaptures(v, text, view);
+            if (plan.page || plan.crops.length) plans.push({ n, ...plan });
+            pg.cleanup?.();
+        }
+        state.total = plans.length;
+        fmtEmit();
+        for (const p of plans) {
+            // 쪽 하나씩 (휴대폰 메모리 아낌)
+            let canvas: HTMLCanvasElement | null = null;
+            try {
+                const r = await renderPageCanvas(pdf, p.n, 1600);
+                canvas = r.canvas;
+                const shots: { kind: 'crop' | 'page'; rect: number[] | null }[] = p.page
+                    ? [{ kind: 'page', rect: null }]
+                    : p.crops.map(b => ({ kind: 'crop' as const, rect: boxToCanvasRect(b, r.viewport.transform, canvas!.width, canvas!.height) }));
+                for (let k = 0; k < shots.length; k++) {
+                    const out = canvasRegionJpeg(canvas, shots[k].rect, 1400);
+                    const g: PdfImage = { id: `${tag}-${p.n}-${k}`, page: p.n, kind: shots[k].kind, w: out.w, h: out.h };
+                    await idbPut(MD, { k: imgKey(id, g.id), b64: out.b64 });
+                    await savePdfImageToFirestore(id, g.id, out.b64).catch(e => { state.cloudFailed++; console.warn('그림 클라우드 저장 실패', e); });
+                    made.push(g);
+                    state.saved++;
+                }
+                r.page.cleanup?.();
+            } catch (e) {
+                console.warn('그림 저장 실패', p.n, e);
+            } finally {
+                if (canvas) releaseCanvas(canvas);
+            }
+            state.done++;
+            fmtEmit();
+        }
+        // 새 묶음으로 바꾸고 예전 그림은 지움
+        const old = (await getPdfDoc(id))?.imgs || [];
+        await updatePdfMeta(id, () => ({ imgs: made, imgAt: Date.now() }));
+        for (const g of old) await idbDelete(MD, imgKey(id, g.id)).catch(() => undefined);
+        deletePdfImagesFromFirestore(id, old.map(g => g.id)).catch(e => console.warn('예전 그림 지우기 실패', e));
+    } catch (e: any) {
+        state.error = e?.message || String(e);
+        throw e;
+    } finally {
+        pdf?.destroy?.();
+        state.running = false;
+        fmtEmit();
+    }
+    return state;
+};
+
+// 그림 하나 (data URL). 이 기기에 없으면 클라우드에서 받아 보관. 없으면 null
+export const getPdfImage = async (docId: string, imgId: string): Promise<string | null> => {
+    const k = imgKey(docId, imgId);
+    if (imgCache.has(k)) return imgCache.get(k)!;
+    let b64 = (await idbGet<{ k: string; b64: string }>(MD, k).catch(() => undefined))?.b64 || null;
+    if (!b64) {
+        b64 = await fetchPdfImageFromFirestore(docId, imgId).catch(() => null);
+        if (b64) await idbPut(MD, { k, b64 }).catch(() => undefined);
+    }
+    if (!b64) return null;
+    const url = `data:image/jpeg;base64,${b64}`;
+    imgCache.set(k, url);
+    return url;
 };
 
 // ---------------------------------------------------------------------------
@@ -353,7 +453,7 @@ export const getPdfFormatState = (id: string): PdfFormatState | undefined => fmt
 
 // 정리할 구간 (출제에서 뺀 구간·낼 내용 없는 구간은 건너뜀)
 export const sectionsToFormat = (d: PdfDoc) =>
-    d.sections.filter(s2 => !s2.excluded && !s2.fig && !d.progress?.[s2.key]?.empty && !(d.mdKeys || []).includes(s2.key)); // 그림·표 구간은 이미 마크다운
+    d.sections.filter(s2 => !s2.excluded && !s2.fig && !d.progress?.[s2.key]?.empty && !(d.mdKeys || []).includes(s2.key) && !(d.mdFail || []).includes(s2.key)); // 그림·표 구간은 이미 마크다운, 두 번 실패한 구간은 원래 글로 (§5-87)
 
 // 구간마다 AI로 정리 (2개씩 동시에). 원래 글과 같은 내용(글자 양·숫자)으로 확인된 것만 저장
 export const formatPdfForReading = async (id: string): Promise<PdfFormatState | undefined> => {
@@ -371,11 +471,17 @@ export const formatPdfForReading = async (id: string): Promise<PdfFormatState | 
             try {
                 const latest = (await getPdfDoc(id)) || d;
                 const raw = await getPdfSectionText(latest, sec.key);
-                const md = await formatPdfSectionMarkdown(raw, { docTitle: latest.title, sectionLabel: sec.label });
-                const check = mdLooksFaithful(raw, md);
+                // §5-87: 원래 글과 다르면 한 번 더 시도, 그래도 다르면 "원래 글로 보여 줄 구간"으로 기록 (다시 정리하라고 하지 않음)
+                let md = await formatPdfSectionMarkdown(raw, { docTitle: latest.title, sectionLabel: sec.label });
+                let check = mdLooksFaithful(raw, md);
+                if (!check.ok) {
+                    md = await formatPdfSectionMarkdown(raw, { docTitle: latest.title, sectionLabel: sec.label });
+                    check = mdLooksFaithful(raw, md);
+                }
                 if (!check.ok) {
                     console.warn('정리본이 원래 글과 달라 저장하지 않음', sec.label, check);
                     state.failed++;
+                    await updatePdfMeta(id, x => ({ mdFail: Array.from(new Set([...(x.mdFail || []), sec.key])) }));
                 } else {
                     await idbPut(MD, { k: `${id}:${sec.key}`, md });
                     await savePdfMdToFirestore(id, sec.key, md).catch(e => console.warn('정리본 클라우드 저장 실패', e));

@@ -6,7 +6,7 @@
 // 틀린 요점은 같은 문제를 다시 풀 수 있게 남겨 두고, 맞히면 문제는 지우고 요점만 남김(저장 용량 절약).
 // ============================================================================
 
-import type { PdfDoc, PdfPoint, PdfQuestion, PdfSectionProgress, PdfSectionMeta, QuizLanguage, QuizQuestion } from '../types';
+import type { PdfDoc, PdfImage, PdfPoint, PdfQuestion, PdfSectionProgress, PdfSectionMeta, QuizLanguage, QuizQuestion } from '../types';
 
 export type PdfPick =
     | { kind: 'question'; section: PdfSectionMeta; sectionIndex: number; sectionCount: number; question: PdfQuestion }
@@ -350,7 +350,29 @@ export const mergePdfDocs = (a: PdfDoc | undefined, b: PdfDoc | undefined): PdfD
         const o = progress[k];
         progress[k] = !o || (p?.u || 0) >= (o.u || 0) ? p : o;
     });
-    return { ...base, progress, deleted: a.deleted || b.deleted || undefined };
+    // §5-87: 정리본 목록은 합침(한쪽 기기 정보가 오래돼도 정리한 구간이 "안 됨"으로 돌아가지 않게), 그림은 최근에 저장한 쪽 묶음
+    const union = (x?: string[], y?: string[]) => { const u = Array.from(new Set([...(x || []), ...(y || [])])); return u.length ? u : undefined; };
+    const mdKeys = union(a.mdKeys, b.mdKeys);
+    const mdFail = union(a.mdFail, b.mdFail)?.filter(k => !(mdKeys || []).includes(k));
+    const imgSrc = (a.imgAt || 0) >= (b.imgAt || 0) ? a : b;
+    const figSrc = (a.figAt || 0) >= (b.figAt || 0) ? a : b;
+    return {
+        ...base, progress,
+        mdKeys, mdFail: mdFail && mdFail.length ? mdFail : undefined,
+        imgs: imgSrc.imgs, imgAt: imgSrc.imgAt,
+        figAt: figSrc.figAt, figCount: figSrc.figCount,
+        deleted: a.deleted || b.deleted || undefined,
+    };
+};
+
+// §5-87: 구간에 딸린 그림 — 그림·표 구간이면 그 쪽, 본문 구간이면 그 구간 쪽들 (dedupe면 그림·표 구간이 따로 있는 쪽은 뺌)
+export const imagesForSection = (doc: PdfDoc, sectionKey: string, dedupe = false): PdfImage[] => {
+    const sec = doc.sections.find(s => s.key === sectionKey);
+    const imgs = doc.imgs || [];
+    if (!sec || imgs.length === 0) return [];
+    if (sec.fig) return imgs.filter(g => g.page === sec.pageFrom);
+    const figPages = dedupe ? new Set(doc.sections.filter(s => s.fig && !s.excluded).map(s => s.pageFrom)) : new Set<number>();
+    return imgs.filter(g => g.page >= sec.pageFrom && g.page <= sec.pageTo && !figPages.has(g.page));
 };
 
 const str = (v: any, max = 500) => (typeof v === 'string' ? v.slice(0, max) : '');
@@ -393,6 +415,9 @@ export const sanitizePdfDoc = (x: any): PdfDoc | null => {
         figAt: typeof x.figAt === 'number' ? x.figAt : undefined,
         figCount: typeof x.figCount === 'number' ? x.figCount : undefined,
         mdKeys: Array.isArray(x.mdKeys) ? x.mdKeys.filter((k: any) => typeof k === 'string' && /^s\d+$/.test(k)) : undefined,
+        mdFail: Array.isArray(x.mdFail) ? x.mdFail.filter((k: any) => typeof k === 'string' && /^s\d+$/.test(k)) : undefined,
+        imgs: Array.isArray(x.imgs) ? x.imgs.filter((g: any) => g && typeof g.id === 'string' && /^[a-z0-9_-]{1,40}$/i.test(g.id)).map((g: any) => ({ id: g.id, page: num(g.page), kind: g.kind === 'crop' ? 'crop' as const : 'page' as const, w: num(g.w), h: num(g.h) })) : undefined,
+        imgAt: typeof x.imgAt === 'number' ? x.imgAt : undefined,
         file: x.file && typeof x.file.path === 'string' ? { path: x.file.path, size: num(x.file.size), at: num(x.file.at) } : undefined,
         deleted: x.deleted === true ? true : undefined,
     };

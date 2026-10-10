@@ -110,8 +110,8 @@ export const looksScanned = (pages: string[]): boolean => {
     return total / pages.length < 80;
 };
 
-// 사진 PDF: 쪽을 JPEG(base64, 머리글 없이)로 — AI가 글자를 읽도록
-export const renderPageJpeg = async (doc: any, pageNo: number, maxWidth = 1400): Promise<string> => {
+// 쪽을 캔버스에 그림 (다 쓰면 releaseCanvas)
+export const renderPageCanvas = async (doc: any, pageNo: number, maxWidth = 1400): Promise<{ page: any; viewport: any; canvas: HTMLCanvasElement }> => {
     const page = await doc.getPage(pageNo);
     const base = page.getViewport({ scale: 1 });
     const scale = Math.min(2.5, maxWidth / base.width);
@@ -123,9 +123,39 @@ export const renderPageJpeg = async (doc: any, pageNo: number, maxWidth = 1400):
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     await page.render({ canvasContext: ctx, viewport }).promise;
+    return { page, viewport, canvas };
+};
+export const releaseCanvas = (c: HTMLCanvasElement) => { c.width = 0; c.height = 0; };
+
+// 캔버스 전체 또는 한 부분(rect = 캔버스 픽셀 [x0,y0,x1,y1]) → JPEG base64. 너무 크면 줄여서 (클라우드 문서 1MB 제한)
+export const canvasRegionJpeg = (src: HTMLCanvasElement, rect: number[] | null, maxWidth = 1400, maxB64 = 900_000): { b64: string; w: number; h: number } => {
+    const [x0, y0, x1, y1] = rect || [0, 0, src.width, src.height];
+    const rw = Math.max(1, Math.round(x1 - x0)), rh = Math.max(1, Math.round(y1 - y0));
+    let scale = Math.min(1, maxWidth / rw);
+    let quality = 0.82;
+    for (let tries = 0; ; tries++) {
+        const c = document.createElement('canvas');
+        c.width = Math.max(1, Math.round(rw * scale));
+        c.height = Math.max(1, Math.round(rh * scale));
+        const ctx = c.getContext('2d')!;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, c.width, c.height);
+        ctx.drawImage(src, x0, y0, rw, rh, 0, 0, c.width, c.height);
+        const url = c.toDataURL('image/jpeg', quality);
+        const out = { b64: url.slice(url.indexOf(',') + 1), w: c.width, h: c.height };
+        releaseCanvas(c);
+        if (out.b64.length <= maxB64 || tries >= 4) return out;
+        scale *= 0.8;
+        quality = Math.max(0.6, quality - 0.08);
+    }
+};
+
+// 사진 PDF: 쪽을 JPEG(base64, 머리글 없이)로 — AI가 글자를 읽도록
+export const renderPageJpeg = async (doc: any, pageNo: number, maxWidth = 1400): Promise<string> => {
+    const { page, canvas } = await renderPageCanvas(doc, pageNo, maxWidth);
     const url = canvas.toDataURL('image/jpeg', 0.82);
     page.cleanup?.();
-    canvas.width = 0; canvas.height = 0;
+    releaseCanvas(canvas);
     return url.slice(url.indexOf(',') + 1);
 };
 
@@ -313,7 +343,7 @@ export const mdLooksFaithful = (raw: string, md: string): { ok: boolean; ratio: 
 // - 고른 쪽은 그림으로 만들어 AI가 표는 값 그대로 표로, 그림은 설명으로 옮김 → "그림·표 구간"으로 추가
 // ============================================================================
 export interface PageVisual { page: number; reasons: string[] }
-export interface PageVisualInfo { imageFrac: number; paths: number }
+export interface PageVisualInfo { imageFrac: number; paths: number; boxes?: number[][] } // boxes: 그림이 놓인 자리 [x0,y0,x1,y1] (PDF 좌표, §5-87)
 
 const IMAGE_OPS = ['paintImageXObject', 'paintInlineImageXObject', 'paintImageMaskXObject', 'paintImageXObjectRepeat', 'paintInlineImageXObjectGroup', 'paintImageMaskXObjectGroup'];
 
@@ -332,6 +362,7 @@ export const pageVisualInfo = async (page: any, lib: any): Promise<PageVisualInf
     const stack: number[][] = [];
     let imageArea = 0;
     let paths = 0;
+    const boxes: number[][] = [];
     for (let i = 0; i < ol.fnArray.length; i++) {
         const fn = ol.fnArray[i];
         const args = ol.argsArray[i];
@@ -345,9 +376,13 @@ export const pageVisualInfo = async (page: any, lib: any): Promise<PageVisualInf
             const w = Math.hypot(ctm[0], ctm[1]);
             const h = Math.hypot(ctm[2], ctm[3]);
             imageArea += w * h;
+            // 그림은 단위 정사각형을 ctm으로 옮긴 자리 → 네 꼭짓점의 범위 (§5-87)
+            const xs = [ctm[4], ctm[0] + ctm[4], ctm[2] + ctm[4], ctm[0] + ctm[2] + ctm[4]];
+            const ys = [ctm[5], ctm[1] + ctm[5], ctm[3] + ctm[5], ctm[1] + ctm[3] + ctm[5]];
+            boxes.push([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
         }
     }
-    return { imageFrac: Math.min(1, imageArea / pageArea), paths };
+    return { imageFrac: Math.min(1, imageArea / pageArea), paths, boxes };
 };
 
 const FIG_CAPTION = /^\s*(?:Figure|Fig\.?|Algorithm|Flowchart|Central Illustration|図|그림)\s*[\dA-Z]/im;
@@ -361,6 +396,61 @@ export const visualReasons = (v: PageVisualInfo, text: string): string[] => {
     if (FIG_CAPTION.test(text || '')) r.push('figure-caption');
     if (TABLE_CAPTION.test(text || '')) r.push('table-caption');
     return r;
+};
+
+// ----------------------------------------------------------------------------
+// 그림 저장 (§5-87): 사진은 그 부분만 잘라서, 그래프·표·흐름도(선으로 그린 것)가 있는 쪽은 쪽 전체를 이미지로
+// ----------------------------------------------------------------------------
+const boxArea = (b: number[]) => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+
+// 조각난 그림(타일)·겹치는 그림을 하나로 합침. view = 쪽 범위 [x0,y0,x1,y1]
+export const mergeImageBoxes = (boxes: number[][], view: number[]): number[][] => {
+    const W = view[2] - view[0], H = view[3] - view[1];
+    const gx = W * 0.01, gy = H * 0.01;
+    const list = boxes
+        .map(b => [Math.max(view[0], Math.min(b[0], b[2])), Math.max(view[1], Math.min(b[1], b[3])), Math.min(view[2], Math.max(b[0], b[2])), Math.min(view[3], Math.max(b[1], b[3]))])
+        .filter(b => b[2] - b[0] > 1 && b[3] - b[1] > 1);
+    let changed = true;
+    while (changed) {
+        changed = false;
+        for (let i = 0; i < list.length && !changed; i++) {
+            for (let j = i + 1; j < list.length; j++) {
+                const a = list[i], b = list[j];
+                if (a[0] - gx <= b[2] && b[0] - gx <= a[2] && a[1] - gy <= b[3] && b[1] - gy <= a[3]) {
+                    list[i] = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
+                    list.splice(j, 1);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+    return list;
+};
+
+// PDF 좌표 상자 → 캔버스 픽셀 상자 (viewport.transform [a,b,c,d,e,f] 사용 — PDF.js 버전과 무관), 여백 pad, 캔버스 안으로
+export const boxToCanvasRect = (box: number[], transform: number[], width: number, height: number, pad = 6): number[] => {
+    const [a, b, c, d, e, f] = transform;
+    const pts = [[box[0], box[1]], [box[2], box[1]], [box[0], box[3]], [box[2], box[3]]].map(([x, y]) => [a * x + c * y + e, b * x + d * y + f]);
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    return [
+        Math.max(0, Math.min(...xs) - pad), Math.max(0, Math.min(...ys) - pad),
+        Math.min(width, Math.max(...xs) + pad), Math.min(height, Math.max(...ys) + pad),
+    ];
+};
+
+// 이 쪽에서 무엇을 저장할지: 잘라낼 사진 자리(crops) / 쪽 전체(page)
+// - 선·도형이 많은 쪽(그래프·표 테두리·흐름도)이나 쪽을 거의 다 차지하는 그림 → 쪽 전체
+// - 그 밖에 쪽 면적 3% 이상인 사진 → 그 부분만 (로고 같은 작은 그림은 빠짐, 쪽당 최대 6장)
+// - 사진은 없는데 "Figure/図/그림" 캡션만 있으면 → 쪽 전체 (선으로 그린 그림일 수 있음)
+export const planPageCaptures = (v: PageVisualInfo, text: string, view: number[]): { crops: number[][]; page: boolean } => {
+    const area = Math.max(1, (view[2] - view[0]) * (view[3] - view[1]));
+    const reasons = visualReasons(v, text);
+    const big = mergeImageBoxes(v.boxes || [], view).filter(b => boxArea(b) >= area * 0.03);
+    if (reasons.includes('drawing') || big.some(b => boxArea(b) >= area * 0.85)) return { crops: [], page: true };
+    if (big.length) return { crops: big.sort((a, b) => b[3] - a[3] || a[0] - b[0]).slice(0, 6), page: false };
+    if (reasons.includes('figure-caption')) return { crops: [], page: true };
+    return { crops: [], page: false };
 };
 
 // AI가 옮긴 표의 숫자가 그 쪽 PDF 글에 실제로 있는지 확인 — 10% 넘게(2개 이상) 없으면 그 표에 "주의" 표시

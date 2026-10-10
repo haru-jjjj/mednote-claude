@@ -717,6 +717,24 @@ export const deletePdfFileFromStorage = async (path: string): Promise<void> => {
 
 // PDF 구간 읽기용 마크다운 (§5-83): appSettings/pdfmd-<id>-<구간키> (구간 하나에 문서 하나, 보통 수 KB)
 const pdfMdId = (id: string, key: string) => `pdfmd-${id}-${key}`;
+
+// PDF에서 저장한 그림 (§5-87): 이미 열려 있는 appSettings에 그림 하나당 문서 하나(JPEG base64, 1MB 미만).
+// 문서 목록 동기화(pdfm-)와 이름이 겹치지 않아, 그림은 볼 때만 하나씩 받음 → Storage 규칙을 바꿀 필요 없음
+const pdfImgId = (id: string, imgId: string) => `pdfi-${id}-${imgId}`;
+export const savePdfImageToFirestore = async (id: string, imgId: string, b64: string): Promise<void> => {
+    await ensureAuth();
+    await setDoc(doc(db, SETTINGS_COLLECTION, pdfImgId(id, imgId)), { id, imgId, b64 });
+};
+export const fetchPdfImageFromFirestore = async (id: string, imgId: string): Promise<string | null> => {
+    await ensureAuth();
+    const snap = await getDoc(doc(db, SETTINGS_COLLECTION, pdfImgId(id, imgId)));
+    const b64 = snap.exists() ? (snap.data() as any)?.b64 : null;
+    return typeof b64 === 'string' ? b64 : null;
+};
+export const deletePdfImagesFromFirestore = async (id: string, imgIds: string[]): Promise<void> => {
+    await ensureAuth();
+    for (const k of imgIds) await deleteDoc(doc(db, SETTINGS_COLLECTION, pdfImgId(id, k))).catch(() => undefined);
+};
 export const savePdfMdToFirestore = async (id: string, key: string, md: string): Promise<void> => {
     await ensureAuth();
     await setDoc(doc(db, SETTINGS_COLLECTION, pdfMdId(id, key)), { id, key, md });

@@ -5,8 +5,9 @@ import { extractPdfText, buildPdfSections, looksScanned, renderPageJpeg, MAX_OCR
 import { suggestPdfInfo, transcribePdfPages, formatMedicalMarkdown } from '../services/claudeService';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import { saveNewPdf, updatePdfMeta, deletePdf, deletePdfOriginal, openPdfOriginal, uploadPdfOriginal, storeLocalPdfFile, hasLocalPdfFile, describeStorageError, formatPdfForReading, subscribePdfFormat, getPdfFormatState, sectionsToFormat, getPdfSectionMd, getPdfSectionText, readPdfFigures, getPdfFigureState, MAX_FIGURE_PAGES, NEED_FILE } from '../services/pdfLibrary';
-import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, QUIZ_FORMATS, QUIZ_FORMAT_HINT, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder } from '../services/pdfQuiz';
+import { saveNewPdf, updatePdfMeta, deletePdf, deletePdfOriginal, openPdfOriginal, uploadPdfOriginal, storeLocalPdfFile, hasLocalPdfFile, describeStorageError, formatPdfForReading, subscribePdfFormat, getPdfFormatState, sectionsToFormat, getPdfSectionMd, getPdfSectionText, readPdfFigures, getPdfFigureState, MAX_FIGURE_PAGES, NEED_FILE, capturePdfImages, getPdfImageState } from '../services/pdfLibrary';
+import { PdfImageStrip, PdfImageGallery } from './PdfImages';
+import { pdfStats, resetPdfRound, newPdfId, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, QUIZ_FORMATS, QUIZ_FORMAT_HINT, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder, imagesForSection } from '../services/pdfQuiz';
 
 // ============================================================================
 // PDF 자료실 (§5-75)
@@ -61,6 +62,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
     // 그림·표 읽기 (§5-84): 원본 PDF가 이 기기에 없으면 같은 파일을 골라 달라고 함
     const figFileRef = useRef<HTMLInputElement>(null);
     const figTarget = useRef<PdfDoc | null>(null);
+    const figMode = useRef<'read' | 'capture'>('read'); // 고른 파일로 할 일: 그림·표 읽기 / 그림 저장 (§5-87)
     const startFigures = async (d: PdfDoc, file?: File) => {
         setError(null);
         try {
@@ -71,8 +73,29 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
             const st = await readPdfFigures(d.id, file ? { file } : {});
             if (st && !st.running) setNotice(st.found > 0 ? `"${d.title}" 그림·표 ${st.found}쪽을 읽어 넣었어요.` : `"${d.title}"에서 옮길 그림·표를 찾지 못했어요.`);
         } catch (e: any) {
-            if (e?.message === NEED_FILE) { figTarget.current = d; figFileRef.current?.click(); return; }
+            if (e?.message === NEED_FILE) { figTarget.current = d; figMode.current = 'read'; figFileRef.current?.click(); return; }
             setError(`그림·표 읽기 중 오류: ${e?.message || e}`);
+        }
+    };
+
+    // 그림 저장 (§5-87): 사진은 잘라서, 그래프·표 쪽은 쪽 전체 — AI 비용 없음
+    const [gallery, setGallery] = useState<PdfDoc | null>(null);
+    const startCapture = async (d: PdfDoc, file?: File) => {
+        setError(null);
+        try {
+            if (file) {
+                await storeLocalPdfFile(d.id, file);
+                if (!d.file) uploadOriginal(d);
+            }
+            const st = await capturePdfImages(d.id, file ? { file } : {});
+            if (st && !st.running) {
+                setNotice(st.saved > 0
+                    ? `"${d.title}" 그림 ${st.saved}장을 저장했어요.${st.cloudFailed ? ` (${st.cloudFailed}장은 클라우드에 못 올려 이 기기에만 있음)` : ''}`
+                    : `"${d.title}"에서 저장할 그림을 찾지 못했어요.`);
+            }
+        } catch (e: any) {
+            if (e?.message === NEED_FILE) { figTarget.current = d; figMode.current = 'capture'; figFileRef.current?.click(); return; }
+            setError(`그림 저장 중 오류: ${e?.message || e}`);
         }
     };
 
@@ -206,7 +229,9 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
             // 읽기용 정리는 뒤에서 (문제 풀기는 바로 가능 — 출제는 원래 글로) §5-83
             formatPdfForReading(doc.id).catch(e => console.warn('정리 시작 실패', e));
             // 그림·표 읽기도 뒤에서 (§5-84)
-            if (u.readFigs && u.figPages.length) readPdfFigures(doc.id, { file: u.file, pages: u.figPages }).catch(e => console.warn('그림·표 읽기 실패', e));
+            // 그림 저장(§5-87, AI 비용 없음)은 그다음 (휴대폰 메모리 때문에 동시에 하지 않음). 스캔 PDF는 쪽 전체가 그림이라 하지 않음
+            const figs = u.readFigs && u.figPages.length ? readPdfFigures(doc.id, { file: u.file, pages: u.figPages }).catch(e => console.warn('그림·표 읽기 실패', e)) : Promise.resolve();
+            if (!doc.ocr) figs.finally(() => capturePdfImages(doc.id, { file: u.file }).catch(e => console.warn('그림 저장 실패', e)));
         } catch (e: any) {
             console.error(e);
             setError(`저장 실패: ${e?.message || '알 수 없는 오류'}`);
@@ -313,7 +338,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                     type="file"
                     accept="application/pdf,.pdf"
                     className="hidden"
-                    onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; const d = figTarget.current; figTarget.current = null; if (f && d) startFigures(d, f); }}
+                    onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; const d = figTarget.current; figTarget.current = null; if (f && d) (figMode.current === 'capture' ? startCapture(d, f) : startFigures(d, f)); }}
                 />
                 <input
                     ref={attachRef}
@@ -597,10 +622,9 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                                     <button onClick={() => startFormat(d)} className="text-slate-500 hover:text-accent-700 inline-flex items-center gap-1" title="구간마다 AI가 제목·목록·문단으로 정리 (내용·숫자는 그대로인지 확인)">
                                                         <Sparkles className="w-3.5 h-3.5" /> {doneN > 0 ? `정리 안 된 구간 ${left}개 정리` : '읽기 좋게 정리'} <span className="text-slate-400">(약 ${Math.max(0.01, left * 0.002).toFixed(2)})</span>
                                                     </button>
-                                                ) : doneN > 0 ? (
-                                                    <span className="text-slate-400">읽기 좋게 정리됨</span>
+                                                ) : doneN > 0 || (d.mdFail || []).length > 0 ? (
+                                                    <span className="text-slate-400">읽기 좋게 정리됨{(d.mdFail || []).length > 0 ? ` (${(d.mdFail || []).length}구간은 원래 글 그대로)` : ''}</span>
                                                 ) : null}
-                                                {fs && !fs.running && fs.failed > 0 && <span className="text-clay-500">{fs.failed}구간은 원래 글과 달라 정리본을 쓰지 않음</span>}
                                                 {/* 그림·표 (§5-84) — 스캔 PDF는 글자 읽기 때 그림 설명을 함께 적음 */}
                                                 {(() => {
                                                     const gs = getPdfFigureState(d.id);
@@ -610,6 +634,20 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                                     return (
                                                         <button onClick={() => startFigures(d)} className="text-slate-500 hover:text-accent-700 inline-flex items-center gap-1" title="그림·표가 있는 쪽을 AI가 보고 표는 값 그대로, 그림은 설명으로 옮겨 문제 범위에 넣음">
                                                             <ImageIcon className="w-3.5 h-3.5" /> 그림·표 읽기
+                                                        </button>
+                                                    );
+                                                })()}
+                                                {/* 그림 저장 (§5-87) — 사진은 잘라서, 그래프·표 쪽은 쪽 전체 */}
+                                                {(() => {
+                                                    if (d.ocr) return null;
+                                                    const is = getPdfImageState(d.id);
+                                                    if (is?.running) return <span className="text-slate-500 inline-flex items-center gap-1"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 그림 저장 중 {is.total ? `${is.done}/${is.total}` : '(쪽 찾는 중)'}</span>;
+                                                    if (d.imgAt) return (d.imgs || []).length > 0
+                                                        ? <button onClick={() => setGallery(d)} className="font-bold text-accent-700 hover:text-accent-800 inline-flex items-center gap-1"><ImageIcon className="w-3.5 h-3.5" /> 그림 {(d.imgs || []).length}장</button>
+                                                        : <span className="text-slate-400">저장할 그림 없음</span>;
+                                                    return (
+                                                        <button onClick={() => startCapture(d)} className="text-slate-500 hover:text-accent-700 inline-flex items-center gap-1" title="PDF 속 사진은 그 부분만, 그래프·표·흐름도가 있는 쪽은 쪽 전체를 이미지로 저장 (AI 비용 없음)">
+                                                            <ImageIcon className="w-3.5 h-3.5" /> 그림 저장
                                                         </button>
                                                     );
                                                 })()}
@@ -695,11 +733,22 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                         <p>문제 만드는 방식: 처음 푸는 구간마다 AI(Haiku)가 그 구간의 요점(수치·권고·기준·기전·결과 등)을 모두 뽑아 요점마다 OX 한 문제를 씁니다. 안 푼 요점이 없어질 때까지 내고(무작위여도 빠지는 요점 없음), 맞힌 요점은 이번 바퀴에서 다시 나오지 않습니다. 정답 근거는 그 PDF 구간이고, 문제 화면에서 원문 구간을 바로 볼 수 있습니다.</p>
                         <p>원본 PDF는 Firebase Storage에 보관되어 어느 기기에서나 열 수 있습니다(문제 해설의 근거에서도 그 쪽으로 열림). 비용은 보관 5GB·내려받기 월 100GB까지 무료(미국 지역 저장소), 넘으면 GB당 월 약 $0.02.</p>
                         <p>그림·표: 그림·표가 있어 보이는 쪽(큰 그림·도형이 많은 쪽·"Figure/Table/표/그림" 캡션이 있는 쪽, 최대 40쪽)을 AI가 쪽 이미지로 보고, 표는 값 그대로 표로, 그림·흐름도·ECG는 설명으로 옮겨 "p.N 그림·표" 구간으로 넣습니다. 표 숫자는 그 쪽 PDF 글과 대조해 다르면 "주의" 표시 후 문제에서 뺍니다. 그래프에서 읽은 값(≈)은 정확한 숫자로 묻지 않습니다. 쪽당 약 $0.0015.</p>
+                        <p>그림 저장: PDF 속 사진은 그 부분만 잘라서, 그래프·표·흐름도가 있는 쪽은 쪽 전체를 이미지로 저장합니다(참고문헌 앞까지, 최대 40쪽). 기기 안에서 잘라 AI 비용은 없고, 클라우드에 함께 보관해 다른 기기에서도 보입니다. 본문 읽기의 구간 아래, 문제 해설의 근거, "그림 N장"(모아 보기)에서 볼 수 있습니다. 사진(스캔) PDF는 쪽 전체가 그림이라 하지 않습니다.</p>
                         <p>본문 읽기: 구간마다 AI가 끊긴 줄을 잇고 제목·목록·문단(칸이 확실한 표만 표로)으로 정리한 글을 보여 줍니다. 글자 양과 숫자가 원래 글과 같은지 확인한 것만 저장하고, 문제 출제·채점은 계속 원래 뽑은 글로 합니다. 구간당 약 $0.002.</p>
                         <p>한계: 그림·그래프 속 정보와 표의 칸 구조는 글로 뽑히는 만큼만 들어갑니다. 요점은 AI가 고르므로 아주 사소한 문장까지 하나하나 문제가 되지는 않습니다. 정답은 만든 뒤 구간 글로 한 번 더 따로 채점해, 맞지 않으면 버리고 다시 만듭니다. 비용은 검증 포함 구간 하나에 약 $0.003 (30쪽 리뷰 약 $0.03~0.04).</p>
                     </div>
                 </div>
             </div>
+
+            {/* 그림 모아 보기 (§5-87) */}
+            {gallery && (
+                <PdfImageGallery
+                    docId={gallery.id}
+                    title={gallery.title}
+                    images={(docs.find(x => x.id === gallery.id) || gallery).imgs || []}
+                    onClose={() => setGallery(null)}
+                />
+            )}
 
             {/* 본문 읽기 (§5-83) */}
             {reader && (
@@ -716,7 +765,7 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                 <section key={it.key} className="mb-8">
                                     <div className="flex items-center gap-2 mb-2">
                                         <span className="text-[11px] font-bold text-slate-400">{it.label}</span>
-                                        {it.raw !== null && !it.md && <span className="text-[10px] text-slate-400 border border-slate-200 rounded px-1">정리 전 글</span>}
+                                        {it.raw !== null && !it.md && <span className="text-[10px] text-slate-400 border border-slate-200 rounded px-1">{(reader.doc.mdFail || []).includes(it.key) ? '원래 글' : '정리 전 글'}</span>}
                                         {it.fig && <span className="text-[10px] text-accent-600 border border-accent-200 rounded px-1">AI가 쪽 이미지를 보고 옮김 · ≈는 그래프에서 읽은 대략값</span>}
                                         <div className="flex-1 border-t border-slate-100" />
                                     </div>
@@ -727,6 +776,8 @@ const PdfLibraryView: React.FC<Props> = ({ docs, loading, syncError, onBack, onS
                                     ) : (
                                         <p className="text-[12px] text-slate-400 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> 불러오는 중…</p>
                                     )}
+                                    {/* 이 구간 쪽의 그림 (§5-87) */}
+                                    <PdfImageStrip docId={reader.doc.id} images={imagesForSection(reader.doc, it.key, true)} />
                                 </section>
                             ))}
                         </div>

@@ -9,7 +9,8 @@ import { getNoteFromDB } from '../services/storage';
 import { sourceKindOf, SOURCE_KIND_LABEL, sourceKindClass } from '../services/sourceKind';
 import { collectWrongAnswers, WrongAnswerWithNote, REVIEW_PERIODS, ReviewPeriod, notesInPeriod, periodInfo, stripInlineOptions, stripOptionLabel } from '../services/studyUtils';
 import { isRestingUntilDue } from '../services/quizCoverage';
-import { pdfStats, resetPdfRound, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, QUIZ_FORMATS, QUIZ_FORMAT_HINT, QUIZ_FORMAT_WITH, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder } from '../services/pdfQuiz';
+import { pdfStats, resetPdfRound, poolStats, inPdfPool, PdfQuizFormat, PDF_FORMAT_LABEL, QUIZ_FORMATS, QUIZ_FORMAT_HINT, QUIZ_FORMAT_WITH, readPdfQuizFormat, savePdfQuizFormat, PdfOrder, readPdfOrder, savePdfOrder, imagesForSection } from '../services/pdfQuiz';
+import { PdfImageStrip } from './PdfImages';
 import { getPdfDoc, getPdfSectionText, getPdfSectionMd, updatePdfMeta, openPdfOriginal } from '../services/pdfLibrary';
 
 const PERIOD_KEY = 'medinote_quiz_period';
@@ -926,6 +927,12 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
                                         );
                                     })()}
                                 </div>
+                                {(() => {
+                                    // 이 구간 쪽의 그림 (§5-87)
+                                    const ref = currentQ.pdfRef!;
+                                    const d = pdfDocs.find(x => x.id === ref.docId);
+                                    return d ? <PdfImageStrip docId={d.id} images={imagesForSection(d, ref.sectionKey)} label="이 구간 그림" /> : null;
+                                })()}
                             </div>
                         )}
 
