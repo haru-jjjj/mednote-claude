@@ -36,6 +36,7 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
 // Haiku 5.5는 생각(adaptive thinking)이 기본으로 켜지고 생각 토큰도 max_tokens에 포함, temperature는 기본값 외 400,
 // 같은 글이 토큰 약 30% 더 많음 → callClaude에서 한도·effort를 맞춤
 const MODEL_FAST = 'claude-haiku-5-5';
+const FAST_TIMEOUT_MS = 90_000; // §5-86f: Haiku 호출 한 번의 최대 대기
 // 품질이 중요한 요약/주제탐구/OCR/상세설명용
 const MODEL_SMART = 'claude-sonnet-5';
 
@@ -171,19 +172,45 @@ const callClaudeOnce = async (params: CallParams): Promise<any> => {
     // §5-71: 지금 쓰는 두 모델(Sonnet 5, Haiku 5.5) 모두 temperature를 기본값이 아닌 값으로 보내면 400 → 아예 보내지 않음
     // (호출부에 남아 있는 temperature 값은 무시됨)
 
-    const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: {
-            'x-api-key': apiKey,
-            'anthropic-version': ANTHROPIC_VERSION,
-            'content-type': 'application/json',
-            // 브라우저에서 직접 호출하기 위한 필수 헤더 (CORS 허용)
-            'anthropic-dangerous-direct-browser-access': 'true'
-        },
-        body: JSON.stringify(body)
-    });
+    // §5-86f: 잠깐의 과부하(529)·서버 오류(5xx)·요청 한도(429)·네트워크 끊김은 2번까지 잠시 뒤 다시 시도.
+    // 빠른 모델(Haiku) 호출은 응답이 없을 때 오래 붙잡지 않도록 시간 제한(90초)을 두고, 넘으면 다시 시도
+    const TRANSIENT = [429, 500, 502, 503, 504, 529];
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+    let response!: Response;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    for (let attempt = 0; ; attempt++) {
+        const ctl = params.model === MODEL_FAST ? new AbortController() : null;
+        timer = ctl ? setTimeout(() => ctl.abort(), FAST_TIMEOUT_MS) : null;
+        try {
+            response = await fetch(API_URL, {
+                method: 'POST',
+                headers: {
+                    'x-api-key': apiKey,
+                    'anthropic-version': ANTHROPIC_VERSION,
+                    'content-type': 'application/json',
+                    // 브라우저에서 직접 호출하기 위한 필수 헤더 (CORS 허용)
+                    'anthropic-dangerous-direct-browser-access': 'true'
+                },
+                body: JSON.stringify(body),
+                ...(ctl ? { signal: ctl.signal } : {})
+            });
+        } catch (e) {
+            if (timer) clearTimeout(timer);
+            if (attempt < 2) { console.warn('Claude 호출 실패 — 잠시 뒤 다시 시도', e); await sleep(1500 * (attempt + 1)); continue; }
+            throw new Error(ctl?.signal.aborted ? 'Claude API timeout' : `Network error: ${String((e as any)?.message || e)}`);
+        }
+        if (!response.ok && TRANSIENT.includes(response.status) && attempt < 2) {
+            if (timer) clearTimeout(timer);
+            const ra = Number(response.headers.get('retry-after'));
+            console.warn(`Claude ${response.status} — 잠시 뒤 다시 시도`);
+            await sleep(ra > 0 ? Math.min(ra * 1000, 10000) : 2000 * (attempt + 1));
+            continue;
+        }
+        break;
+    }
 
     if (!response.ok) {
+        if (timer) clearTimeout(timer);
         let errBody: any = null;
         try { errBody = await response.json(); } catch { /* ignore */ }
         const errType = errBody?.error?.type || '';
@@ -198,7 +225,8 @@ const callClaudeOnce = async (params: CallParams): Promise<any> => {
         throw new Error(`Claude API error (${response.status} ${errType}): ${errMsg}`);
     }
 
-    const data = await response.json();
+    let data: any;
+    try { data = await response.json(); } finally { if (timer) clearTimeout(timer); }
     // 사용량 집계 (§5-70): 응답의 usage로 비용 추정 → 월별 누적
     try { recordClaudeUsage(params.model, data?.usage, params.feature || 'other'); } catch { /* 집계 실패는 무시 */ }
 
@@ -1542,6 +1570,9 @@ const PDF_MEDICAL_FOCUS = `WHAT TO TEST — MEDICAL KNOWLEDGE ONLY:
             what each compared group is, and what was measured (and in which lead / test / time point). Never leave a
             reference the reader cannot resolve: "this study", "the authors", "the atypical group", "both groups",
             "group A", "the cohort", "the patients", "the above", "as shown in the table" — spell out who or what.
+            FOOTNOTES and symbol keys (*, †, ‡, a, b) or abbreviation lists are never points on their own: attach what a
+            footnote says to the item it marks and NAME that item (e.g. "Loperamide, available without a prescription,
+            can prolong the QT interval"), never "the drug marked by this footnote".
             NO BARE STATISTICS: do not make a p-value, confidence interval, test statistic or "was statistically
             significant" the thing to remember. Test the clinical finding behind it — which group had the longer /
             larger / more frequent value, by roughly how much, which criterion separates them, what it implies.`;

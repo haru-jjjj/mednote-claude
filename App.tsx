@@ -592,7 +592,7 @@ const App: React.FC = () => {
     // 오답 다시 풀기는 저장된 문제만 쓰고, 복습 대상이 바닥나면 더 만들지 않음
     if (quizState.source === 'WRONG' || quizState.noMoreQuestions) return;
 
-    const BUFFER_SIZE = quizState.mode === 'DETAILED' || quizState.mode === 'CONCEPT' ? 1 : 2; // OX·섞어서는 2개 미리
+    const BUFFER_SIZE = quizState.mode === 'DETAILED' || quizState.mode === 'CONCEPT' ? 2 : 3; // §5-86f: OX·섞어서 3개, 케이스·5지선다 2개 미리 (남은 건 저장돼 다음에 씀)
     if (quizState.questionQueue.length >= BUFFER_SIZE || quizState.isGenerating || quizState.error) return;
 
     const session = quizSessionRef.current;
@@ -628,20 +628,23 @@ const App: React.FC = () => {
                 // 풀에서 한 PDF의 구간 문제를 막 만들었으면, 다음은 그 PDF에서 바로 꺼냄 (연달아 여러 PDF를 만들며 기다리지 않게)
                 let stickId: string | null = null;
                 let stickKey: string | null = null; // 방금 문제를 만든 구간 (§5-81)
+                // §5-86f: 화면이 문제를 기다리는 중이면(지금 푸는 문제·대기 문제 없음) 만들어 둔 문제 먼저, 미리 만들기 중이면 새 구간도 펼침.
+                // 한 번 문제를 만들고 나면(성공·실패 무관) 이번 요청에선 만들어 둔 문제를 우선 — 만들기 실패가 이어져 오래 기다리지 않게
+                let grow = !!(quizState.currentQuestion || quizState.questionQueue.length);
                 try {
                     for (let attempt = 0; attempt < 6 && !pdfQuestion; attempt++) {
                         let chosen: PoolPick | null = null;
                         if (singleId) {
                             const d = await getPdfDoc(singleId);
                             if (!d) throw new Error('PDF를 찾지 못했습니다 (지워졌을 수 있어요).');
-                            const p1 = pickPdfQuestion(d, reservedMap.get(d.id) || new Set(), mode, quizState.language, pdfFormat, Math.random, pdfOrder, stickKey, pdfRecentRef.current.filter(r => r.docId === d.id).map(r => r.key));
+                            const p1 = pickPdfQuestion(d, reservedMap.get(d.id) || new Set(), mode, quizState.language, pdfFormat, Math.random, pdfOrder, stickKey, pdfRecentRef.current.filter(r => r.docId === d.id).map(r => r.key), grow);
                             chosen = p1.kind === 'done' ? null : { doc: d, pick: p1 };
                         } else {
                             const all = (await getAllPdfDocs()).filter(inPdfPool);
                             const stick = stickId ? all.filter(d => d.id === stickId) : [];
                             const prefer = stickId && stickKey ? { docId: stickId, key: stickKey } : null;
-                            chosen = (stick.length ? pickFromPool(stick, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder, prefer, pdfRecentRef.current) : null)
-                                || pickFromPool(all, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder, null, pdfRecentRef.current);
+                            chosen = (stick.length ? pickFromPool(stick, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder, prefer, pdfRecentRef.current, grow) : null)
+                                || pickFromPool(all, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder, null, pdfRecentRef.current, grow);
                             if (all.length === 0) throw new Error('PDF 복습에 넣어 둔 PDF가 없습니다. PDF 자료실에서 PDF를 올리거나 "PDF 복습에 넣기"를 켜 주세요.');
                         }
                         if (quizSessionRef.current !== session) return;
@@ -682,6 +685,7 @@ const App: React.FC = () => {
                         }
                         stickId = pdfId;
                         stickKey = pick.section.key;
+                        grow = false; // §5-86f
                         const text = await getPdfSectionText(doc, pick.section.key);
                         const pts = doc.progress[pick.section.key]?.pts || [];
                         if ((pick.format === 'MC' || pick.format === 'CQ') && pick.pointIndexes && pick.pointIndexes.length) {
@@ -716,7 +720,18 @@ const App: React.FC = () => {
                         // 비용을 이미 썼으니 세션이 끝났어도 만든 문제는 저장 (다음에 그대로 씀)
                         await updatePdfSection(pdfId, pick.section.key, prev => applyGenerated(prev, pick.pointIndexes, items, quizState.language, () => newPdfId('q_'), Date.now()));
                         if (quizSessionRef.current !== session) return;
-                        if (pick.pointIndexes && items.length === 0) throw new Error('AI가 문제를 만들지 못했습니다. 다시 시도해주세요.');
+                        // §5-86f: 못 만들었으면(빈 결과) 그 요점들 실패 횟수만 올라가고(applyGenerated) 다음 시도로 — 전체를 오류로 끝내지 않음
+                    }
+                    // §5-86f: 여러 번 만들기에 실패했으면, 최근에 낸 구간이어도 만들어 둔(검사 끝난) 문제를 냄
+                    if (!pdfQuestion && quizSessionRef.current === session) {
+                        const docs = singleId ? [await getPdfDoc(singleId)].filter((d): d is PdfDoc => !!d) : (await getAllPdfDocs()).filter(inPdfPool);
+                        const fb = pickFromPool(docs, reservedMap, mode, quizState.language, Math.random, pdfFormat, pdfOrder, null, null, false);
+                        if (fb && fb.pick.kind === 'question' && !needsMetaScreen(fb.doc.progress?.[fb.pick.section.key])) {
+                            const set = reservedMap.get(fb.doc.id) || new Set<string>();
+                            reservedMap.set(fb.doc.id, set);
+                            set.add(`${fb.pick.section.key}#${fb.pick.question.pi}`);
+                            pdfQuestion = toQuizQuestion(fb.doc, fb.pick);
+                        }
                     }
                 } catch (e: any) {
                     console.error('PDF 퀴즈 생성 오류', e);
