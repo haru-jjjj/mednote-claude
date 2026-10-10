@@ -1617,6 +1617,24 @@ export const screenPdfPointsMeta = async (docTitle: string, items: { point: stri
     return { meta, unclear: idx(out?.unclear).filter(i => !meta.includes(i)) };
 };
 
+// §5-88: PDF 문제 해설 — "본문에 이렇게 나온다"에서 그치지 않고 이유·기전·임상 의미까지 (새 숫자·약·연구는 만들지 않음)
+const PDF_EXPLANATION_OX = `- "explanation" (3–4 sentences, a fellow-level teaching note — not just "the section says so"):
+              (1) the correct fact stated plainly, with its exact number / criterion / strength as given in the section —
+                  state it as a fact; do not write "according to the section / 本文では / 본문에서는" (the source is shown separately);
+              (2) WHY it is so — the mechanism, physiological or clinical rationale, or the evidence behind it (the trial or data
+                  the section cites). Prefer the section's own reasoning; if it gives none, add ONE sentence of well-established
+                  textbook reasoning, without introducing numbers, drugs, trials or recommendations that are not in the section;
+              (3) if the statement is false: exactly what was changed and why that difference matters in practice;
+                  if true: the practical implication or the common pitfall around it.`;
+const PDF_EXPLANATION_MC = `- "explanation" (a fellow-level teaching note, not just "the section says so"; do not write "according to the
+              section / 本文では / 본문에서는" — the source is shown separately):
+              (1) why the keyed answer is correct — the reasoning from the key data in the stem to the answer, with the exact
+                  number / criterion / strength as the section states it;
+              (2) the underlying mechanism or rationale (the section's own; if none, one sentence of well-established textbook
+                  reasoning — no new numbers, drugs, trials or recommendations);
+              (3) one short line per distractor on why it is wrong (what makes it tempting and where it fails);
+              (4) one take-home line.`;
+
 // 그림·표 구간에서 문제를 낼 때 덧붙이는 규칙 (§5-84)
 const FIGURE_SECTION_NOTE = `NOTE: THIS SECTION IS AN AI TRANSCRIPTION OF THE PAGE'S TABLES AND FIGURES (not the original body text).
             - Test what a table states (exact values, classes, criteria) and what a figure clearly shows (direction of effect,
@@ -1718,8 +1736,7 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
               exception, comparison or rationale that the section attaches to the point (e.g. "In patients with X, Y is
               recommended over Z" rather than "Y is recommended"). Do not test trivia (titles, author names, section numbers)
               or anything about the document itself.
-            - "explanation" (1–3 sentences): state what the section actually says (with the exact number or wording),
-              then say whether the statement matches it — so a wrong answer teaches the correct fact.
+            ${PDF_EXPLANATION_OX}
             - "point": the point tested, ≤ 14 words, in Korean (internal metadata).
 
             FINAL CHECK — ${langRule} (Only "point" is internal metadata and stays in Korean.)
@@ -1742,7 +1759,7 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
                             meta: { type: 'boolean', description: 'true ONLY if the point is about the document itself (purpose, authors, methods, evidence grading, level of evidence, study type/limitations of the paper), not medical knowledge.' },
                             fact: { type: 'string', description: 'Internal: what the section says on this point, close to its own wording (any language).' },
                             statement: { type: 'string', description: `The true/false statement. ${langNote}` },
-                            explanation: { type: 'string', description: `What the section actually says, then whether the statement matches it (1–3 sentences). ${langNote}` },
+                            explanation: { type: 'string', description: `Teaching note (3–4 sentences): the correct fact with its exact number, why it is so (mechanism / rationale / evidence), and what was changed (if false) or the practical implication (if true). ${langNote}` },
                             isTrue: { type: 'boolean', description: 'Decided LAST: true only if the statement agrees with "fact" / the section.' }
                         },
                         required: ['point', 'meta', 'fact', 'statement', 'explanation', 'isTrue']
@@ -1752,7 +1769,7 @@ ${input.points.map((p, i) => `            ${i + 1}. ${p}`).join('\n')}
             },
             required: ['items']
         },
-        maxTokens: 6000
+        maxTokens: 9000 // §5-88: 해설이 길어짐
     }, x => (Array.isArray(x?.items) ? x.items.map((it: any) => `${it?.statement || ''} ${it?.explanation || ''}`).join(' ') : ''),
        x => Array.isArray(x?.items) && x.items.length > 0);
     const items: PdfOXItem[] = (Array.isArray(out?.items) ? out.items : [])
@@ -1905,8 +1922,7 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
               a lower class of recommendation).
             - Level: cardiovascular subspecialty board / fellowship in-training exam for cardiology content;
               internal medicine board level otherwise.
-            - "explanation": why the answer is correct, quoting what the section states (exact number, criterion
-              or recommendation class), then one short line on why each distractor is wrong.
+            ${PDF_EXPLANATION_MC}
 
             FINAL CHECK — ${langRule}
         `;
@@ -1927,7 +1943,7 @@ export const generatePdfCaseQuestion = async (input: PdfCaseInput, language: Qui
             },
             required: ['meta', 'question', 'options', 'correctAnswerIndex', 'explanation']
         },
-        maxTokens: 2000
+        maxTokens: 3000 // §5-88: 해설이 길어짐
     }, x => [x?.question, ...(Array.isArray(x?.options) ? x.options : []), x?.explanation].join(' '));
     // §5-86: 의학 지식이 아닌 요점 → 문제 없이 표시만 (호출부에서 그 요점을 영구 제외)
     if (out?.meta === true) return { question: '', options: [], correctAnswerIndex: 0, explanation: '', meta: true };

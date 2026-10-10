@@ -97,8 +97,23 @@ const isNewerCopy = (a: Note, b: Note) => {
     return (a.metaUpdatedAt || 0) > (b.metaUpdatedAt || 0);
 };
 
+// §5-88: 마지막으로 보던 화면 — 앱을 껐다 켜도 그 화면으로 (메모 화면이면 그 메모)
+const LAST_VIEW_KEY = 'medinote_last_view';
+const RESTORABLE_VIEWS: ViewMode[] = [ViewMode.LIST, ViewMode.QUIZ, ViewMode.PDFS, ViewMode.THREADS, ViewMode.ASK_NOTES, ViewMode.GUIDELINE_CHECK, ViewMode.INSIGHTS, ViewMode.PHOTOS, ViewMode.USAGE];
+const readLastView = (): { view: ViewMode; noteId: string | null } => {
+    try {
+        const x = JSON.parse(localStorage.getItem(LAST_VIEW_KEY) || 'null');
+        if (x && typeof x.view === 'string') {
+            if (RESTORABLE_VIEWS.includes(x.view)) return { view: x.view, noteId: null };
+            if ((x.view === ViewMode.DETAIL || x.view === ViewMode.EDIT) && typeof x.noteId === 'string') return { view: ViewMode.LIST, noteId: x.noteId };
+        }
+    } catch { /* 저장소를 못 쓰면 메모 목록부터 */ }
+    return { view: ViewMode.LIST, noteId: null };
+};
+const initialLastView = readLastView();
+
 const App: React.FC = () => {
-  const [view, setView] = useState<ViewMode>(ViewMode.LIST);
+  const [view, setView] = useState<ViewMode>(initialLastView.view);
   const [notes, setNotes] = useState<Note[]>([]);
   const [showSidebar, setShowSidebar] = useState(true);
   const [lastBackupTime, setLastBackupTime] = useState<number | null>(null);
@@ -128,6 +143,11 @@ const App: React.FC = () => {
   // 실시간 동기화 콜백(처음 한 번 만든 함수)에서 현재 화면·열린 메모를 알기 위한 참조
   const viewRef = useRef(view);
   useEffect(() => { viewRef.current = view; }, [view]);
+  // §5-88: 퀴즈·PDF 자료실 밖에서 마지막으로 보던 화면 (퀴즈 첫 화면의 뒤로 가기용)
+  const outsideQuizViewRef = useRef<ViewMode>(ViewMode.LIST);
+  useEffect(() => { if (view !== ViewMode.QUIZ && view !== ViewMode.PDFS && view !== ViewMode.CREATE && view !== ViewMode.EDIT) outsideQuizViewRef.current = view; }, [view]);
+  // 퀴즈를 시작한 화면 (퀴즈 첫 화면 / PDF 자료실) — 세션을 끝내거나 나가면 그리로
+  const quizOriginRef = useRef<ViewMode>(ViewMode.QUIZ);
   const activeNoteIdRef = useRef(activeNoteId);
   useEffect(() => { activeNoteIdRef.current = activeNoteId; }, [activeNoteId]);
   // 편집 중에 다른 기기에서 지워져서 화면에만 남겨둔 메모 — 편집을 마치고 나왔는데 저장 안 했으면 정리
@@ -899,6 +919,7 @@ const App: React.FC = () => {
 
 
   const handleStartQuiz = React.useCallback((mode: 'DETAILED' | 'QUICK_OX' | 'CONCEPT' | 'MIXED', language: QuizLanguage, source: 'RANDOM' | 'REVIEW' | 'PERIOD' = 'RANDOM', period?: ReviewPeriod, opts?: { periodAll?: boolean }) => {
+      quizOriginRef.current = ViewMode.QUIZ; // §5-88
       quizSessionRef.current += 1;
       reviewUsedIdsRef.current = new Set();
       periodUsedIdsRef.current = new Set();
@@ -923,6 +944,7 @@ const App: React.FC = () => {
   // pdfId가 null이면 전체 풀(PDF 복습에 넣어 둔 모든 PDF) (§5-76)
   // format: OX / 케이스(DETAILED) / 섞어서(MIXED) (§5-79)
   const handleStartPdfQuiz = React.useCallback((pdfId: string | null, mode: 'all' | 'wrong', language: QuizLanguage, format: 'QUICK_OX' | 'DETAILED' | 'CONCEPT' | 'MIXED' = 'QUICK_OX', order: PdfOrder = 'seq') => {
+      quizOriginRef.current = viewRef.current === ViewMode.PDFS ? ViewMode.PDFS : ViewMode.QUIZ; // §5-88
       quizSessionRef.current += 1;
       pdfReservedRef.current = new Map();
       pdfRecentRef.current = [];
@@ -943,6 +965,28 @@ const App: React.FC = () => {
       });
       setView(ViewMode.QUIZ);
   }, []);
+
+  // §5-88: 지금 보는 화면을 기억 (퀴즈를 푸는 중이면 시작한 화면 — 다시 켜면 거기서 "이어서" 누르면 됨)
+  useEffect(() => {
+      const v = view === ViewMode.QUIZ && quizState.isActive ? quizOriginRef.current : view;
+      const noteId = (v === ViewMode.DETAIL || v === ViewMode.EDIT) ? activeNoteId : null;
+      try { localStorage.setItem(LAST_VIEW_KEY, JSON.stringify({ view: v, noteId })); } catch { /* 기억 못 해도 동작에는 지장 없음 */ }
+  }, [view, activeNoteId, quizState.isActive]);
+  // 앱을 켰을 때 마지막에 보던 메모 다시 열기 (없거나 지워졌으면 메모 목록 그대로, 알림 없이)
+  // (메모 목록을 다 불러온 뒤 한 번만)
+  const restoreNoteRef = useRef<string | null>(initialLastView.noteId);
+  useEffect(() => {
+      const id = restoreNoteRef.current;
+      if (!id || notes.length === 0) return;
+      restoreNoteRef.current = null;
+      if (viewRef.current !== ViewMode.LIST || !notes.some(x => x.id === id)) return;
+      getNoteFromDB(id).then(n => {
+          if (!n || viewRef.current !== ViewMode.LIST) return;
+          setNotes(prev => prev.map(x => (x.id === id ? n : x)));
+          setActiveNoteId(id);
+          setView(ViewMode.DETAIL);
+      }).catch(() => undefined);
+  }, [notes]);
 
   // 오답 노트 다시 풀기: 저장된 문제를 그대로 다시 냄 (AI 호출 없음)
   const handleStartWrongReview = (entries: WrongAnswerWithNote[]) => {
@@ -1097,10 +1141,16 @@ const App: React.FC = () => {
           .catch(e => { console.error(e); alert('오답 삭제에 실패했습니다.'); });
   };
 
+  // §5-88: 세션을 끝내면 메모 목록이 아니라 퀴즈를 시작한 화면(퀴즈 첫 화면 또는 PDF 자료실)으로
   const handleStopQuiz = () => {
       quizSessionRef.current += 1;
       setQuizState(prev => ({ ...prev, isActive: false, mode: null, currentQuestion: null, questionQueue: [], isGenerating: false, error: null, noMoreQuestions: false }));
-      setView(ViewMode.LIST);
+      setView(quizOriginRef.current === ViewMode.PDFS ? ViewMode.PDFS : ViewMode.QUIZ);
+  };
+  // 퀴즈 화면의 뒤로 가기: 푸는 중이면(퀴즈는 그대로 둠) 시작한 화면이 PDF 자료실일 때 그리로, 아니면 퀴즈 전에 보던 화면으로
+  const handleQuizBack = () => {
+      if (quizState.isActive && quizOriginRef.current === ViewMode.PDFS) { setView(ViewMode.PDFS); return; }
+      setView(outsideQuizViewRef.current || ViewMode.LIST);
   };
 
   // 세션만 끝내고 퀴즈 첫 화면(오늘의 복습·오답 노트)에 머무름
@@ -1868,7 +1918,7 @@ const App: React.FC = () => {
                         onStop={handleStopQuiz}
                         onEndSession={handleEndQuizSession}
                         onRetry={handleRetryQuiz}
-                        onBack={() => { setView(ViewMode.LIST); }} 
+                        onBack={handleQuizBack}
                         reviewDueCount={reviewDueCount}
                         onStartWrongReview={handleStartWrongReview}
                         onDeleteWrongAnswer={handleDeleteWrongAnswer}

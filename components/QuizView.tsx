@@ -711,7 +711,7 @@ const QuizView: React.FC<QuizViewProps> = ({ notes, quizState, onStart, onNext, 
         {/* Header */}
         <div className="h-12 px-4 bg-white border-b border-slate-200 flex justify-between items-center shrink-0 z-10 shadow-sm">
             <div className="flex items-center gap-3">
-                <button type="button" onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full text-slate-500 transition-colors" title="목록으로 (퀴즈 유지)">
+                <button type="button" onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full text-slate-500 transition-colors" title="뒤로 (퀴즈 유지)">
                     <ArrowLeft className="w-4 h-4" />
                 </button>
                 <div className={`p-2 rounded-lg ${isOX ? 'bg-accent-50 text-accent-600' : 'bg-accent-50 text-accent-600'}`}>
